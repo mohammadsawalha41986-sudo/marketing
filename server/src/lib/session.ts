@@ -8,7 +8,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Response } from 'express';
-import { env, isProd } from '../env.js';
+import { cookieSecure, env } from '../env.js';
 import { prisma } from './prisma.js';
 
 export const SESSION_COOKIE = 'mos_session';
@@ -73,7 +73,7 @@ export async function resolveSession(token: string) {
 export function setSessionCookies(res: Response, token: string, csrf: string, expiresAt: Date): void {
   const common = {
     httpOnly: true,
-    secure: env.COOKIE_SECURE || isProd,
+    secure: cookieSecure,
     sameSite: 'lax' as const,
     path: '/',
     expires: expiresAt,

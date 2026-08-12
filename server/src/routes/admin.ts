@@ -20,7 +20,7 @@ import { derive, sumSnapshots } from '../services/analytics.js';
 import { recordAudit } from '../services/audit.js';
 import { aiStatus } from '../services/ai/index.js';
 import { storage } from '../services/storage/index.js';
-import { env, hasOpenAi } from '../env.js';
+import { cookieSecure, env, hasOpenAi } from '../env.js';
 
 export const adminRouter: Router = Router();
 adminRouter.use(requireAuth, requireSuperAdmin);
@@ -416,7 +416,7 @@ adminRouter.get(
       uptimeSeconds: Math.round(process.uptime()),
       storage: { driver: storage.name, maxUploadMb: env.MAX_UPLOAD_MB },
       ai: { ...aiStatus(), keyConfigured: hasOpenAi },
-      session: { ttlHours: env.SESSION_TTL_HOURS, secureCookies: env.COOKIE_SECURE },
+      session: { ttlHours: env.SESSION_TTL_HOURS, secureCookies: cookieSecure },
       rateLimit: { windowMinutes: env.RATE_LIMIT_WINDOW_MIN, max: env.RATE_LIMIT_MAX },
       database: { connected: true },
     });

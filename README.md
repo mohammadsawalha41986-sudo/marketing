@@ -13,8 +13,8 @@ CLIENT → BRAND DNA → MEDIA → AI CONTENT → CAMPAIGN → APPROVAL
 
 | Layer | Choice |
 | --- | --- |
-| Frontend | React 18, Vite 6, TypeScript, Tailwind CSS, React Router, Recharts, Framer Motion |
-| Backend | Node 20+, Express 4, TypeScript (ESM) |
+| Frontend | React 18, Vite 6, TypeScript, Tailwind CSS, React Router 7, Recharts, Framer Motion |
+| Backend | Node 20.9+ (verified on 22.x), Express 4, TypeScript (ESM) |
 | Database | PostgreSQL 16 via Prisma 6 |
 | Validation | Zod, on every request body, query and path parameter |
 | Auth | Opaque session tokens in HTTP-only cookies, Argon2id password hashing |
@@ -28,13 +28,16 @@ app without a reverse proxy in front of two services.
 ## Quick start
 
 ```bash
-npm install
-cp .env.example .env          # then fill in DATABASE_URL and SESSION_SECRET
+npm install                   # also generates the Prisma Client
+cp .env.example .env          # local development only; fill in DATABASE_URL and SESSION_SECRET
 npx prisma migrate deploy
 npm run db:seed               # optional: demo agency with four clients
 npm run build
 npm start                     # http://localhost:3000
 ```
+
+In production there is no `.env` step — the host injects the environment. See
+[Deploying to Hostinger](#deploying-to-hostinger).
 
 For development with hot reload on both sides:
 
@@ -247,104 +250,226 @@ to `marketing_os_test`.
 
 ## Deploying to Hostinger
 
-Hostinger's **Node.js App** hosting plus a **PostgreSQL** database.
+Target architecture — one Node process, no separate frontend host:
 
-**1. Create the database** in hPanel → Databases → PostgreSQL. Note the host,
-port, database name, user and password.
+```
+Browser → Hostinger Node.js App → single Node process ┬─ Express API
+                                                      └─ React build (web/dist)
+                                                             ↓
+                                                       PostgreSQL
+```
 
-**2. Create the Node.js app** in hPanel → Advanced → Node.js:
+### Exact settings
 
-| Setting | Value |
+| Hostinger field | Value |
 | --- | --- |
-| Node version | 20 or newer |
-| Application root | your deploy directory |
+| Application root | the repository root (the directory holding `package.json`) |
+| Node.js version | **22.x** (verified). Minimum supported is 20.9.0 |
+| Package manager | npm |
+| Build command | `npm install && npm run build` |
+| Start command | `npm start` |
 | Application startup file | `server/dist/index.js` |
 | Application mode | production |
 
-**3. Upload the code** (Git deploy or File Manager). Do not upload `.env`,
-`node_modules`, `web/dist` or `server/dist` — they are built on the server.
+`npm start` runs `node server/dist/index.js`. If the panel asks for a startup
+file rather than a command, give it `server/dist/index.js` — they are the same
+thing.
 
-**4. Set environment variables** in the Node.js app panel, from `.env.example`.
-At minimum:
+**Do not set `PORT`.** Hostinger injects it and the app binds `0.0.0.0` on
+whatever it is given. Setting it yourself is a common cause of a process that
+starts but never receives traffic.
+
+**Build needs devDependencies.** TypeScript and Vite are devDependencies, so the
+build command must be plain `npm install` — not `npm ci --omit=dev` or
+`npm install --production`. If you prefer `npm ci`, use `npm ci && npm run build`.
+
+### 1. Prepare the database
+
+hPanel → Databases → PostgreSQL. Create a database and note host, port, name,
+user and password. Any hosted PostgreSQL works — Hostinger's own, Supabase,
+Neon, or an external server.
+
+### 2. Create the Node.js app
+
+hPanel → Advanced → Node.js → Create application, using the table above.
+
+### 3. Set environment variables
+
+In the app's Environment variables panel. Only two are required:
 
 ```
-NODE_ENV=production
-PORT=3000
 DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME?schema=public
-SESSION_SECRET=<48+ random characters>
-APP_URL=https://your-domain.com
-CORS_ORIGIN=https://your-domain.com
-COOKIE_SECURE=true
-TRUST_PROXY=1
-STORAGE_LOCAL_DIR=./storage/uploads
+SESSION_SECRET=<48 random characters>
 ```
 
-Generate the secret with:
+Generate the secret locally and paste the result:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 ```
 
-**5. Install, migrate and build** from the panel's terminal:
+Strongly recommended as well:
 
-```bash
-npm ci --omit=dev=false
-npx prisma migrate deploy
-npm run build
+```
+NODE_ENV=production
+APP_URL=https://your-domain.com
+TRUST_PROXY=1
+STORAGE_LOCAL_DIR=./storage/uploads
 ```
 
-**6. Optionally seed demo data** — skip this for a real deployment:
+Everything else has a working default — see `.env.example`. **The application
+never reads a `.env` file in production;** it reads `process.env` directly, so
+there is nothing to upload and no `cp .env.example .env` step.
+
+### 4. Deploy from GitHub
+
+Connect the repository and deploy the branch. Hostinger runs the build command,
+then the start command.
+
+### 5. Apply migrations
+
+Once, from the panel's terminal, and again after any deployment that changes the
+schema:
+
+```bash
+npx prisma migrate deploy
+```
+
+Use `migrate deploy` — never `migrate dev` and never `migrate reset` — on a live
+database. To load the demo agency (skip for a real deployment):
 
 ```bash
 npm run db:seed
 ```
 
-**7. Start the app.** Restart it from the panel; `npm start` runs
-`node server/dist/index.js`, which serves the API and the built SPA on `PORT`.
+### 6. Domain and SSL
+
+Point the domain at the app and enable SSL in hPanel. Once HTTPS is live, leave
+`COOKIE_SECURE` unset — it defaults to on in production. Only set it to `false`
+if the site is genuinely served over plain HTTP, and the startup log will warn
+you that it is off.
+
+### 7. Verify
+
+```
+https://your-domain.com/api/health   →  {"status":"ok","database":"ok","uptime":N}
+https://your-domain.com/login        →  the sign-in page
+```
+
+Then check the runtime log. A healthy boot prints:
+
+```
+[marketing-os] started
+  environment   production
+  node          v22.x.x
+  listening     0.0.0.0:<port>
+  database      connected
+  front end     served from web/dist
+  secure cookies on
+```
+
+If any of those lines is missing or says something else, the troubleshooting
+table below names the cause.
 
 ### Notes for production
 
-- `STORAGE_LOCAL_DIR` must be on persistent storage and **outside the web root**.
-  It is served through the app, not directly by the web server.
-- Set `COOKIE_SECURE=true` — sessions will not work correctly over HTTPS without it.
-- `TRUST_PROXY=1` is required for correct client IPs behind Hostinger's proxy,
-  which rate limiting and the audit log depend on.
-- Run `npx prisma migrate deploy` — never `migrate dev` — on a live database.
-- Back up before every deployment that includes a migration.
+- `STORAGE_LOCAL_DIR` must be on persistent storage and outside the web root.
+  Uploads are served through the app, never directly by the web server. If the
+  plan's filesystem is ephemeral, uploaded media will not survive a redeploy —
+  add a remote driver in `server/src/services/storage/` before relying on it.
+- `TRUST_PROXY=1` is required behind Hostinger's proxy. It is what makes client
+  IPs, rate limiting and HTTPS detection correct. Do not raise it above the real
+  number of proxy hops.
+- Back up the database before any deployment carrying a migration.
 
-## Environment variables
+### Hosted PostgreSQL (Supabase, Neon, and similar)
 
-| Variable | Required | Purpose |
+Most hosted providers require TLS. Append `sslmode=require`:
+
+```
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME?schema=public&sslmode=require
+```
+
+Supabase specifically:
+
+- **Session pooler / direct (port 5432)** — use this. Works with Prisma as-is.
+- **Transaction pooler (port 6543)** — add `&pgbouncer=true&connection_limit=1`,
+  and run `prisma migrate deploy` against the port-5432 URL, because migrations
+  need a session-mode connection.
+- If the host has no IPv6 route, use Supabase's IPv4 add-on or the session
+  pooler hostname.
+
+No Supabase SDK is involved — it is simply the PostgreSQL provider.
+
+## Troubleshooting
+
+### 503 Service Unavailable
+
+The process is not running. A build that succeeded says nothing about this —
+**read the runtime log**, which will contain one of these:
+
+| Log says | Cause | Fix |
 | --- | --- | --- |
-| `NODE_ENV` | yes | `production` in production |
-| `PORT` | no | Listen port, default 3000 |
-| `DATABASE_URL` | yes | PostgreSQL connection string |
-| `SESSION_SECRET` | yes | 32+ characters |
-| `SESSION_TTL_HOURS` | no | Session lifetime, default 168 |
-| `APP_URL` | no | Public URL |
-| `CORS_ORIGIN` | no | Comma-separated allowed origins |
-| `COOKIE_SECURE` | no | `true` when serving over HTTPS |
-| `TRUST_PROXY` | no | Proxy hops in front of the app, default 1 |
-| `OPENAI_API_KEY` | no | Enables the language model; falls back without it |
-| `OPENAI_MODEL` | no | Default `gpt-4o-mini` |
-| `STORAGE_DRIVER` | no | `local` |
-| `STORAGE_LOCAL_DIR` | no | Upload directory |
-| `MAX_UPLOAD_MB` | no | Per-file limit, default 25 |
-| `RATE_LIMIT_WINDOW_MIN` | no | Default 15 |
-| `RATE_LIMIT_MAX` | no | Requests per window, default 300 |
+| `FAILED TO START — invalid environment configuration` | `DATABASE_URL` or `SESSION_SECRET` is not set | Add it in the Environment variables panel and restart |
+| `FAILED TO START — cannot reach the database` | Wrong credentials, wrong host, firewall, or missing SSL | Check the connection string; add `?sslmode=require` for a hosted provider |
+| `FAILED TO START — port already in use` | `PORT` was set manually | Remove it and let Hostinger inject it |
+| `FAILED TO START — upload directory is not writable` | `STORAGE_LOCAL_DIR` points somewhere read-only | Point it at a writable persistent path |
+| `Cannot find module '/…/server/dist/index.js'` | The build did not run | Build command must be `npm install && npm run build` |
+| `@prisma/client did not initialize yet` | Prisma Client was not generated | `npm install` runs `prisma generate` via postinstall; re-run the build |
+| Nothing at all | Wrong startup file | It is `server/dist/index.js`, not `server.js` or `index.js` |
 
-Ad-platform variables (`META_APP_ID`, `TIKTOK_APP_ID`, …) are listed in
-`.env.example`. Setting them does not enable an integration on its own — the
-adapters still need implementing.
+### Pages 404 but `/api/health` works
 
-## Remaining manual configuration
+The front end was not built. The startup log says `front end NOT BUILT`. The
+build command must include `npm run build`, which builds `web/dist` first.
 
-1. **`OPENAI_API_KEY`** to move from the built-in generator to a real model.
-2. **A mail transport** for password reset and notification email.
-3. **Ad-platform credentials and adapter implementations** — the interface,
-   routes and UI are ready; `fetchMetrics` and `publish` are not.
-4. **A payment provider** for subscription billing.
-5. **A backup schedule** for the database and the uploads directory.
+### Assets 404, or "unexpected token '<'" in the browser console
+
+`web/dist/assets` is missing or stale. Rebuild. A missing asset correctly
+returns a 404 rather than `index.html`, which is why the error names the asset.
+
+### API returns HTML instead of JSON
+
+Something is serving `index.html` for `/api/*`. In this app the SPA fallback
+explicitly skips `/api` and `/uploads`; if you put another proxy in front, it
+must do the same.
+
+### Login appears to work but every page bounces back to sign-in
+
+The session cookie is being dropped. Almost always one of:
+
+- **Site is on HTTP while `COOKIE_SECURE` is on.** Enable SSL, or set
+  `COOKIE_SECURE=false` temporarily — the startup log warns when it is off.
+- **`TRUST_PROXY` unset behind the proxy**, so the app thinks the request is
+  insecure. Set `TRUST_PROXY=1`.
+- **`APP_URL` does not match the browsed domain**, so the request is
+  cross-origin. Make them the same.
+
+### 403 "CSRF token missing or invalid"
+
+The `mos_csrf` cookie is not coming back as the `x-csrf-token` header. This
+works out of the box same-origin; it breaks if the API is served from a
+different origin than the page. Keep them same-origin, or set `CORS_ORIGIN` to
+the exact page origin.
+
+### 429 Too Many Requests
+
+Rate limiting is working. Defaults are 300 requests per 15 minutes per IP, and
+tighter on login. If every visitor shares one apparent IP, `TRUST_PROXY` is
+probably wrong. Tune with `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW_MIN` rather
+than removing the limiter.
+
+### AI writes generic copy
+
+No `OPENAI_API_KEY` is set, so the built-in template engine is generating it.
+This is intended and every result is labelled "Built-in engine" in the UI. Add
+the key to switch to a model.
+
+### Migrations
+
+`prisma migrate deploy` applies committed migrations and never destroys data.
+If it reports drift, the database was changed outside Prisma — resolve it
+deliberately; do not run `migrate reset` on production.
 
 ## Internal tooling
 

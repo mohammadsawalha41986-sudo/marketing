@@ -5,7 +5,7 @@
   "private": true,
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.9.0"
   },
   "workspaces": [
     "server",
@@ -13,6 +13,7 @@
   ],
   "scripts": {
     "dev": "concurrently -n api,web -c cyan,magenta \"npm run dev -w server\" \"npm run dev -w web\"",
+    "postinstall": "prisma generate",
     "build": "npm run build -w web && npm run build -w server",
     "start": "node server/dist/index.js",
     "prisma:generate": "prisma generate",
@@ -33,11 +34,11 @@
     "@types/node": "^22.10.2",
     "concurrently": "^9.1.2",
     "eslint": "^9.17.0",
-    "prisma": "^6.2.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   },
   "dependencies": {
-    "@prisma/client": "^6.2.1"
+    "@prisma/client": "^6.2.1",
+    "prisma": "^6.2.1"
   }
 }

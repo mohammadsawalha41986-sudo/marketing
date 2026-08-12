@@ -2,6 +2,7 @@
 
 import { Router } from 'express';
 
+import { prisma } from '../lib/prisma.js';
 import { authRouter } from './auth.js';
 import { clientsRouter } from './clients.js';
 import { brandsRouter } from './brands.js';
@@ -17,8 +18,24 @@ import { integrationsRouter, notificationsRouter, subscriptionsRouter, usersRout
 
 export const apiRouter: Router = Router();
 
+/**
+ * Liveness and readiness in one endpoint, for the host's health check.
+ *
+ * Deliberately unauthenticated and deliberately dull: it reveals whether the
+ * process is up and whether the database answers, and nothing else. No
+ * connection strings, no environment values, no versions of anything an
+ * attacker could use, no stack traces.
+ */
 apiRouter.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'marketing-os', time: new Date().toISOString() });
+  void prisma
+    .$queryRaw`SELECT 1`
+    .then(() => {
+      res.json({ status: 'ok', database: 'ok', uptime: Math.round(process.uptime()) });
+    })
+    .catch(() => {
+      // 503 here is honest: the process lives but cannot serve real requests.
+      res.status(503).json({ status: 'degraded', database: 'unreachable', uptime: Math.round(process.uptime()) });
+    });
 });
 
 apiRouter.use('/auth', authRouter);

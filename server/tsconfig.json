@@ -7,6 +7,9 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
+    // A failed compile must not leave a half-written dist/ behind: the host
+    // would happily start it and fail at runtime instead of at build time.
+    "noEmitOnError": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "esModuleInterop": true,

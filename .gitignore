@@ -1,13 +1,23 @@
 node_modules/
-dist/
-.DS_Store
-*.log
+
+# Build output. Anchored so the patterns cannot match a source directory
+# that happens to share the name.
+/web/dist/
+/server/dist/
+*.tsbuildinfo
+
+# Secrets. `.env.example` is documentation and must stay tracked.
 .env
 .env.*
 !.env.example
-storage/
-web/dist/
-server/dist/
-*.tsbuildinfo
-storage/test-uploads/
-web/.tsbuildinfo
+
+# Uploaded files at runtime.
+#
+# This pattern MUST stay anchored with a leading slash. An unanchored
+# `storage/` also matches `server/src/services/storage/`, which is source
+# code — that mistake kept the storage provider out of the repository and
+# broke the build on a clean clone while working fine locally.
+/storage/
+
+.DS_Store
+*.log

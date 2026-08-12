@@ -23,7 +23,7 @@
     "helmet": "^8.0.0",
     "multer": "^2.2.0",
     "openai": "^4.77.0",
-    "sharp": "^0.33.5",
+    "sharp": "^0.35.3",
     "zod": "^3.24.1"
   },
   "devDependencies": {
@@ -38,5 +38,8 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20.9.0"
   }
 }
