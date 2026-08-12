@@ -1,0 +1,28 @@
+{
+  "company": {
+    "name": "ExampleCo",
+    "product": "ExampleCo Platform",
+    "site": "https://example.com",
+    "category": "Operations automation for mid-market and enterprise teams"
+  },
+  "currency": "USD",
+  "quarter": {
+    "id": "2026-Q3",
+    "start": "2026-07-01",
+    "end": "2026-09-30"
+  },
+  "goals": {
+    "pipelineUsd": 4200000,
+    "mqls": 1800,
+    "sqls": 420,
+    "wins": 62,
+    "budgetUsd": 640000
+  },
+  "team": [
+    { "id": "priya", "name": "Priya", "role": "Content lead" },
+    { "id": "alex", "name": "Alex", "role": "Product marketing" },
+    { "id": "dana", "name": "Dana", "role": "Lifecycle marketing" },
+    { "id": "sam", "name": "Sam", "role": "Customer marketing" },
+    { "id": "noor", "name": "Noor", "role": "Social and brand" }
+  ]
+}

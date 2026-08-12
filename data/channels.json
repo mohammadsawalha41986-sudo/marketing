@@ -1,0 +1,44 @@
+[
+  {
+    "id": "organic-search",
+    "name": "Organic Search",
+    "owner": "priya",
+    "budgetUsd": 60000,
+    "targets": { "mqls": 520, "pipelineUsd": 1150000 }
+  },
+  {
+    "id": "paid-search",
+    "name": "Paid Search",
+    "owner": "alex",
+    "budgetUsd": 180000,
+    "targets": { "mqls": 430, "pipelineUsd": 1000000 }
+  },
+  {
+    "id": "paid-social",
+    "name": "Paid Social",
+    "owner": "noor",
+    "budgetUsd": 120000,
+    "targets": { "mqls": 300, "pipelineUsd": 620000 }
+  },
+  {
+    "id": "lifecycle-email",
+    "name": "Lifecycle Email",
+    "owner": "dana",
+    "budgetUsd": 40000,
+    "targets": { "mqls": 240, "pipelineUsd": 560000 }
+  },
+  {
+    "id": "events",
+    "name": "Events and Field",
+    "owner": "sam",
+    "budgetUsd": 180000,
+    "targets": { "mqls": 180, "pipelineUsd": 620000 }
+  },
+  {
+    "id": "partnerships",
+    "name": "Partnerships",
+    "owner": "sam",
+    "budgetUsd": 60000,
+    "targets": { "mqls": 130, "pipelineUsd": 250000 }
+  }
+]

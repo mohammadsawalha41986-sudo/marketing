@@ -1,0 +1,87 @@
+[
+  {
+    "id": "ops-scaleup",
+    "name": "Scaling operations team",
+    "priority": 1,
+    "firmographics": {
+      "employees": "200-1500",
+      "revenueUsd": "30M-250M",
+      "industries": ["Logistics", "Healthcare services", "Financial services"]
+    },
+    "buyingCommittee": [
+      { "role": "VP Operations", "type": "economic buyer" },
+      { "role": "Director of Business Systems", "type": "champion" },
+      { "role": "IT Security", "type": "blocker" }
+    ],
+    "triggers": [
+      "Headcount growing faster than process maturity",
+      "A failed or stalled internal automation build",
+      "New compliance requirement with an audit deadline"
+    ],
+    "pains": [
+      "Work routed by spreadsheet and Slack thread, with no audit trail",
+      "Every exception becomes a manual escalation",
+      "Leadership cannot see cycle time without asking someone to build a report"
+    ],
+    "disqualifiers": [
+      "Fewer than 50 employees",
+      "No dedicated operations or business systems owner",
+      "Looking for a general-purpose no-code builder"
+    ]
+  },
+  {
+    "id": "enterprise-transform",
+    "name": "Enterprise transformation program",
+    "priority": 2,
+    "firmographics": {
+      "employees": "1500+",
+      "revenueUsd": "250M+",
+      "industries": ["Manufacturing", "Insurance", "Telecom"]
+    },
+    "buyingCommittee": [
+      { "role": "COO or Chief Transformation Officer", "type": "economic buyer" },
+      { "role": "Program Director", "type": "champion" },
+      { "role": "Enterprise Architecture", "type": "technical evaluator" },
+      { "role": "Procurement", "type": "blocker" }
+    ],
+    "triggers": [
+      "A funded multi-year transformation program",
+      "Consolidating after an acquisition",
+      "Legacy suite renewal within two quarters"
+    ],
+    "pains": [
+      "Six overlapping tools inherited from acquisitions",
+      "Change requests to the legacy vendor take two quarters",
+      "No single view of process performance across business units"
+    ],
+    "disqualifiers": [
+      "No executive sponsor identified",
+      "Mandated single-vendor stack with no exception path"
+    ]
+  },
+  {
+    "id": "sysint-partner",
+    "name": "Systems integrator partner",
+    "priority": 3,
+    "firmographics": {
+      "employees": "50-5000",
+      "revenueUsd": "10M+",
+      "industries": ["Consulting", "Managed services"]
+    },
+    "buyingCommittee": [
+      { "role": "Practice Lead", "type": "economic buyer" },
+      { "role": "Solution Architect", "type": "champion" }
+    ],
+    "triggers": [
+      "Building a new automation practice",
+      "Client demand the partner cannot service with current tooling"
+    ],
+    "pains": [
+      "Implementation margin eaten by custom integration work",
+      "No repeatable delivery kit to resell"
+    ],
+    "disqualifiers": [
+      "Exclusive reseller agreement with a direct competitor"
+    ]
+  }
+]

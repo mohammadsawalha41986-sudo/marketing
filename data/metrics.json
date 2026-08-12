@@ -1,0 +1,37 @@
+[
+  { "weekStart": "2026-07-06", "channel": "organic-search", "spendUsd": 4800, "visits": 41200, "mqls": 44, "sqls": 11, "wins": 2, "pipelineUsd": 118000 },
+  { "weekStart": "2026-07-13", "channel": "organic-search", "spendUsd": 5000, "visits": 42800, "mqls": 47, "sqls": 12, "wins": 2, "pipelineUsd": 126000 },
+  { "weekStart": "2026-07-20", "channel": "organic-search", "spendUsd": 5100, "visits": 44100, "mqls": 50, "sqls": 12, "wins": 2, "pipelineUsd": 131000 },
+  { "weekStart": "2026-07-27", "channel": "organic-search", "spendUsd": 5150, "visits": 45300, "mqls": 51, "sqls": 13, "wins": 2, "pipelineUsd": 139000 },
+  { "weekStart": "2026-08-03", "channel": "organic-search", "spendUsd": 5200, "visits": 46000, "mqls": 53, "sqls": 13, "wins": 3, "pipelineUsd": 144000 },
+
+  { "weekStart": "2026-07-06", "channel": "paid-search", "spendUsd": 15200, "visits": 18600, "mqls": 33, "sqls": 8, "wins": 1, "pipelineUsd": 82000 },
+  { "weekStart": "2026-07-13", "channel": "paid-search", "spendUsd": 15600, "visits": 19100, "mqls": 35, "sqls": 8, "wins": 1, "pipelineUsd": 86000 },
+  { "weekStart": "2026-07-20", "channel": "paid-search", "spendUsd": 16000, "visits": 18900, "mqls": 34, "sqls": 8, "wins": 1, "pipelineUsd": 84000 },
+  { "weekStart": "2026-07-27", "channel": "paid-search", "spendUsd": 16200, "visits": 19400, "mqls": 36, "sqls": 9, "wins": 2, "pipelineUsd": 92000 },
+  { "weekStart": "2026-08-03", "channel": "paid-search", "spendUsd": 16400, "visits": 19000, "mqls": 34, "sqls": 8, "wins": 1, "pipelineUsd": 85000 },
+
+  { "weekStart": "2026-07-06", "channel": "paid-social", "spendUsd": 10400, "visits": 24800, "mqls": 22, "sqls": 4, "wins": 0, "pipelineUsd": 41000 },
+  { "weekStart": "2026-07-13", "channel": "paid-social", "spendUsd": 10600, "visits": 24100, "mqls": 21, "sqls": 4, "wins": 1, "pipelineUsd": 44000 },
+  { "weekStart": "2026-07-20", "channel": "paid-social", "spendUsd": 10900, "visits": 23600, "mqls": 20, "sqls": 4, "wins": 0, "pipelineUsd": 39000 },
+  { "weekStart": "2026-07-27", "channel": "paid-social", "spendUsd": 11000, "visits": 23900, "mqls": 21, "sqls": 4, "wins": 0, "pipelineUsd": 42000 },
+  { "weekStart": "2026-08-03", "channel": "paid-social", "spendUsd": 11200, "visits": 23200, "mqls": 20, "sqls": 3, "wins": 1, "pipelineUsd": 38000 },
+
+  { "weekStart": "2026-07-06", "channel": "lifecycle-email", "spendUsd": 3100, "visits": 9800, "mqls": 22, "sqls": 6, "wins": 1, "pipelineUsd": 58000 },
+  { "weekStart": "2026-07-13", "channel": "lifecycle-email", "spendUsd": 3150, "visits": 10100, "mqls": 23, "sqls": 6, "wins": 1, "pipelineUsd": 61000 },
+  { "weekStart": "2026-07-20", "channel": "lifecycle-email", "spendUsd": 3200, "visits": 10400, "mqls": 24, "sqls": 6, "wins": 1, "pipelineUsd": 63000 },
+  { "weekStart": "2026-07-27", "channel": "lifecycle-email", "spendUsd": 3250, "visits": 10600, "mqls": 24, "sqls": 7, "wins": 1, "pipelineUsd": 66000 },
+  { "weekStart": "2026-08-03", "channel": "lifecycle-email", "spendUsd": 3300, "visits": 10900, "mqls": 25, "sqls": 7, "wins": 2, "pipelineUsd": 70000 },
+
+  { "weekStart": "2026-07-06", "channel": "events", "spendUsd": 22000, "visits": 2100, "mqls": 6, "sqls": 2, "wins": 0, "pipelineUsd": 24000 },
+  { "weekStart": "2026-07-13", "channel": "events", "spendUsd": 8000, "visits": 1800, "mqls": 5, "sqls": 2, "wins": 0, "pipelineUsd": 21000 },
+  { "weekStart": "2026-07-20", "channel": "events", "spendUsd": 12000, "visits": 3900, "mqls": 14, "sqls": 5, "wins": 1, "pipelineUsd": 62000 },
+  { "weekStart": "2026-07-27", "channel": "events", "spendUsd": 11000, "visits": 3400, "mqls": 12, "sqls": 4, "wins": 1, "pipelineUsd": 54000 },
+  { "weekStart": "2026-08-03", "channel": "events", "spendUsd": 10000, "visits": 2900, "mqls": 9, "sqls": 3, "wins": 0, "pipelineUsd": 38000 },
+
+  { "weekStart": "2026-07-06", "channel": "partnerships", "spendUsd": 4900, "visits": 5200, "mqls": 11, "sqls": 3, "wins": 0, "pipelineUsd": 32000 },
+  { "weekStart": "2026-07-13", "channel": "partnerships", "spendUsd": 5000, "visits": 5400, "mqls": 12, "sqls": 3, "wins": 1, "pipelineUsd": 36000 },
+  { "weekStart": "2026-07-20", "channel": "partnerships", "spendUsd": 5050, "visits": 5100, "mqls": 11, "sqls": 3, "wins": 0, "pipelineUsd": 33000 },
+  { "weekStart": "2026-07-27", "channel": "partnerships", "spendUsd": 5100, "visits": 5600, "mqls": 12, "sqls": 4, "wins": 1, "pipelineUsd": 40000 },
+  { "weekStart": "2026-08-03", "channel": "partnerships", "spendUsd": 5150, "visits": 5500, "mqls": 12, "sqls": 3, "wins": 1, "pipelineUsd": 37000 }
+]

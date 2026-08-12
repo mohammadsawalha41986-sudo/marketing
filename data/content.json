@@ -1,0 +1,22 @@
+[
+  { "id": "c-001", "title": "The ops leader's guide to workflow debt", "type": "blog", "channel": "organic-search", "campaign": "state-of-ops-report", "owner": "priya", "status": "published", "publishDate": "2026-07-09" },
+  { "id": "c-002", "title": "State of Operations 2026", "type": "whitepaper", "channel": "organic-search", "campaign": "state-of-ops-report", "owner": "priya", "status": "published", "publishDate": "2026-07-15" },
+  { "id": "c-003", "title": "Webinar: what 1,200 ops teams told us", "type": "webinar", "channel": "lifecycle-email", "campaign": "state-of-ops-report", "owner": "dana", "status": "published", "publishDate": "2026-07-23" },
+  { "id": "c-004", "title": "Customer story: Meridian cuts cycle time 38%", "type": "case-study", "channel": "organic-search", "campaign": "always-on-search", "owner": "sam", "status": "published", "publishDate": "2026-07-30" },
+  { "id": "c-005", "title": "Comparison page: ExampleCo vs. legacy suites", "type": "landing-page", "channel": "paid-search", "campaign": "always-on-search", "owner": "alex", "status": "in-review", "publishDate": "2026-08-07" },
+  { "id": "c-006", "title": "August newsletter", "type": "newsletter", "channel": "lifecycle-email", "campaign": null, "owner": "dana", "status": "published", "publishDate": "2026-08-05" },
+  { "id": "c-007", "title": "Platform 3.0 teaser thread", "type": "social", "channel": "paid-social", "campaign": "platform-3-launch", "owner": "noor", "status": "drafting", "publishDate": "2026-08-17" },
+  { "id": "c-008", "title": "Platform 3.0 launch blog", "type": "blog", "channel": "organic-search", "campaign": "platform-3-launch", "owner": "alex", "status": "drafting", "publishDate": "2026-08-24" },
+  { "id": "c-009", "title": "Platform 3.0 launch email to installed base", "type": "email", "channel": "lifecycle-email", "campaign": "platform-3-launch", "owner": "dana", "status": "drafting", "publishDate": "2026-08-24" },
+  { "id": "c-010", "title": "Platform 3.0 launch video", "type": "video", "channel": "paid-social", "campaign": "platform-3-launch", "owner": "noor", "status": "planned", "publishDate": "2026-08-25" },
+  { "id": "c-011", "title": "Press release: Platform 3.0", "type": "press-release", "channel": "organic-search", "campaign": "platform-3-launch", "owner": "priya", "status": "in-review", "publishDate": "2026-08-24" },
+  { "id": "c-012", "title": "Summit 2026 agenda page", "type": "landing-page", "channel": "events", "campaign": "summit-2026", "owner": "sam", "status": "published", "publishDate": "2026-07-20" },
+  { "id": "c-013", "title": "Summit 2026 speaker spotlight series", "type": "social", "channel": "paid-social", "campaign": "summit-2026", "owner": "noor", "status": "drafting", "publishDate": "2026-08-19" },
+  { "id": "c-014", "title": "Summit 2026 final push email", "type": "email", "channel": "lifecycle-email", "campaign": "summit-2026", "owner": "dana", "status": "planned", "publishDate": "2026-09-03" },
+  { "id": "c-015", "title": "Onboarding: first-week activation drip", "type": "email", "channel": "lifecycle-email", "campaign": "onboarding-activation", "owner": "dana", "status": "published", "publishDate": "2026-07-13" },
+  { "id": "c-016", "title": "Partner integration: Helio launch post", "type": "blog", "channel": "partnerships", "campaign": "integration-partners-h2", "owner": "sam", "status": "in-review", "publishDate": "2026-08-10" },
+  { "id": "c-017", "title": "Deep dive: the migration playbook", "type": "whitepaper", "channel": "organic-search", "campaign": "competitive-displacement", "owner": "alex", "status": "planned", "publishDate": "2026-09-14" },
+  { "id": "c-018", "title": "Q3 customer webinar: scaling ops without scaling headcount", "type": "webinar", "channel": "lifecycle-email", "campaign": "abm-enterprise-tier1", "owner": "dana", "status": "planned", "publishDate": "2026-09-10" },
+  { "id": "c-019", "title": "ABM industry landing pages (3)", "type": "landing-page", "channel": "paid-social", "campaign": "abm-enterprise-tier1", "owner": "alex", "status": "drafting", "publishDate": "2026-08-21" },
+  { "id": "c-020", "title": "September newsletter", "type": "newsletter", "channel": "lifecycle-email", "campaign": null, "owner": "dana", "status": "planned", "publishDate": "2026-09-02" }
+]

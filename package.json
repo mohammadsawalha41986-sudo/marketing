@@ -1,0 +1,27 @@
+{
+  "name": "marketing-os",
+  "version": "0.1.0",
+  "description": "A version-controlled operating system for running marketing: strategy, campaigns, content calendar, and measurement.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "mos": "bin/mos.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "validate": "node bin/mos.js validate",
+    "status": "node bin/mos.js status",
+    "build": "node bin/mos.js build",
+    "report": "node bin/mos.js report"
+  },
+  "keywords": [
+    "marketing",
+    "operations",
+    "campaigns",
+    "content-calendar"
+  ],
+  "license": "UNLICENSED"
+}
