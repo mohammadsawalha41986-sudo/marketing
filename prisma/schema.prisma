@@ -1,0 +1,751 @@
+// Marketing OS — data model.
+//
+// Tenancy: `Organization` is the agency tenant. Every tenant-owned row carries
+// `organizationId`. Rows a client can see additionally carry `clientId`, which is
+// what scopes CLIENT_ADMIN / CLIENT_USER access. Both are enforced in the API
+// scope layer (server/src/lib/scope.ts), never from client-supplied ids.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------- enums
+
+enum Role {
+  SUPER_ADMIN
+  AGENCY_ADMIN
+  AGENCY_STAFF
+  CLIENT_ADMIN
+  CLIENT_USER
+}
+
+enum ClientStatus {
+  ACTIVE
+  PAUSED
+  SUSPENDED
+  ARCHIVED
+}
+
+enum Language {
+  AR
+  EN
+}
+
+enum Platform {
+  FACEBOOK
+  INSTAGRAM
+  TIKTOK
+  SNAPCHAT
+  GOOGLE_ADS
+  GOOGLE_BUSINESS
+  X
+  LINKEDIN
+}
+
+enum CampaignObjective {
+  AWARENESS
+  TRAFFIC
+  ENGAGEMENT
+  LEADS
+  SALES
+  APP_INSTALLS
+  VIDEO_VIEWS
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum ContentType {
+  POST
+  STORY
+  REEL
+  VIDEO
+  CAROUSEL
+  AD
+  ARTICLE
+  EMAIL
+}
+
+enum ContentStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+  SCHEDULED
+  PUBLISHED
+  FAILED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+  DOCUMENT
+  LOGO
+}
+
+enum BrandAssetKind {
+  LOGO
+  LOGO_DARK
+  ICON
+  COVER
+  PALETTE
+}
+
+enum IntegrationStatus {
+  DISCONNECTED
+  CONNECTED
+  ERROR
+  EXPIRED
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+}
+
+enum NotificationType {
+  CAMPAIGN_CREATED
+  APPROVAL_REQUESTED
+  CONTENT_APPROVED
+  CONTENT_REJECTED
+  CHANGES_REQUESTED
+  CAMPAIGN_ENDING
+  BUDGET_WARNING
+  PUBLISH_FAILED
+  INTEGRATION_DISCONNECTED
+  REPORT_READY
+  AI_ALERT
+}
+
+enum ReportType {
+  CLIENT
+  CAMPAIGN
+  MONTHLY
+  PLATFORM
+}
+
+enum AiKind {
+  CONTENT
+  HASHTAGS
+  ANALYSIS
+  BRAND
+}
+
+// ---------------------------------------------------------------- tenancy
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  logoUrl   String?
+  locale    Language @default(EN)
+  timezone  String   @default("UTC")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users         User[]
+  clients       Client[]
+  campaigns     Campaign[]
+  contents      Content[]
+  media         Media[]
+  reports       Report[]
+  notifications Notification[]
+  integrations  Integration[]
+  subscriptions Subscription[]
+  auditLogs     AuditLog[]
+  aiUsages      AiUsage[]
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  name           String
+  passwordHash   String
+  role           Role     @default(AGENCY_STAFF)
+  locale         Language @default(EN)
+  themePref      String   @default("dark")
+  avatarUrl      String?
+  isActive       Boolean  @default(true)
+  lastLoginAt    DateTime?
+  organizationId String?
+  // Set for CLIENT_ADMIN / CLIENT_USER: pins the user to a single client.
+  clientId       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization  Organization?  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client        Client?        @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  sessions      Session[]
+  resetTokens   PasswordResetToken[]
+  comments      Comment[]
+  approvals     Approval[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+  createdContents Content[]  @relation("ContentAuthor")
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([role])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------- clients & brand
+
+model Client {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  businessName   String
+  email          String?
+  phone          String?
+  businessType   String?
+  industry       String?
+  website        String?
+  location       String?
+  notes          String?
+  logoUrl        String?
+  status         ClientStatus @default(ACTIVE)
+  socialLinks    Json         @default("{}")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  brand         Brand?
+  users         User[]
+  campaigns     Campaign[]
+  contents      Content[]
+  media         Media[]
+  reports       Report[]
+  notifications Notification[]
+  integrations  Integration[]
+  subscription  Subscription?
+  snapshots     AnalyticsSnapshot[]
+  aiUsages      AiUsage[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@index([status])
+}
+
+/// Brand DNA — the bounded context handed to the AI service on every generation.
+model Brand {
+  id               String   @id @default(cuid())
+  clientId         String   @unique
+  organizationId   String
+  businessName     String
+  businessType     String?
+  industry         String?
+  description      String?
+  targetAudience   String?
+  location         String?
+  personality      String[] @default([])
+  toneOfVoice      String?
+  values           String[] @default([])
+  products         String[] @default([])
+  services         String[] @default([])
+  usps             String[] @default([])
+  offers           String[] @default([])
+  keywords         String[] @default([])
+  forbiddenWords   String[] @default([])
+  ctaStyle         String?
+  preferredLanguage Language @default(EN)
+  // Approved identity. Colors are hex strings; the extractor only ever suggests.
+  primaryColor     String   @default("#6366F1")
+  secondaryColor   String   @default("#8B5CF6")
+  accentColor      String   @default("#22D3EE")
+  backgroundColor  String   @default("#0B0F1A")
+  textColor        String   @default("#E8EBF2")
+  fontFamily       String   @default("Inter")
+  logoUrl          String?
+  logoDarkUrl      String?
+  /// Unapproved palette suggested from the uploaded logo, pending review.
+  suggestedPalette Json?
+  paletteApproved  Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  client Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  assets BrandAsset[]
+
+  @@index([organizationId])
+}
+
+model BrandAsset {
+  id        String         @id @default(cuid())
+  brandId   String
+  kind      BrandAssetKind
+  url       String
+  meta      Json           @default("{}")
+  createdAt DateTime       @default(now())
+
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  @@index([brandId])
+}
+
+// ---------------------------------------------------------------- media
+
+model Media {
+  id             String    @id @default(cuid())
+  organizationId String
+  clientId       String?
+  campaignId     String?
+  type           MediaType
+  filename       String
+  originalName   String
+  mimeType       String
+  sizeBytes      Int
+  width          Int?
+  height         Int?
+  url            String
+  thumbnailUrl   String?
+  category       String?
+  tags           String[]  @default([])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  contentLinks ContentMedia[]
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([campaignId])
+  @@index([type])
+}
+
+// ---------------------------------------------------------------- campaigns
+
+model Campaign {
+  id             String            @id @default(cuid())
+  organizationId String
+  clientId       String
+  name           String
+  objective      CampaignObjective @default(AWARENESS)
+  status         CampaignStatus    @default(DRAFT)
+  budget         Decimal           @db.Decimal(12, 2)
+  spend          Decimal           @default(0) @db.Decimal(12, 2)
+  currency       String            @default("USD")
+  startDate      DateTime
+  endDate        DateTime
+  targetAudience String?
+  locations      String[]          @default([])
+  kpi            String?
+  notes          String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  platforms    CampaignPlatform[]
+  contents     Content[]
+  media        Media[]
+  snapshots    AnalyticsSnapshot[]
+  reports      Report[]
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([status])
+  @@index([startDate, endDate])
+}
+
+model CampaignPlatform {
+  id         String   @id @default(cuid())
+  campaignId String
+  platform   Platform
+  budget     Decimal  @default(0) @db.Decimal(12, 2)
+  externalId String?
+  createdAt  DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, platform])
+  @@index([campaignId])
+}
+
+// ---------------------------------------------------------------- content
+
+model Content {
+  id             String        @id @default(cuid())
+  organizationId String
+  clientId       String
+  campaignId     String?
+  authorId       String?
+  name           String
+  type           ContentType   @default(POST)
+  status         ContentStatus @default(DRAFT)
+  platform       Platform
+  language       Language      @default(EN)
+  tone           String?
+  productService String?
+  offer          String?
+  audience       String?
+  // Generated or hand-written copy. Every field is editable by the user.
+  headline       String?
+  caption        String?
+  primaryText    String?
+  shortText      String?
+  longText       String?
+  slogan         String?
+  cta            String?
+  scheduledAt    DateTime?
+  timezone       String        @default("UTC")
+  publishedAt    DateTime?
+  failureReason  String?
+  aiGenerated    Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  campaign     Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  author       User?          @relation("ContentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  variants     ContentVariant[]
+  hashtags     Hashtag[]
+  mediaLinks   ContentMedia[]
+  approvals    Approval[]
+  comments     Comment[]
+  calendarEvent CalendarEvent?
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([campaignId])
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+model ContentVariant {
+  id        String   @id @default(cuid())
+  contentId String
+  label     String
+  language  Language @default(EN)
+  headline  String?
+  caption   String?
+  body      String?
+  cta       String?
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@index([contentId])
+}
+
+model Hashtag {
+  id        String   @id @default(cuid())
+  contentId String
+  tag       String
+  source    String   @default("ai")
+  createdAt DateTime @default(now())
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([contentId, tag])
+  @@index([contentId])
+}
+
+model ContentMedia {
+  contentId String
+  mediaId   String
+  position  Int     @default(0)
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  media   Media   @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@id([contentId, mediaId])
+  @@index([mediaId])
+}
+
+model CalendarEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  clientId       String
+  contentId      String   @unique
+  title          String
+  platform       Platform
+  startAt        DateTime
+  timezone       String   @default("UTC")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([startAt])
+}
+
+// ---------------------------------------------------------------- approvals
+
+model Approval {
+  id             String         @id @default(cuid())
+  organizationId String
+  clientId       String
+  contentId      String
+  status         ApprovalStatus @default(PENDING)
+  decidedById    String?
+  decidedAt      DateTime?
+  note           String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  content   Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  decidedBy User?   @relation(fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([contentId])
+  @@index([status])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  contentId String
+  authorId  String?
+  body      String
+  createdAt DateTime @default(now())
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  author  User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([contentId])
+}
+
+// ---------------------------------------------------------------- analytics
+
+/// One row per client/campaign/platform/day. All dashboard numbers read from here.
+model AnalyticsSnapshot {
+  id             String   @id @default(cuid())
+  organizationId String
+  clientId       String
+  campaignId     String?
+  platform       Platform
+  date           DateTime @db.Date
+  spend          Decimal  @default(0) @db.Decimal(12, 2)
+  reach          Int      @default(0)
+  impressions    Int      @default(0)
+  clicks         Int      @default(0)
+  conversions    Int      @default(0)
+  revenue        Decimal  @default(0) @db.Decimal(12, 2)
+  engagements    Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  client   Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, platform, date])
+  @@index([organizationId])
+  @@index([clientId, date])
+  @@index([date])
+}
+
+// ---------------------------------------------------------------- reports
+
+model Report {
+  id             String     @id @default(cuid())
+  organizationId String
+  clientId       String
+  campaignId     String?
+  type           ReportType @default(CLIENT)
+  title          String
+  periodStart    DateTime
+  periodEnd      DateTime
+  /// Rendered figures and AI insights, frozen at generation time.
+  payload        Json
+  createdAt      DateTime   @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([type])
+}
+
+// ---------------------------------------------------------------- notifications
+
+model Notification {
+  id             String           @id @default(cuid())
+  organizationId String
+  clientId       String?
+  userId         String?
+  type           NotificationType
+  title          String
+  body           String?
+  link           String?
+  readAt         DateTime?
+  createdAt      DateTime         @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client?      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([userId, readAt])
+  @@index([clientId])
+}
+
+// ---------------------------------------------------------------- integrations
+
+model Integration {
+  id             String            @id @default(cuid())
+  organizationId String
+  clientId       String
+  platform       Platform
+  status         IntegrationStatus @default(DISCONNECTED)
+  accountName    String?
+  accountId      String?
+  scopes         String[]          @default([])
+  lastSyncAt     DateTime?
+  lastError      String?
+  /// Provider credentials. Never returned by the API.
+  credentials    Json?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, platform])
+  @@index([organizationId])
+}
+
+// ---------------------------------------------------------------- billing
+
+model Plan {
+  id             String   @id @default(cuid())
+  key            String   @unique
+  name           String
+  description    String?
+  priceMonthly   Decimal  @db.Decimal(10, 2)
+  priceYearly    Decimal  @db.Decimal(10, 2)
+  currency       String   @default("USD")
+  maxClients     Int
+  maxUsers       Int
+  maxCampaigns   Int
+  maxAiPerMonth  Int
+  maxStorageMb   Int
+  maxIntegrations Int
+  features       String[] @default([])
+  isActive       Boolean  @default(true)
+  sortOrder      Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id             String             @id @default(cuid())
+  organizationId String
+  clientId       String?            @unique
+  planId         String
+  status         SubscriptionStatus @default(TRIALING)
+  startDate      DateTime           @default(now())
+  renewalDate    DateTime
+  cancelledAt    DateTime?
+  /// Set once a payment provider is wired up. Null means no billing has occurred.
+  providerRef    String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client?      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  plan         Plan         @relation(fields: [planId], references: [id])
+
+  @@index([organizationId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------- observability
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String?
+  userId         String?
+  action         String
+  entity         String
+  entityId       String?
+  meta           Json     @default("{}")
+  ip             String?
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([userId])
+  @@index([entity, entityId])
+}
+
+model AiUsage {
+  id             String   @id @default(cuid())
+  organizationId String
+  clientId       String?
+  userId         String?
+  kind           AiKind
+  model          String
+  provider       String   @default("template")
+  promptTokens   Int      @default(0)
+  outputTokens   Int      @default(0)
+  latencyMs      Int      @default(0)
+  success        Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([clientId])
+}

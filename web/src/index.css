@@ -1,0 +1,155 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Two palettes, both defined as raw RGB triples so Tailwind's <alpha-value>
+ * works. A client's approved brand identity overrides --c-brand/--c-accent/
+ * --c-secondary at runtime (see lib/theme.tsx), which re-skins the whole app.
+ */
+@layer base {
+  :root {
+    --c-bg: 250 251 252;
+    --c-surface: 255 255 255;
+    --c-elevated: 246 248 250;
+    --c-line: 226 231 237;
+    --c-fg: 16 24 40;
+    --c-muted: 100 112 130;
+    --c-brand: 79 70 229;
+    --c-brand-soft: 238 238 255;
+    --c-accent: 6 148 162;
+    --c-secondary: 124 58 237;
+    --c-ok: 4 120 87;
+    --c-warn: 161 98 7;
+    --c-danger: 185 28 28;
+    --font-sans: 'Inter', 'Plus Jakarta Sans', ui-sans-serif, system-ui;
+    color-scheme: light;
+  }
+
+  [data-theme='dark'] {
+    --c-bg: 9 11 17;
+    --c-surface: 17 20 29;
+    --c-elevated: 24 28 39;
+    --c-line: 37 43 57;
+    --c-fg: 232 235 242;
+    --c-muted: 148 158 175;
+    --c-brand: 129 140 248;
+    --c-brand-soft: 30 32 62;
+    --c-accent: 45 212 191;
+    --c-secondary: 167 139 250;
+    --c-ok: 52 211 153;
+    --c-warn: 251 191 36;
+    --c-danger: 248 113 113;
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-line;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-bg text-fg font-sans antialiased;
+    margin: 0;
+    /* Nothing may push the page sideways — checked at every breakpoint. */
+    overflow-x: hidden;
+  }
+
+  /* Arabic needs a slightly larger optical size to match Latin at the same px. */
+  [dir='rtl'] body {
+    font-size: 15.5px;
+    line-height: 1.75;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full;
+    background: rgb(var(--c-line));
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--c-muted) / 0.5);
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand ring-offset-2;
+    --tw-ring-offset-color: rgb(var(--c-bg));
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-line bg-surface shadow-card;
+  }
+
+  /* Frosted panel used for the shell chrome and overlays. */
+  .glass {
+    @apply border border-line/80 backdrop-blur-xl;
+    background: linear-gradient(
+      180deg,
+      rgb(var(--c-surface) / 0.85),
+      rgb(var(--c-surface) / 0.7)
+    );
+  }
+
+  .subtle-grid {
+    background-image:
+      linear-gradient(rgb(var(--c-line) / 0.35) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(var(--c-line) / 0.35) 1px, transparent 1px);
+    background-size: 44px 44px;
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+  }
+
+  .brand-gradient-text {
+    background: linear-gradient(120deg, rgb(var(--c-brand)), rgb(var(--c-accent)));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .skeleton {
+    @apply relative overflow-hidden rounded-lg bg-elevated;
+  }
+  .skeleton::after {
+    @apply absolute inset-0 animate-shimmer;
+    content: '';
+    background: linear-gradient(90deg, transparent, rgb(var(--c-line) / 0.6), transparent);
+    transform: translateX(-100%);
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /*
+   * Recharts measures its parent on first paint and can latch onto a width
+   * wider than the container on narrow screens. Clipping here keeps a chart
+   * from being the thing that makes the page scroll sideways.
+   */
+  .recharts-responsive-container {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+  .recharts-wrapper {
+    max-width: 100%;
+  }
+}

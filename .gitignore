@@ -5,3 +5,9 @@ dist/
 .env
 .env.*
 !.env.example
+storage/
+web/dist/
+server/dist/
+*.tsbuildinfo
+storage/test-uploads/
+web/.tsbuildinfo

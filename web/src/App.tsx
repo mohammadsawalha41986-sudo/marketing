@@ -1,0 +1,161 @@
+/** Routing and role-based route guards. */
+
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import type { ReactNode } from 'react';
+
+import { useAuth } from './lib/auth';
+import { AppShell } from './components/layout';
+import { Spinner } from './components/ui';
+
+import { ForgotPasswordPage, LoginPage, RegisterPage } from './routes/auth';
+import { DashboardPage } from './routes/dashboard';
+import { ClientDetailPage, ClientsPage } from './routes/clients';
+import { CampaignDetailPage, CampaignsPage } from './routes/campaigns';
+import { ContentDetailPage, ContentPage, StudioPage } from './routes/content';
+import { BrandPage } from './routes/brand';
+import {
+  ApprovalsPage, CalendarPage, IntegrationsPage, MediaPage, NotificationsPage, SettingsPage,
+} from './routes/workspace';
+import { AnalyticsPage, ReportDetailPage, ReportsPage } from './routes/insights';
+import {
+  AdminAuditPage, AdminClientsPage, AdminDashboardPage, AdminPlansPage, AdminSettingsPage,
+  AdminSubscriptionsPage, AdminUsersPage,
+} from './routes/admin';
+
+function FullPageSpinner() {
+  return (
+    <div className="grid min-h-screen place-items-center bg-bg">
+      <Spinner className="h-7 w-7" />
+    </div>
+  );
+}
+
+/** Requires a session; optionally restricts to agency-side or super-admin roles. */
+function Guard({ children, need }: { children: ReactNode; need?: 'agency' | 'superAdmin' }) {
+  const { user, loading, isAgency, isSuperAdmin, isClientUser } = useAuth();
+  const location = useLocation();
+
+  if (loading) return <FullPageSpinner />;
+  if (!user) return <Navigate to="/login" state={{ from: location.pathname }} replace />;
+
+  // A portal user landing on an agency route is sent to their own dashboard
+  // rather than shown an error — the route simply is not theirs.
+  if (need === 'agency' && !isAgency) return <Navigate to="/client/dashboard" replace />;
+  if (need === 'superAdmin' && !isSuperAdmin) return <Navigate to={isClientUser ? '/client/dashboard' : '/app/dashboard'} replace />;
+
+  return <>{children}</>;
+}
+
+function ClientGuard({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) return <FullPageSpinner />;
+  if (!user) return <Navigate to="/login" state={{ from: location.pathname }} replace />;
+  return <>{children}</>;
+}
+
+/** Sends a signed-in user to the surface that matches their role. */
+function RoleHome() {
+  const { user, loading, isClientUser } = useAuth();
+  if (loading) return <FullPageSpinner />;
+  if (!user) return <Navigate to="/login" replace />;
+  return <Navigate to={isClientUser ? '/client/dashboard' : '/app/dashboard'} replace />;
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<RegisterPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+
+      <Route path="/" element={<RoleHome />} />
+
+      {/* Agency workspace */}
+      <Route
+        path="/app/*"
+        element={
+          <Guard need="agency">
+            <AppShell variant="agency">
+              <Routes>
+                <Route index element={<Navigate to="dashboard" replace />} />
+                <Route path="dashboard" element={<DashboardPage />} />
+                <Route path="clients" element={<ClientsPage />} />
+                <Route path="clients/:id" element={<ClientDetailPage />} />
+                <Route path="brand" element={<BrandPage />} />
+                <Route path="media" element={<MediaPage />} />
+                <Route path="content" element={<ContentPage />} />
+                <Route path="content/:id" element={<ContentDetailPage />} />
+                <Route path="studio" element={<StudioPage />} />
+                <Route path="campaigns" element={<CampaignsPage />} />
+                <Route path="campaigns/:id" element={<CampaignDetailPage />} />
+                <Route path="calendar" element={<CalendarPage />} />
+                <Route path="analytics" element={<AnalyticsPage />} />
+                <Route path="reports" element={<ReportsPage />} />
+                <Route path="reports/:id" element={<ReportDetailPage />} />
+                <Route path="approvals" element={<ApprovalsPage />} />
+                <Route path="notifications" element={<NotificationsPage />} />
+                <Route path="integrations" element={<IntegrationsPage />} />
+                <Route path="settings" element={<SettingsPage />} />
+                <Route path="*" element={<Navigate to="dashboard" replace />} />
+              </Routes>
+            </AppShell>
+          </Guard>
+        }
+      />
+
+      {/* Client portal */}
+      <Route
+        path="/client/*"
+        element={
+          <ClientGuard>
+            <AppShell variant="client">
+              <Routes>
+                <Route index element={<Navigate to="dashboard" replace />} />
+                <Route path="dashboard" element={<DashboardPage portal />} />
+                <Route path="campaigns" element={<CampaignsPage portal />} />
+                <Route path="campaigns/:id" element={<CampaignDetailPage portal />} />
+                <Route path="content" element={<ContentPage portal />} />
+                <Route path="content/:id" element={<ContentDetailPage portal />} />
+                <Route path="approvals" element={<ApprovalsPage portal />} />
+                <Route path="calendar" element={<CalendarPage portal />} />
+                <Route path="analytics" element={<AnalyticsPage portal />} />
+                <Route path="reports" element={<ReportsPage portal />} />
+                <Route path="reports/:id" element={<ReportDetailPage />} />
+                <Route path="brand" element={<BrandPage portal />} />
+                <Route path="notifications" element={<NotificationsPage />} />
+                <Route path="*" element={<Navigate to="dashboard" replace />} />
+              </Routes>
+            </AppShell>
+          </ClientGuard>
+        }
+      />
+
+      {/* Super admin */}
+      <Route
+        path="/admin/*"
+        element={
+          <Guard need="superAdmin">
+            <AppShell variant="admin">
+              <Routes>
+                <Route index element={<Navigate to="dashboard" replace />} />
+                <Route path="dashboard" element={<AdminDashboardPage />} />
+                <Route path="clients" element={<AdminClientsPage />} />
+                <Route path="users" element={<AdminUsersPage />} />
+                <Route path="plans" element={<AdminPlansPage />} />
+                <Route path="subscriptions" element={<AdminSubscriptionsPage />} />
+                <Route path="reports" element={<ReportsPage />} />
+                <Route path="audit" element={<AdminAuditPage />} />
+                <Route path="settings" element={<AdminSettingsPage />} />
+                <Route path="*" element={<Navigate to="dashboard" replace />} />
+              </Routes>
+            </AppShell>
+          </Guard>
+        }
+      />
+
+      <Route path="*" element={<RoleHome />} />
+    </Routes>
+  );
+}

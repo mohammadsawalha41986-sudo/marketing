@@ -1,174 +1,355 @@
 # Marketing OS
 
-A marketing team's operating system, kept in git.
-
-Strategy lives in markdown so it can be reviewed and argued with. Campaigns,
-content and weekly numbers live in JSON so they can be validated and counted. A
-small CLI turns the two into the weekly review and a dashboard.
-
-The goal is that "what are we doing, why, and is it working" has one answer, and
-that answer has a commit history.
+An AI-powered, multi-tenant marketing management platform. One agency workspace,
+many clients, each with its own Brand DNA, campaigns, content, approvals,
+analytics and a branded client portal.
 
 ```
-$ mos status
-
-ExampleCo — 2026-Q3  data through 2026-08-09 · day 40/92 (43%)
-
-Goals
-─────
-Goal      Actual  Expected  Target  vs plan  Status
---------  ------  --------  ------  -------  --------
-Pipeline  $1.99M    $1.83M  $4.20M      +9%  Ahead
-MQLs         743       783   1,800      -5%  At risk
-SQLs         185       183     420      +1%  On track
-Wins          30        27      62     +11%  Ahead
+CLIENT → BRAND DNA → MEDIA → AI CONTENT → CAMPAIGN → APPROVAL
+      → SCHEDULING → PUBLISHING → MONITORING → ANALYTICS → AI ANALYSIS → REPORT
 ```
+
+## Stack
+
+| Layer | Choice |
+| --- | --- |
+| Frontend | React 18, Vite 6, TypeScript, Tailwind CSS, React Router, Recharts, Framer Motion |
+| Backend | Node 20+, Express 4, TypeScript (ESM) |
+| Database | PostgreSQL 16 via Prisma 6 |
+| Validation | Zod, on every request body, query and path parameter |
+| Auth | Opaque session tokens in HTTP-only cookies, Argon2id password hashing |
+| AI | OpenAI through a backend service, with a built-in generator as fallback |
+| Storage | Provider interface with a local-disk driver |
+
+No Docker required. In production a **single Node process** serves both the API
+and the built SPA, which is what makes this deployable to a Hostinger Node.js
+app without a reverse proxy in front of two services.
 
 ## Quick start
 
-Node 20 or later. No dependencies to install — everything uses the standard
-library.
+```bash
+npm install
+cp .env.example .env          # then fill in DATABASE_URL and SESSION_SECRET
+npx prisma migrate deploy
+npm run db:seed               # optional: demo agency with four clients
+npm run build
+npm start                     # http://localhost:3000
+```
+
+For development with hot reload on both sides:
 
 ```bash
-node bin/mos.js status      # quarter snapshot
-node bin/mos.js validate    # check data/ holds together
-node bin/mos.js calendar    # content calendar by week
-node bin/mos.js report      # write reports/weekly-YYYY-MM-DD.md
-node bin/mos.js build       # write dist/dashboard.html
-npm test                    # 67 tests, no network
+npm run dev                   # API on :3000, Vite on :5173
 ```
 
-Open `dist/dashboard.html` in a browser. It is one self-contained file — no
-server, no build step, no network requests — so it can be attached to an email or
-dropped in a shared drive and it still works.
+### Demo accounts
 
-For a shorter command, `npm link` puts `mos` on your path.
+`npm run db:seed` creates one agency ("Northwind Collective") with four clients
+across different verticals — a restaurant, a hotel, a retail store and a
+D2C e-commerce brand — with 90 days of analytics. Password for all:
+`Passw0rd!demo`
 
-## What is in here
+| Role | Email |
+| --- | --- |
+| Super Admin | `root@marketingos.example.com` |
+| Agency Admin | `admin@northwind.example.com` |
+| Agency Staff | `staff@northwind.example.com` |
+| Client Admin | `owner@zaytoun.example.com` |
+| Client User | `team@zaytoun.example.com` |
+
+Other client portals: `owner@cedar-shore.example.com`,
+`owner@atlas-outfitters.example.com`, `owner@lumen-skincare.example.com`.
+
+## What is real, and what is not
+
+Stated plainly, because "looks finished" and "is finished" are different things.
+
+### Fully working against the database
+
+Authentication and sessions · role-based access · tenant isolation · client CRUD
+· Brand DNA · logo upload with colour extraction · palette approval · media
+library · campaign CRUD · content CRUD · AI content generation · hashtag
+generation · Arabic and English · content calendar with rescheduling · approval
+workflow · notifications · analytics · report generation and export · client
+portal · subscription plans and usage limits · Super Admin · audit log.
+
+### Deliberately not pretending
+
+- **Ad-platform integrations are architecture only.** Meta, TikTok, Snapchat,
+  Google Ads, Google Business, LinkedIn and X each have an adapter behind a
+  shared interface, with real routes, credential storage, connection status and
+  UI. Every adapter currently returns **HTTP 501** naming the environment
+  variables it needs. Nothing reports a connection that does not exist, and no
+  metric is ever invented from a platform we are not connected to.
+- **Publishing is not wired up.** Scheduling writes a calendar entry and sets
+  status; it does not post to any network.
+- **No payment provider.** Plans, subscriptions and limits are enforced by the
+  application, but nothing has been charged and no card details are stored. The
+  `Subscription` model carries a `providerRef` field for a provider to populate.
+- **Analytics data is seeded, not fetched.** `AnalyticsSnapshot` rows come from
+  the seed script. Every number in the UI is computed from those rows — none is
+  hard-coded — but they describe a fictional company until a real integration
+  fills the table.
+- **Password reset issues a token but sends no email.** Outside production the
+  token is returned in the response so the flow is testable; in production it is
+  created and logged for the operator. Wire up a mail transport before relying on it.
+- **AI falls back when no key is set.** Without `OPENAI_API_KEY` the built-in
+  template engine writes the copy, and the UI labels it "Built-in engine" on
+  every result. Set the key and the same endpoints call the model instead.
+
+## Architecture
 
 ```
-docs/          Strategy. Written for humans, reviewed like code.
-data/          The facts. Validated JSON, one file per collection.
-templates/     Briefs and checklists, scaffolded by `mos new`.
-briefs/        Filled-in briefs, one file per campaign or launch.
-src/           The CLI, the report generator, the dashboard generator.
-test/          Tests for all of it, including the committed data.
-reports/       Generated weekly reports, kept as history.
-dist/          Generated dashboard. Not committed.
+prisma/schema.prisma     25 models, the tenancy boundary is Organization → Client
+server/src/
+  env.ts                 Zod-validated config; refuses to boot on a bad one
+  app.ts                 Express assembly (helmet, CORS, CSRF, rate limits, SPA)
+  lib/scope.ts           ← the single place tenant access is decided
+  middleware/            auth, validation, uploads, error handling
+  services/
+    ai/                  bounded context → provider → schema validation
+    analytics.ts         every figure in the product is computed here
+    palette.ts           logo colour extraction, WCAG contrast
+    storage/             provider interface + local disk driver
+    integrations/        one adapter per ad platform
+  routes/                one router per resource
+web/src/
+  lib/                   api client, auth, theme, i18n, formatting
+  components/            design system, charts, domain components, app shell
+  routes/                pages for the agency, client portal and admin
 ```
 
-[`briefs/campaigns/platform-3-launch.md`](briefs/campaigns/platform-3-launch.md)
-is a worked example of a filled-in brief, including the part most briefs skip:
-the number and the date at which the campaign gets called off.
+### Tenant isolation
 
-### Docs
+`Organization` is the tenant. Every tenant-owned row carries `organizationId`;
+rows a client may see also carry `clientId`.
 
-| Document | What it settles |
+`server/src/lib/scope.ts` derives the access scope **only from the authenticated
+session** — never from a body field, query parameter or header. A client user is
+pinned to their own `clientId`, so naming another client's id returns 404 rather
+than 403: the API does not confirm that the other record exists.
+
+`SUPER_ADMIN` is scoped like an agency admin on the normal API. Cross-tenant
+reach is granted only by `crossTenant()`, which only `/api/admin/*` calls.
+
+### AI architecture
+
+```
+request → brand context assembled by the caller → AI service → provider
+        → zod schema validation → forbidden-word scrub → result → user edits → save
+```
+
+The AI service has no database access and no Prisma client. It receives a plain
+`BrandContext` object and returns validated structure. It cannot write records:
+generation is a pure read, and the user saves the result through the normal
+content endpoints after editing it.
+
+For campaign analysis the model receives only figures already computed from
+`AnalyticsSnapshot` rows, and the system prompt forbids stating any number not
+present in that object. The fallback analyst is rule-based and quotes only the
+figures it was handed. Output is labelled as recommendations everywhere it appears.
+
+## API
+
+| Prefix | Purpose |
 | --- | --- |
-| [Positioning](docs/01-positioning.md) | Who we are for and what we are against |
-| [ICP and personas](docs/02-icp-and-personas.md) | Who we sell to, and who we do not |
-| [Messaging framework](docs/03-messaging-framework.md) | Every claim, with its proof |
-| [Brand voice](docs/04-brand-voice.md) | How it sounds, with examples |
-| [Channel playbooks](docs/05-channel-playbooks.md) | How each channel runs, and when it loses its budget |
-| [Operating cadence](docs/06-operating-cadence.md) | The meetings, and the ones we refuse to have |
-| [Measurement](docs/07-measurement.md) | What each number means and what it may not be used for |
+| `/api/auth` | register, login, logout, me, change password, forgot/reset |
+| `/api/users` | agency user management |
+| `/api/clients` | client CRUD and per-client overview |
+| `/api/brands` | Brand DNA, logo upload, palette suggest/approve |
+| `/api/media` | upload, browse, retag, delete, storage usage |
+| `/api/campaigns` | campaign CRUD, platform mix, per-campaign analytics |
+| `/api/content` | content CRUD, AI generation, hashtags, submit, schedule |
+| `/api/calendar` | month/week/day views, drag-to-reschedule |
+| `/api/approvals` | review queue, decisions, comments |
+| `/api/analytics` | dashboard, series, AI marketing analyst |
+| `/api/reports` | generate, read, export as HTML or Markdown |
+| `/api/notifications` | list, mark read |
+| `/api/integrations` | adapter catalogue, connect, disconnect, sync |
+| `/api/subscriptions` | plans, subscriptions, usage against limits |
+| `/api/admin` | Super Admin only, the only cross-tenant surface |
 
-### Data
+## Routes
 
-| File | Holds |
-| --- | --- |
-| `config.json` | Company, quarter window, goals, team |
-| `icp.json` | Segments, buying committees, disqualifiers |
-| `channels.json` | Channels with budgets and targets |
-| `campaigns.json` | Campaigns with windows, budgets and targets |
-| `content.json` | The content calendar |
-| `metrics.json` | Weekly actuals, one row per channel per week |
+**Agency** `/app/dashboard` `/app/clients` `/app/clients/:id` `/app/brand`
+`/app/media` `/app/content` `/app/content/:id` `/app/studio` `/app/campaigns`
+`/app/campaigns/:id` `/app/calendar` `/app/analytics` `/app/reports`
+`/app/reports/:id` `/app/approvals` `/app/notifications` `/app/integrations`
+`/app/settings`
 
-Everything references everything else by id, and `mos validate` proves the
-references resolve. A campaign pointing at a channel that no longer exists is an
-error, not a silently empty chart.
+**Client portal** `/client/dashboard` `/client/campaigns` `/client/content`
+`/client/approvals` `/client/calendar` `/client/analytics` `/client/reports`
+`/client/brand`
 
-## The weekly loop
+**Super Admin** `/admin/dashboard` `/admin/clients` `/admin/users`
+`/admin/plans` `/admin/subscriptions` `/admin/reports` `/admin/audit`
+`/admin/settings`
 
-1. **Friday** — channel owners add their week to `data/metrics.json`, run
-   `mos validate`, commit. The week is not closed until validation is clean.
-2. **Monday** — run `mos report`. The generated markdown is the agenda for the
-   review; nobody makes slides.
-3. **Decide** — the report's "what needs a decision" section is generated from
-   the pacing, not written by hand, so an uncomfortable number cannot be quietly
-   left off the agenda.
+**Public** `/login` `/register` `/forgot-password`
 
-Full detail in the [operating cadence](docs/06-operating-cadence.md).
+## Security
 
-## Commands
+- Argon2id password hashing at OWASP-recommended parameters.
+- Opaque 256-bit session tokens; only their SHA-256 hash is stored, so a database
+  leak does not hand over live sessions.
+- HTTP-only, SameSite=Lax cookies; `Secure` in production.
+- Double-submit CSRF on every authenticated mutation.
+- Rate limiting globally and tighter on credential endpoints.
+- Zod validation on every input; tenant ids never taken from the client.
+- Upload validation by MIME **and** magic number. SVG is rejected outright — it
+  is an executable document and would be stored XSS.
+- Uploads served with `nosniff` and a restrictive CSP.
+- Helmet security headers, with a full CSP in production.
+- Integration credentials are never included in any API projection.
+- Deactivating a user or suspending a client deletes their sessions immediately.
+- No secrets in the repository; `.env` is git-ignored and `.env.example` documents
+  every variable.
 
-| Command | Does |
-| --- | --- |
-| `mos status` | Quarter pacing, channel scorecard, efficiency, what is late |
-| `mos validate` | Schema, references, and sanity checks over `data/` |
-| `mos calendar [--weeks n] [--owner id]` | Content by week, with late items and quiet weeks |
-| `mos campaigns` | All campaigns |
-| `mos campaign <id>` | One campaign and its content |
-| `mos report` | Weekly markdown report |
-| `mos build` | Self-contained HTML dashboard |
-| `mos new campaign\|content\|launch <id>` | Scaffold a brief from `templates/` |
+## Internationalization
 
-Useful flags: `--as-of YYYY-MM-DD` to reproduce any past week, `--json` for
-machine-readable output, `--stdout` to skip writing a file, `--out <path>` to
-choose one.
+Arabic and English, with full RTL. The language switcher flips `dir` on `<html>`
+immediately — no reload — and the choice is persisted. Layout uses logical
+properties (`ms-`, `me-`, `start-`, `end-`) so it mirrors correctly. Numeric spans
+are marked `dir="ltr"` so signs and currency symbols stay on the correct side.
+
+Content is generated independently in either language: the AI writes native
+Arabic marketing copy, not a translation of the English.
+
+**Known gap:** notification and alert text generated server-side is English only.
+
+## Theming
+
+Dark, light and system, defaulting to premium dark. All colour is CSS custom
+properties, so an approved client palette re-skins the entire application at
+runtime — a client signing into their portal sees it in their own brand colours.
+
+## Testing
 
 ```bash
-mos status --as-of 2026-07-19          # what we knew three weeks ago
-mos calendar --weeks 8 --owner dana
-mos new campaign holiday-push --title "Holiday Push" --owner noor
+npm run typecheck    # server + web
+npm test             # 86 server tests against a real PostgreSQL database
+npm run build        # production build of both
+npm run verify       # all three
 ```
 
-## Making it yours
+The tests run against real PostgreSQL, not a mock — a mocked Prisma client would
+prove nothing about whether the queries are actually scoped. Coverage includes
+authentication and sessions, CSRF, password reset single-use, role authorization,
+**tenant isolation** (including cross-tenant access attempts by id), client and
+campaign CRUD, the approval workflow, scheduling rules, calendar rescheduling,
+report generation and export, analytics maths at the boundaries, AI generation
+including forbidden-word scrubbing and Arabic output, upload validation
+including a file that lies about its MIME type, and the integration adapters'
+refusal to fake a connection.
 
-The committed data describes **ExampleCo**, a fictional B2B software company. It
-is there so every command produces real output on a fresh clone. To adopt this:
+Set `TEST_DATABASE_URL` to point the suite at a different database; it defaults
+to `marketing_os_test`.
 
-1. Edit `data/config.json` — company, quarter, goals, team.
-2. Replace `data/channels.json` with your channels and budgets. Keep the totals
-   equal to `config.goals`; `mos validate` warns when they drift apart.
-3. Empty `data/campaigns.json`, `data/content.json` and `data/metrics.json`, then
-   add your own. `mos new` scaffolds the briefs.
-4. Work through `docs/` in order. Positioning first — everything downstream
-   depends on it, and a messaging framework built on unsettled positioning has to
-   be rewritten anyway.
-5. Delete `test/data.test.js` assertions that are specific to the sample company,
-   or better, rewrite them as the invariants you want held about your data.
+## Deploying to Hostinger
 
-The docs are opinionated on purpose. Disagreeing with them in a pull request is a
-better use of a quarter than starting from a blank page.
+Hostinger's **Node.js App** hosting plus a **PostgreSQL** database.
 
-## Design notes
+**1. Create the database** in hPanel → Databases → PostgreSQL. Note the host,
+port, database name, user and password.
 
-**Why files instead of a tool.** Marketing strategy usually lives in a slide deck
-that nobody opens after the quarter starts. Kept in git it gets reviewed, diffed,
-and blamed — you can see when a claim entered the messaging framework and who
-approved it.
+**2. Create the Node.js app** in hPanel → Advanced → Node.js:
 
-**Why the pacing maths is naive.** `expected = target × elapsed` is wrong for
-lumpy channels, and the [measurement doc](docs/07-measurement.md) says so plainly
-rather than hiding it behind a smoothed curve. A number you understand the flaws
-of beats a number you trust blindly.
+| Setting | Value |
+| --- | --- |
+| Node version | 20 or newer |
+| Application root | your deploy directory |
+| Application startup file | `server/dist/index.js` |
+| Application mode | production |
 
-**Why no dependencies.** This has to run in three years without a lockfile
-archaeology session. Everything is standard-library Node and inline SVG.
+**3. Upload the code** (Git deploy or File Manager). Do not upload `.env`,
+`node_modules`, `web/dist` or `server/dist` — they are built on the server.
 
-**Why the dashboard is one file.** Distribution. A single HTML file with no
-script tags and no external requests can be opened from anywhere by anyone,
-including whoever inherits this repo.
+**4. Set environment variables** in the Node.js app panel, from `.env.example`.
+At minimum:
 
-## Tests
+```
+NODE_ENV=production
+PORT=3000
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME?schema=public
+SESSION_SECRET=<48+ random characters>
+APP_URL=https://your-domain.com
+CORS_ORIGIN=https://your-domain.com
+COOKIE_SECURE=true
+TRUST_PROXY=1
+STORAGE_LOCAL_DIR=./storage/uploads
+```
+
+Generate the secret with:
 
 ```bash
-npm test
+node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 ```
 
-The suite covers date arithmetic across DST and leap years, funnel and pacing
-maths at the boundaries, calendar views, every validation rule, the CLI end to
-end, and the committed dataset itself — including that the report and the
-dashboard never render `NaN` and that the dashboard requests nothing from the
-network.
+**5. Install, migrate and build** from the panel's terminal:
+
+```bash
+npm ci --omit=dev=false
+npx prisma migrate deploy
+npm run build
+```
+
+**6. Optionally seed demo data** — skip this for a real deployment:
+
+```bash
+npm run db:seed
+```
+
+**7. Start the app.** Restart it from the panel; `npm start` runs
+`node server/dist/index.js`, which serves the API and the built SPA on `PORT`.
+
+### Notes for production
+
+- `STORAGE_LOCAL_DIR` must be on persistent storage and **outside the web root**.
+  It is served through the app, not directly by the web server.
+- Set `COOKIE_SECURE=true` — sessions will not work correctly over HTTPS without it.
+- `TRUST_PROXY=1` is required for correct client IPs behind Hostinger's proxy,
+  which rate limiting and the audit log depend on.
+- Run `npx prisma migrate deploy` — never `migrate dev` — on a live database.
+- Back up before every deployment that includes a migration.
+
+## Environment variables
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `NODE_ENV` | yes | `production` in production |
+| `PORT` | no | Listen port, default 3000 |
+| `DATABASE_URL` | yes | PostgreSQL connection string |
+| `SESSION_SECRET` | yes | 32+ characters |
+| `SESSION_TTL_HOURS` | no | Session lifetime, default 168 |
+| `APP_URL` | no | Public URL |
+| `CORS_ORIGIN` | no | Comma-separated allowed origins |
+| `COOKIE_SECURE` | no | `true` when serving over HTTPS |
+| `TRUST_PROXY` | no | Proxy hops in front of the app, default 1 |
+| `OPENAI_API_KEY` | no | Enables the language model; falls back without it |
+| `OPENAI_MODEL` | no | Default `gpt-4o-mini` |
+| `STORAGE_DRIVER` | no | `local` |
+| `STORAGE_LOCAL_DIR` | no | Upload directory |
+| `MAX_UPLOAD_MB` | no | Per-file limit, default 25 |
+| `RATE_LIMIT_WINDOW_MIN` | no | Default 15 |
+| `RATE_LIMIT_MAX` | no | Requests per window, default 300 |
+
+Ad-platform variables (`META_APP_ID`, `TIKTOK_APP_ID`, …) are listed in
+`.env.example`. Setting them does not enable an integration on its own — the
+adapters still need implementing.
+
+## Remaining manual configuration
+
+1. **`OPENAI_API_KEY`** to move from the built-in generator to a real model.
+2. **A mail transport** for password reset and notification email.
+3. **Ad-platform credentials and adapter implementations** — the interface,
+   routes and UI are ready; `fetchMetrics` and `publish` are not.
+4. **A payment provider** for subscription billing.
+5. **A backup schedule** for the database and the uploads directory.
+
+## Internal tooling
+
+`tools/cli/` holds an earlier document-based planning CLI (`mos`) — quarterly
+pacing, channel scorecards, a content-brief scaffolder. It is **not** part of the
+product and nothing in the web application depends on it. Its own tests still
+run with `node --test "tools/cli/test/*.test.js"`. The strategy documents that
+came with it live in `docs/product/`.
