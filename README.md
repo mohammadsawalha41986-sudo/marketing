@@ -283,6 +283,12 @@ starts but never receives traffic.
 build command must be plain `npm install` — not `npm ci --omit=dev` or
 `npm install --production`. If you prefer `npm ci`, use `npm ci && npm run build`.
 
+**Node 22, not 20.** Both work — `engines` allows anything from 20.9.0 up, and
+nothing in the code needs 22. Choose 22 because it is the version the build and
+the full test suite are actually run against here, and because Node 20 leaves
+maintenance support in 2026; picking it now only schedules another migration.
+Pick 20 only if the hosting plan does not offer 22.
+
 ### 1. Prepare the database
 
 hPanel → Databases → PostgreSQL. Create a database and note host, port, name,
@@ -352,7 +358,7 @@ you that it is off.
 ### 7. Verify
 
 ```
-https://your-domain.com/api/health   →  {"status":"ok","database":"ok","uptime":N}
+https://your-domain.com/api/health   →  {"status":"ok","database":"ok","engine":"ok","uptime":N}
 https://your-domain.com/login        →  the sign-in page
 ```
 
@@ -360,16 +366,46 @@ Then check the runtime log. A healthy boot prints:
 
 ```
 [marketing-os] started
-  environment   production
-  node          v22.x.x
-  listening     0.0.0.0:<port>
-  database      connected
-  front end     served from web/dist
+  environment    production
+  node           v22.x.x
+  listening      0.0.0.0:<port>
+  front end      served from web/dist
   secure cookies on
+  database       checking in the background…
+[marketing-os] database connected
 ```
+
+The last line arrives a moment after the rest, and that ordering is deliberate:
+the server binds its port first and checks the database afterwards. See
+[Startup order](#startup-order-and-the-3-second-rule) for why.
 
 If any of those lines is missing or says something else, the troubleshooting
 table below names the cause.
+
+### Startup order, and the 3-second rule
+
+Hostinger kills a Node process that has not called `listen()` within about three
+seconds of starting. That makes any `await` in front of `listen()` a deployment
+hazard, and a database ping the worst kind: an unreachable database stops being
+a degraded feature and becomes an unrecoverable boot loop, which the browser
+only ever shows as a 504.
+
+So the entry point does exactly three things, in this order:
+
+1. validate configuration — synchronous, no network
+2. `app.listen()` — nothing is allowed to run before this
+3. everything else, in the background
+
+The database is probed from inside the `listen` callback. If it is unreachable
+the app still starts and still serves pages; `/api/health` reports
+`{"status":"degraded"}` with HTTP 503, the runtime log prints the full
+diagnostic, and a background watcher re-checks every 60 seconds so the app
+recovers on its own once the database comes back. Nothing is hidden — routes
+that need the database still fail loudly and individually.
+
+There is deliberately no `if (require.main === module)` guard around `listen()`:
+the server starts as soon as `server/dist/index.js` is loaded, however the host
+chooses to load it.
 
 ### Notes for production
 
@@ -401,6 +437,57 @@ Supabase specifically:
 
 No Supabase SDK is involved — it is simply the PostgreSQL provider.
 
+### The Prisma query engine on Hostinger
+
+Prisma ships a native query engine, and it must match the OpenSSL version of the
+machine that *runs* the app — not the one that built it. Hostinger's Node
+runtime reports:
+
+```
+Distro is "undefined" ... Found libssl.so file using "ldconfig": libssl.so.1.1
+The parsed libssl version is: 1.1.x
+```
+
+so at runtime it loads `libquery_engine-debian-openssl-1.1.x.so.node`. Left at
+the default (`native`), `prisma generate` emits only the engine for the build
+machine — commonly openssl **3.0.x** on a current image — and the 1.1.x file is
+simply absent. The client then fails to start, which surfaces as
+`PrismaClientRustPanicError` / `PANIC: timer has gone away`, because the panic
+happens while the engine library is being started rather than while connecting.
+
+`prisma/schema.prisma` therefore requests both explicitly:
+
+```prisma
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-1.1.x"]
+}
+```
+
+Both are emitted by the `postinstall` hook, so a normal `npm install` on the
+host produces the right engine with no extra step. Verify after a build:
+
+```
+ls node_modules/.prisma/client/ | grep libquery_engine
+# libquery_engine-debian-openssl-1.1.x.so.node
+# libquery_engine-debian-openssl-3.0.x.so.node   ← or whatever `native` resolved to
+```
+
+**If the panic persists**, the library engine cannot be loaded into the Node
+process in that sandbox at all. Switch to the binary engine, which runs as a
+separate child process instead of a shared library:
+
+1. Add `PRISMA_CLIENT_ENGINE_TYPE=binary` to the Environment variables panel.
+2. Redeploy, so that `npm install` — and therefore `prisma generate` — runs
+   **with the variable already set**.
+
+The order matters. The engine type is baked into the generated client at
+generate time; setting the variable only at runtime is silently ignored and
+changes nothing. Locally the same switch is `npm run prisma:generate:binary`.
+
+A Rust panic also poisons the client instance, so the process has to be
+restarted to recover — the app will not heal from one on its own.
+
 ## Troubleshooting
 
 ### 503 Service Unavailable
@@ -411,12 +498,32 @@ The process is not running. A build that succeeded says nothing about this —
 | Log says | Cause | Fix |
 | --- | --- | --- |
 | `FAILED TO START — invalid environment configuration` | `DATABASE_URL` or `SESSION_SECRET` is not set | Add it in the Environment variables panel and restart |
-| `FAILED TO START — cannot reach the database` | Wrong credentials, wrong host, firewall, or missing SSL | Check the connection string; add `?sslmode=require` for a hosted provider |
 | `FAILED TO START — port already in use` | `PORT` was set manually | Remove it and let Hostinger inject it |
+| `App did not call listen() within 3 seconds` | Something is blocking startup before the port is bound | Nothing in this app awaits before `listen()` — see [Startup order](#startup-order-and-the-3-second-rule). If you added a check to `server/src/index.ts`, move it into the `listen` callback |
 | `FAILED TO START — upload directory is not writable` | `STORAGE_LOCAL_DIR` points somewhere read-only | Point it at a writable persistent path |
 | `Cannot find module '/…/server/dist/index.js'` | The build did not run | Build command must be `npm install && npm run build` |
 | `@prisma/client did not initialize yet` | Prisma Client was not generated | `npm install` runs `prisma generate` via postinstall; re-run the build |
+| `PANIC: timer has gone away`, `PrismaClientRustPanicError` | The Prisma query engine cannot start on this runtime — an engine/platform problem, not a credentials one | See [The Prisma query engine on Hostinger](#the-prisma-query-engine-on-hostinger) |
 | Nothing at all | Wrong startup file | It is `server/dist/index.js`, not `server.js` or `index.js` |
+
+Note that a database fault no longer produces a 503 from the *host*: the app
+starts regardless, serves pages, and reports the fault itself.
+
+### `/api/health` returns `{"status":"degraded"}` with HTTP 503
+
+The process is healthy; the database is not. This is the honest answer rather
+than a failure to boot, and pages still render. The runtime log carries the full
+diagnostic and names which of the two cases applies:
+
+- **`DATABASE UNREACHABLE`** with a driver error such as *Can't reach database
+  server at …* — credentials, host, firewall or missing SSL. Add
+  `?sslmode=require` for a hosted provider.
+- **The same banner naming an engine panic** — the query engine never got as far
+  as connecting. See [The Prisma query engine on
+  Hostinger](#the-prisma-query-engine-on-hostinger); `"engine":"panicked"` in
+  the health response says the same thing.
+
+The connection string is never written to the log — it contains a password.
 
 ### Pages 404 but `/api/health` works
 

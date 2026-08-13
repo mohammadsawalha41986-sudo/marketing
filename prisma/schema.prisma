@@ -7,6 +7,21 @@
 
 generator client {
   provider = "prisma-client-js"
+
+  // Engines to emit at generate time.
+  //
+  // `native` covers whichever machine runs `prisma generate`. It is not enough
+  // on its own here: Hostinger's Node runtime reports
+  //   Distro is "undefined" ... Found libssl.so.1.1 ... parsed libssl version 1.1.x
+  // and therefore looks for `libquery_engine-debian-openssl-1.1.x.so.node`. If
+  // the build container resolves `native` to anything else (openssl 3.0.x is
+  // the common case on newer images), that file is absent at runtime and the
+  // client cannot start.
+  //
+  // Only these two are listed, both evidence-based: `native` for the build box,
+  // `debian-openssl-1.1.x` for the observed production runtime. Extra targets
+  // would only add download weight without being justified by a real runtime.
+  binaryTargets = ["native", "debian-openssl-1.1.x"]
 }
 
 datasource db {

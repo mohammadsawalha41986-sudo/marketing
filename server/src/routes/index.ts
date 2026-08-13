@@ -2,7 +2,7 @@
 
 import { Router } from 'express';
 
-import { prisma } from '../lib/prisma.js';
+import { checkDatabase } from '../lib/db-health.js';
 import { authRouter } from './auth.js';
 import { clientsRouter } from './clients.js';
 import { brandsRouter } from './brands.js';
@@ -25,17 +25,26 @@ export const apiRouter: Router = Router();
  * process is up and whether the database answers, and nothing else. No
  * connection strings, no environment values, no versions of anything an
  * attacker could use, no stack traces.
+ *
+ * The check runs through the shared probe in `db-health`, so this endpoint and
+ * the background watcher always agree and share one timeout. `degraded` is
+ * returned with 503 rather than being smoothed over — the process is alive but
+ * cannot serve real requests, and the host should be told so.
+ *
+ * `engine` is the one extra bit of detail, and it earns its place: an engine
+ * panic and a refused connection look identical from outside but need opposite
+ * fixes, and neither value discloses anything about the deployment.
  */
 apiRouter.get('/health', (_req, res) => {
-  void prisma
-    .$queryRaw`SELECT 1`
-    .then(() => {
-      res.json({ status: 'ok', database: 'ok', uptime: Math.round(process.uptime()) });
-    })
-    .catch(() => {
-      // 503 here is honest: the process lives but cannot serve real requests.
-      res.status(503).json({ status: 'degraded', database: 'unreachable', uptime: Math.round(process.uptime()) });
-    });
+  void checkDatabase().then((health) => {
+    const body = {
+      status: health.state === 'ok' ? 'ok' : 'degraded',
+      database: health.state === 'ok' ? 'ok' : 'unreachable',
+      engine: health.enginePanic ? 'panicked' : 'ok',
+      uptime: Math.round(process.uptime()),
+    };
+    res.status(health.state === 'ok' ? 200 : 503).json(body);
+  });
 });
 
 apiRouter.use('/auth', authRouter);

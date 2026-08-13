@@ -17,6 +17,7 @@
     "build": "npm run build -w web && npm run build -w server",
     "start": "node server/dist/index.js",
     "prisma:generate": "prisma generate",
+    "prisma:generate:binary": "PRISMA_CLIENT_ENGINE_TYPE=binary prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
