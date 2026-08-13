@@ -327,6 +327,18 @@ Everything else has a working default — see `.env.example`. **The application
 never reads a `.env` file in production;** it reads `process.env` directly, so
 there is nothing to upload and no `cp .env.example .env` step.
 
+Two more matter only on constrained shared hosting, where the query engine
+panics if it cannot spawn a thread:
+
+```
+DATABASE_CONNECTION_LIMIT=5   # default; lower to 3 if the engine panics
+UV_THREADPOOL_SIZE=2          # optional, saves two more threads
+```
+
+See [the process/thread
+ceiling](#panic-timer-has-gone-away--the-processthread-ceiling) for what these
+actually do and when to reach for them.
+
 ### 4. Deploy from GitHub
 
 Connect the repository and deploy the branch. Hostinger runs the build command,
@@ -473,20 +485,60 @@ ls node_modules/.prisma/client/ | grep libquery_engine
 # libquery_engine-debian-openssl-3.0.x.so.node   ← or whatever `native` resolved to
 ```
 
-**If the panic persists**, the library engine cannot be loaded into the Node
-process in that sandbox at all. Switch to the binary engine, which runs as a
-separate child process instead of a shared library:
+### `PANIC: timer has gone away` — the process/thread ceiling
 
-1. Add `PRISMA_CLIENT_ENGINE_TYPE=binary` to the Environment variables panel.
-2. Redeploy, so that `npm install` — and therefore `prisma generate` — runs
-   **with the variable already set**.
+If the engine file above is present and being loaded (the log shows
+`resolveEnginePath …libquery_engine-debian-openssl-1.1.x.so.node` followed by
+`library starting`) and it *still* panics, the cause is not the engine build.
+It is the host's process allowance.
 
-The order matters. The engine type is baked into the generated client at
-generate time; setting the variable only at runtime is silently ignored and
-changes nothing. Locally the same switch is `npm run prisma:generate:binary`.
+The panic comes from `futures-timer`, in the engine's attempt to spawn its timer
+thread. When that spawn fails the engine panics — so the real message is "this
+account has no thread budget left". Shared hosting counts threads towards the
+process limit, and three pools in one Node process all size themselves from the
+**CPU count the host reports**, which is the whole machine's, not your slice:
 
-A Rust panic also poisons the client instance, so the process has to be
-restarted to recover — the app will not heal from one on its own.
+| Pool | Default size | Lever |
+| --- | --- | --- |
+| V8 workers | CPUs − 1 | `--v8-pool-size`, already set to 2 in `npm start` |
+| Prisma connection pool | CPUs × 2 + 1 | `DATABASE_CONNECTION_LIMIT`, default 5 |
+| libuv | 4 | `UV_THREADPOOL_SIZE` (also used by password hashing) |
+
+Measured locally on a 4-CPU machine: 9 threads at startup, **15 once the query
+engine is running**. On a 32-core host the same process would want far more.
+
+The startup log prints the numbers that decide it, so this is checkable rather
+than guesswork:
+
+```
+  cpus visible   4  (v8 pool, prisma workers and its default pool all scale from this)
+  threads now    9
+  max processes  soft 64262 / hard 64262  (counts threads too)
+[marketing-os] database connected (process threads: 15)
+```
+
+**In order:**
+
+1. **Restart the app from hPanel.** Old deployment versions left running are the
+   usual cause — each one holds its own threads, and they accumulate across
+   deploys until the ceiling is hit.
+2. **Lower `DATABASE_CONNECTION_LIMIT`** (try 3). The default of 5 is already far
+   below Prisma's own default.
+3. **Add `UV_THREADPOOL_SIZE=2`** to the Environment variables panel for two more
+   threads. Password hashing shares this pool, so do not go below 2.
+4. **Switch to the binary engine**, which runs the engine in its own process
+   rather than as a library inside Node:
+   - Add `PRISMA_CLIENT_ENGINE_TYPE=binary` to the Environment variables panel.
+   - Redeploy, so `npm install` — and therefore `prisma generate` — runs **with
+     the variable already set**. The engine type is baked into the generated
+     client; setting it only at runtime is silently ignored and changes nothing.
+     Locally the same switch is `npm run prisma:generate:binary`.
+
+A panic poisons the client instance permanently, so the app **replaces the
+client automatically** and keeps serving — a transient exhaustion recovers
+without a manual restart. `/api/health` reports `engineRecoveries`; a number
+that keeps climbing means the ceiling is genuinely too low and step 1–4 above
+have not gone far enough.
 
 ## Troubleshooting
 
@@ -503,7 +555,7 @@ The process is not running. A build that succeeded says nothing about this —
 | `FAILED TO START — upload directory is not writable` | `STORAGE_LOCAL_DIR` points somewhere read-only | Point it at a writable persistent path |
 | `Cannot find module '/…/server/dist/index.js'` | The build did not run | Build command must be `npm install && npm run build` |
 | `@prisma/client did not initialize yet` | Prisma Client was not generated | `npm install` runs `prisma generate` via postinstall; re-run the build |
-| `PANIC: timer has gone away`, `PrismaClientRustPanicError` | The Prisma query engine cannot start on this runtime — an engine/platform problem, not a credentials one | See [The Prisma query engine on Hostinger](#the-prisma-query-engine-on-hostinger) |
+| `PANIC: timer has gone away`, `PrismaClientRustPanicError` | The query engine could not spawn a thread — the account's process/thread ceiling is exhausted | See [the process/thread ceiling](#panic-timer-has-gone-away--the-processthread-ceiling) |
 | Nothing at all | Wrong startup file | It is `server/dist/index.js`, not `server.js` or `index.js` |
 
 Note that a database fault no longer produces a 503 from the *host*: the app
@@ -519,9 +571,10 @@ diagnostic and names which of the two cases applies:
   server at …* — credentials, host, firewall or missing SSL. Add
   `?sslmode=require` for a hosted provider.
 - **The same banner naming an engine panic** — the query engine never got as far
-  as connecting. See [The Prisma query engine on
-  Hostinger](#the-prisma-query-engine-on-hostinger); `"engine":"panicked"` in
-  the health response says the same thing.
+  as connecting. See [the process/thread
+  ceiling](#panic-timer-has-gone-away--the-processthread-ceiling);
+  `"engine":"panicked"` in the health response says the same thing, and
+  `engineRecoveries` counts how often the client has had to be replaced.
 
 The connection string is never written to the log — it contains a password.
 

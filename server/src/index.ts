@@ -25,6 +25,7 @@ import { createApp } from './app.js';
 import { cookieSecure, env, hasOpenAi, isProd, REPO_ROOT, uploadDir } from './env.js';
 import { startDatabaseProbe } from './lib/db-health.js';
 import { prisma } from './lib/prisma.js';
+import { runtimeReport } from './lib/runtime-report.js';
 import { pruneExpiredSessions } from './lib/session.js';
 
 const LINE = '='.repeat(72);
@@ -107,6 +108,9 @@ const server = app.listen(env.PORT, '0.0.0.0', () => {
       `  secure cookies ${cookieSecure ? 'on' : 'off'}`,
       `  trust proxy    ${env.TRUST_PROXY}`,
       `  database       checking in the background…`,
+      // The engine panics on a constrained host when it cannot spawn a thread,
+      // and the Prisma error never names the budget that caused it.
+      ...runtimeReport(),
       '',
     ].join('\n'),
   );

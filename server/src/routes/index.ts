@@ -41,6 +41,9 @@ apiRouter.get('/health', (_req, res) => {
       status: health.state === 'ok' ? 'ok' : 'degraded',
       database: health.state === 'ok' ? 'ok' : 'unreachable',
       engine: health.enginePanic ? 'panicked' : 'ok',
+      // Non-zero means panics are happening and being recovered from. A climbing
+      // number is the signal that the host's thread ceiling is genuinely too low.
+      engineRecoveries: health.panicRecoveries,
       uptime: Math.round(process.uptime()),
     };
     res.status(health.state === 'ok' ? 200 : 503).json(body);

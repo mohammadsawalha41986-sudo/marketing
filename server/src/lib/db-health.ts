@@ -13,7 +13,8 @@
  * database still fails loudly on its own terms.
  */
 
-import { prisma } from './prisma.js';
+import { prisma, resetPrismaClient } from './prisma.js';
+import { threadCount } from './runtime-report.js';
 
 export type DbState = 'connecting' | 'ok' | 'unreachable';
 
@@ -24,9 +25,17 @@ interface DbHealth {
   checkedAt: string | null;
   /** True when the Rust query engine panicked, which needs a different remedy. */
   enginePanic: boolean;
+  /** How many times a poisoned client has been replaced, for /api/health. */
+  panicRecoveries: number;
 }
 
-const health: DbHealth = { state: 'connecting', lastError: null, checkedAt: null, enginePanic: false };
+const health: DbHealth = {
+  state: 'connecting',
+  lastError: null,
+  checkedAt: null,
+  enginePanic: false,
+  panicRecoveries: 0,
+};
 
 export const dbHealth = (): Readonly<DbHealth> => health;
 
@@ -92,9 +101,26 @@ export async function checkDatabase(timeoutMs = 4000): Promise<Readonly<DbHealth
     health.state = 'unreachable';
     health.lastError = firstLine(error);
     health.enginePanic = isEnginePanic(error);
+
+    // A panic poisons the instance: every later query fails identically until
+    // something replaces it. Swap it out so the next attempt starts from a
+    // clean engine — on a constrained host the panic is usually a transient
+    // failure to spawn a thread, and the retry genuinely can succeed.
+    if (health.enginePanic) recoverFromPanic();
   }
   health.checkedAt = new Date().toISOString();
   return health;
+}
+
+/** Replace the poisoned client, reporting the swap and the thread count with it. */
+function recoverFromPanic(): void {
+  health.panicRecoveries += 1;
+  const threads = threadCount();
+  process.stderr.write(
+    `[marketing-os] prisma engine panic (#${health.panicRecoveries}) — replacing the client` +
+      `${threads === null ? '' : `; process threads: ${threads}`}\n`,
+  );
+  resetPrismaClient();
 }
 
 const LINE = '='.repeat(72);
@@ -112,20 +138,32 @@ function reportFailure(): void {
 
   const remedy = health.enginePanic
     ? [
-        ' The Prisma query engine panicked while starting. This is an engine/platform',
-        ' problem, not a credentials problem — the connection was never attempted.',
+        ' The Prisma query engine panicked while starting. The connection was never',
+        ' attempted, so this is not a credentials problem.',
         '',
-        ' 1. Confirm the engine for this runtime was generated. The schema requests',
-        '    binaryTargets ["native", "debian-openssl-1.1.x"]; the deploy must run',
-        '    `npx prisma generate` (it runs automatically via postinstall).',
-        ' 2. If the panic persists, the library engine cannot be loaded into Node in',
-        '    this sandbox. Switch to the binary engine, which runs as a separate',
-        '    process instead of a shared library:',
-        '      set PRISMA_CLIENT_ENGINE_TYPE=binary in the host environment, then',
-        '      redeploy so that npm install / prisma generate runs WITH it set.',
-        '    The engine type is baked into the generated client — setting this',
+        ' "PANIC: timer has gone away" comes from the engine failing to spawn its',
+        ' timer thread. On shared hosting that means the account\'s process/thread',
+        ' allowance is exhausted — the engine is the victim, not the cause. Reduce',
+        ' the demand, in this order:',
+        '',
+        ' 1. Stop other processes on the account. Old deployment versions left',
+        '    running are the usual culprit — restart the app from the host panel so',
+        '    only the current version is live.',
+        ' 2. Lower the thread demand of this process. Each pool below sizes itself',
+        '    from the CPU count the host reports, which on shared hosting is the',
+        '    whole machine\'s, not your slice:',
+        '      - `npm start` already passes --v8-pool-size=2',
+        '      - DATABASE_CONNECTION_LIMIT (default 5) caps the connection pool',
+        '      - UV_THREADPOOL_SIZE=2 in the host environment saves two more',
+        ' 3. If it still panics, switch to the binary engine, which runs the engine',
+        '    in its own process: set PRISMA_CLIENT_ENGINE_TYPE=binary in the host',
+        '    environment, then redeploy so npm install / prisma generate runs WITH',
+        '    it set. The engine type is baked in at generate time — setting this',
         '    variable only at runtime is silently ignored and changes nothing.',
-        ' 3. A panic poisons the client, so the process must be restarted to recover.',
+        '',
+        ' The client is replaced automatically after a panic, so a transient',
+        ' exhaustion recovers without a manual restart. Repeated recoveries mean',
+        ' the ceiling is genuinely too low for the current configuration.',
       ]
     : [
         ' Check, in this order:',
@@ -161,14 +199,15 @@ export function startDatabaseProbe(): void {
       await checkDatabase();
 
       if (health.state === 'ok') {
-        process.stdout.write('[marketing-os] database connected\n');
+        // Report threads *after* the engine is up: that is the figure that has
+        // to fit under the host's ceiling, and it is the one the panic is about.
+        const threads = threadCount();
+        process.stdout.write(
+          `[marketing-os] database connected${threads === null ? '' : ` (process threads: ${threads})`}\n`,
+        );
         scheduleWatch();
         return;
       }
-
-      // A panicked engine will panic identically on the next call, so stop
-      // retrying immediately rather than flooding the log with the same trace.
-      if (health.enginePanic) break;
 
       if (attempt < attempts) {
         await new Promise((done) => setTimeout(done, attempt * 1000));
