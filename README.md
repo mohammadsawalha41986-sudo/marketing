@@ -327,13 +327,16 @@ Everything else has a working default — see `.env.example`. **The application
 never reads a `.env` file in production;** it reads `process.env` directly, so
 there is nothing to upload and no `cp .env.example .env` step.
 
-Two more matter only on constrained shared hosting, where the query engine
-panics if it cannot spawn a thread:
+Two more matter on constrained shared hosting, where the query engine panics if
+it cannot spawn a thread. Both are recommended on Hostinger:
 
 ```
-DATABASE_CONNECTION_LIMIT=5   # default; lower to 3 if the engine panics
-UV_THREADPOOL_SIZE=2          # optional, saves two more threads
+DATABASE_CONNECTION_LIMIT=2   # default 5; Prisma's own default is CPUs * 2 + 1
+UV_THREADPOOL_SIZE=2          # 9 threads down to 7
 ```
+
+`PRISMA_CLIENT_ENGINE_TYPE` is **not** needed — the schema already pins the
+binary engine. Set it only to override that choice, and only before a redeploy.
 
 See [the process/thread
 ceiling](#panic-timer-has-gone-away--the-processthread-ceiling) for what these
@@ -460,43 +463,71 @@ Distro is "undefined" ... Found libssl.so file using "ldconfig": libssl.so.1.1
 The parsed libssl version is: 1.1.x
 ```
 
-so at runtime it loads `libquery_engine-debian-openssl-1.1.x.so.node`. Left at
-the default (`native`), `prisma generate` emits only the engine for the build
-machine — commonly openssl **3.0.x** on a current image — and the 1.1.x file is
-simply absent. The client then fails to start, which surfaces as
-`PrismaClientRustPanicError` / `PANIC: timer has gone away`, because the panic
-happens while the engine library is being started rather than while connecting.
+so it needs an engine built for `debian-openssl-1.1.x`. Left at the default
+(`native`), `prisma generate` emits only the engine for the build machine —
+commonly openssl **3.0.x** on a current image — and the 1.1.x engine is simply
+absent.
 
-`prisma/schema.prisma` therefore requests both explicitly:
+The engine also runs in one of two modes, and on this host the mode matters more
+than the file:
+
+- **library** (Prisma's default) loads the Rust engine *into the Node process*
+  and starts a tokio runtime there.
+- **binary** runs the engine as a *separate child process*.
+
+Shared hosting caps how many threads an account may hold, and the library engine
+has to win that race inside a Node process that is already holding V8's and
+libuv's pools. When it loses, it panics with `PANIC: timer has gone away`.
+Threads held by the Node process once a query has run, measured on 4 CPUs with
+`--v8-pool-size=2`:
+
+| Engine | Node process | Engine child |
+| --- | --- | --- |
+| library | 15 | — |
+| library + `UV_THREADPOOL_SIZE=2` | 13 | — |
+| **binary** | 9 | 7 (own process) |
+| **binary + `UV_THREADPOOL_SIZE=2`** | **7** | 7 (own process) |
+
+`prisma/schema.prisma` therefore pins both the mode and the platforms:
 
 ```prisma
 generator client {
   provider      = "prisma-client-js"
+  engineType    = "binary"
   binaryTargets = ["native", "debian-openssl-1.1.x"]
 }
 ```
 
-Both are emitted by the `postinstall` hook, so a normal `npm install` on the
-host produces the right engine with no extra step. Verify after a build:
+`engineType` is pinned in the schema rather than left to
+`PRISMA_CLIENT_ENGINE_TYPE` for a specific reason: Prisma bakes the engine type
+into the client **when the client is generated**. Relying on the variable would
+mean relying on the host exporting it during `npm install` — and if it does not,
+generation silently produces the wrong engine and nothing complains until
+production panics. Pinned in the schema, a plain `npm install` produces the
+right engine with no host configuration at all.
+
+The variable still overrides the schema, so `PRISMA_CLIENT_ENGINE_TYPE=library`
+reverts to the library engine without a code change (set it before redeploying,
+so `prisma generate` runs with it). Locally that is
+`npm run prisma:generate:library`.
+
+`npm run build` verifies what was actually produced and **fails the build** on a
+mismatch, so the wrong engine can never ship silently:
 
 ```
-ls node_modules/.prisma/client/ | grep libquery_engine
-# libquery_engine-debian-openssl-1.1.x.so.node
-# libquery_engine-debian-openssl-3.0.x.so.node   ← or whatever `native` resolved to
+[prisma] engine "binary" verified; 2 engine file(s): query-engine-debian-openssl-1.1.x, query-engine-debian-openssl-3.0.x
 ```
 
 ### `PANIC: timer has gone away` — the process/thread ceiling
 
-If the engine file above is present and being loaded (the log shows
-`resolveEnginePath …libquery_engine-debian-openssl-1.1.x.so.node` followed by
-`library starting`) and it *still* panics, the cause is not the engine build.
-It is the host's process allowance.
+The binary engine above is the main defence. If a panic still appears, the cause
+is the host's process allowance and the remaining levers are below.
 
 The panic comes from `futures-timer`, in the engine's attempt to spawn its timer
 thread. When that spawn fails the engine panics — so the real message is "this
 account has no thread budget left". Shared hosting counts threads towards the
-process limit, and three pools in one Node process all size themselves from the
-**CPU count the host reports**, which is the whole machine's, not your slice:
+process limit, and three pools all size themselves from the **CPU count the host
+reports**, which is the whole machine's, not your slice:
 
 | Pool | Default size | Lever |
 | --- | --- | --- |
@@ -504,17 +535,14 @@ process limit, and three pools in one Node process all size themselves from the
 | Prisma connection pool | CPUs × 2 + 1 | `DATABASE_CONNECTION_LIMIT`, default 5 |
 | libuv | 4 | `UV_THREADPOOL_SIZE` (also used by password hashing) |
 
-Measured locally on a 4-CPU machine: 9 threads at startup, **15 once the query
-engine is running**. On a 32-core host the same process would want far more.
-
 The startup log prints the numbers that decide it, so this is checkable rather
 than guesswork:
 
 ```
   cpus visible   4  (v8 pool, prisma workers and its default pool all scale from this)
-  threads now    9
+  threads now    7
   max processes  soft 64262 / hard 64262  (counts threads too)
-[marketing-os] database connected (process threads: 15)
+[marketing-os] database connected (process threads: 7)
 ```
 
 **In order:**
@@ -522,23 +550,22 @@ than guesswork:
 1. **Restart the app from hPanel.** Old deployment versions left running are the
    usual cause — each one holds its own threads, and they accumulate across
    deploys until the ceiling is hit.
-2. **Lower `DATABASE_CONNECTION_LIMIT`** (try 3). The default of 5 is already far
-   below Prisma's own default.
-3. **Add `UV_THREADPOOL_SIZE=2`** to the Environment variables panel for two more
-   threads. Password hashing shares this pool, so do not go below 2.
-4. **Switch to the binary engine**, which runs the engine in its own process
-   rather than as a library inside Node:
-   - Add `PRISMA_CLIENT_ENGINE_TYPE=binary` to the Environment variables panel.
-   - Redeploy, so `npm install` — and therefore `prisma generate` — runs **with
-     the variable already set**. The engine type is baked into the generated
-     client; setting it only at runtime is silently ignored and changes nothing.
-     Locally the same switch is `npm run prisma:generate:binary`.
+2. **Add `UV_THREADPOOL_SIZE=2`** to the Environment variables panel: 9 threads
+   down to 7. Password hashing shares this pool, so do not go below 2.
+3. **Lower `DATABASE_CONNECTION_LIMIT`** to 2. The default of 5 is already far
+   below Prisma's own `CPUs × 2 + 1`.
 
 A panic poisons the client instance permanently, so the app **replaces the
-client automatically** and keeps serving — a transient exhaustion recovers
-without a manual restart. `/api/health` reports `engineRecoveries`; a number
-that keeps climbing means the ceiling is genuinely too low and step 1–4 above
-have not gone far enough.
+client** and keeps serving — a transient exhaustion recovers without a manual
+restart. That replacement is deliberately bounded: at most once every 30
+seconds, and after 5 consecutive replacements it stops and says so, because a
+fresh engine panicking five times running is not transient and spinning on it
+would only consume the headroom that is left. A successful query clears the
+budget.
+
+`/api/health` reports `engineRecoveries`. `0` is healthy; a number that keeps
+climbing means the ceiling is genuinely too low and steps 1–3 have not gone far
+enough.
 
 ## Troubleshooting
 
