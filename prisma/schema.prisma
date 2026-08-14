@@ -8,6 +8,23 @@
 generator client {
   provider = "prisma-client-js"
 
+  // Run the query engine as a child process instead of loading it into Node.
+  //
+  // The library engine loads the Rust engine into the Node process and starts a
+  // tokio runtime there. On constrained shared hosting that spawn fails and the
+  // engine panics with "PANIC: timer has gone away" — measured here, the Node
+  // process holds 15 threads with the library engine and 7 with the binary one,
+  // because the engine's threads move into their own process.
+  //
+  // Pinned in the schema rather than left to PRISMA_CLIENT_ENGINE_TYPE because
+  // the engine type is baked in when the client is generated: relying on the
+  // variable would mean relying on the host exporting it during `npm install`,
+  // and if it does not, generation silently produces the wrong engine. The
+  // variable still overrides this value, so setting
+  // PRISMA_CLIENT_ENGINE_TYPE=library reverts to the library engine with no
+  // code change. `npm run build` verifies what was actually generated.
+  engineType = "binary"
+
   // Engines to emit at generate time.
   //
   // `native` covers whichever machine runs `prisma generate`. It is not enough

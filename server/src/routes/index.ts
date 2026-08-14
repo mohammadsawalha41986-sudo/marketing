@@ -2,7 +2,7 @@
 
 import { Router } from 'express';
 
-import { checkDatabase } from '../lib/db-health.js';
+import { readiness } from '../lib/db-health.js';
 import { authRouter } from './auth.js';
 import { clientsRouter } from './clients.js';
 import { brandsRouter } from './brands.js';
@@ -36,9 +36,9 @@ export const apiRouter: Router = Router();
  * fixes, and neither value discloses anything about the deployment.
  */
 apiRouter.get('/health', (_req, res) => {
-  void checkDatabase().then((health) => {
+  void readiness().then((health) => {
     const body = {
-      status: health.state === 'ok' ? 'ok' : 'degraded',
+      status: health.state === 'ok' ? 'healthy' : 'degraded',
       database: health.state === 'ok' ? 'ok' : 'unreachable',
       engine: health.enginePanic ? 'panicked' : 'ok',
       // Non-zero means panics are happening and being recovered from. A climbing

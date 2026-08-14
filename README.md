@@ -370,7 +370,7 @@ you that it is off.
 ### 7. Verify
 
 ```
-https://your-domain.com/api/health   →  {"status":"ok","database":"ok","engine":"ok","uptime":N}
+https://your-domain.com/api/health   →  {"status":"healthy","database":"ok","engine":"ok","engineRecoveries":0,"uptime":N}
 https://your-domain.com/login        →  the sign-in page
 ```
 

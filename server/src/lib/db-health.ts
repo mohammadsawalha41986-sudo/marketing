@@ -97,6 +97,7 @@ export async function checkDatabase(timeoutMs = 4000): Promise<Readonly<DbHealth
     health.state = 'ok';
     health.lastError = null;
     health.enginePanic = false;
+    clearRecoveryBudget();
   } catch (error) {
     health.state = 'unreachable';
     health.lastError = firstLine(error);
@@ -112,15 +113,73 @@ export async function checkDatabase(timeoutMs = 4000): Promise<Readonly<DbHealth
   return health;
 }
 
-/** Replace the poisoned client, reporting the swap and the thread count with it. */
+/**
+ * Replacing the client is bounded on purpose.
+ *
+ * If the host genuinely has no thread budget, a fresh engine panics exactly like
+ * the old one, and replacing it on every failed query would spin — burning the
+ * little headroom that remains and burying the real cause in repeated traces.
+ * So replacement is rate-limited and capped: past the cap the app stays degraded
+ * and says why, which is the honest outcome. A successful query clears both,
+ * because that means the exhaustion really was transient.
+ */
+const RECOVERY_COOLDOWN_MS = 30_000;
+const MAX_CONSECUTIVE_RECOVERIES = 5;
+
+let consecutiveRecoveries = 0;
+let lastRecoveryAt = 0;
+let capReported = false;
+
 function recoverFromPanic(): void {
+  const now = Date.now();
+  if (now - lastRecoveryAt < RECOVERY_COOLDOWN_MS) return;
+
+  if (consecutiveRecoveries >= MAX_CONSECUTIVE_RECOVERIES) {
+    if (!capReported) {
+      capReported = true;
+      process.stderr.write(
+        `[marketing-os] prisma engine panicked ${consecutiveRecoveries} times in a row — ` +
+          'no longer replacing the client. This is not transient: the host cannot give the ' +
+          'engine a thread. See the DATABASE UNREACHABLE block above for what to change. ' +
+          'Recovery resumes automatically if a query ever succeeds.\n',
+      );
+    }
+    return;
+  }
+
+  consecutiveRecoveries += 1;
   health.panicRecoveries += 1;
+  lastRecoveryAt = now;
+
   const threads = threadCount();
   process.stderr.write(
     `[marketing-os] prisma engine panic (#${health.panicRecoveries}) — replacing the client` +
       `${threads === null ? '' : `; process threads: ${threads}`}\n`,
   );
   resetPrismaClient();
+}
+
+/** A working query proves the engine is healthy again; allow recovery afresh. */
+function clearRecoveryBudget(): void {
+  consecutiveRecoveries = 0;
+  capReported = false;
+}
+
+/**
+ * The state for /api/health, re-checked at most every few seconds.
+ *
+ * The endpoint is unauthenticated and a host may poll it often. Running a live
+ * query per request is wasteful when healthy and actively harmful when not —
+ * against a panicking engine every call produces another panic and another
+ * trace. A few seconds of staleness costs nothing: a probe that polls more
+ * often than this cannot act on the difference anyway.
+ */
+const READINESS_MAX_AGE_MS = 5000;
+
+export async function readiness(): Promise<Readonly<DbHealth>> {
+  const age = health.checkedAt ? Date.now() - Date.parse(health.checkedAt) : Infinity;
+  if (age < READINESS_MAX_AGE_MS) return health;
+  return checkDatabase();
 }
 
 const LINE = '='.repeat(72);

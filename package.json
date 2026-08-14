@@ -14,7 +14,8 @@
   "scripts": {
     "dev": "concurrently -n api,web -c cyan,magenta \"npm run dev -w server\" \"npm run dev -w web\"",
     "postinstall": "prisma generate",
-    "build": "npm run build -w web && npm run build -w server",
+    "build": "npm run prisma:verify && npm run build -w web && npm run build -w server",
+    "prisma:verify": "node scripts/verify-prisma-engine.mjs",
     "start": "node --v8-pool-size=2 server/dist/index.js",
     "prisma:generate": "prisma generate",
     "prisma:generate:binary": "PRISMA_CLIENT_ENGINE_TYPE=binary prisma generate",

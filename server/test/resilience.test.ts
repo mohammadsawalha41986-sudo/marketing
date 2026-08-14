@@ -10,8 +10,11 @@
 
 import { describe, expect, it } from 'vitest';
 
+import request from 'supertest';
+
+import { app } from './helpers.js';
 import { prisma, resetPrismaClient } from '../src/lib/prisma.js';
-import { checkDatabase, dbHealth } from '../src/lib/db-health.js';
+import { checkDatabase, dbHealth, readiness } from '../src/lib/db-health.js';
 import { runtimeReport, threadCount } from '../src/lib/runtime-report.js';
 
 describe('prisma client handle', () => {
@@ -53,6 +56,40 @@ describe('database health', () => {
   it('never puts the connection string in the reported error', async () => {
     const health = await checkDatabase();
     expect(health.lastError ?? '').not.toMatch(/postgres(ql)?:\/\//);
+  });
+
+  it('serves readiness from cache so polling cannot hammer the engine', async () => {
+    await checkDatabase();
+    const first = (await readiness()).checkedAt;
+    const second = (await readiness()).checkedAt;
+    // Inside the cache window the timestamp must not move — that is the proof
+    // no second query was issued.
+    expect(second).toBe(first);
+  });
+});
+
+describe('/api/health', () => {
+  it('reports healthy with the engine state, and leaks nothing', async () => {
+    const response = await request(app).get('/api/health');
+
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('healthy');
+    expect(response.body.database).toBe('ok');
+    expect(response.body.engine).toBe('ok');
+    expect(response.body).toHaveProperty('engineRecoveries');
+
+    // No connection string, no versions, no paths — an unauthenticated endpoint.
+    expect(JSON.stringify(response.body)).not.toMatch(/postgres(ql)?:\/\/|password|secret/i);
+  });
+});
+
+describe('authentication against the real engine', () => {
+  it('runs user.findUnique — the exact call that panicked in production', async () => {
+    // Guards the whole login path at the query layer: if the engine cannot
+    // start, this is where it fails, and it fails here before users see it.
+    await expect(
+      prisma.user.findUnique({ where: { email: 'nobody@example.com' }, select: { id: true } }),
+    ).resolves.toBeNull();
   });
 });
 
