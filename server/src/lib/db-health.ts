@@ -23,7 +23,7 @@ interface DbHealth {
   /** First line of the driver error, for the log and /api/health. Never the URL. */
   lastError: string | null;
   checkedAt: string | null;
-  /** True when the Rust query engine panicked, which needs a different remedy. */
+  /** True when the query engine itself is the problem, which needs a different remedy. */
   enginePanic: boolean;
   /** How many times a poisoned client has been replaced, for /api/health. */
   panicRecoveries: number;
@@ -60,19 +60,39 @@ function firstLine(error: unknown): string {
 }
 
 /**
- * A Rust panic poisons the client instance — Prisma's own guidance is that the
- * process must be restarted, so retrying the same client only reproduces it.
- * Worth naming precisely, because the remedy is completely different from an
- * ordinary connection failure.
+ * The engine — not the database — is the problem. Two distinct shapes, both
+ * confirmed by killing the engine's child process under load rather than by
+ * reading the docs:
+ *
+ * 1. A literal Rust panic trace (`PrismaClientRustPanicError`, or `PANIC:`
+ *    somewhere in the message — it sits several lines into the trace, so only
+ *    the summary line is not enough).
+ * 2. With the binary engine specifically, the engine runs as a child process
+ *    that Prisma talks to over a loopback port. When that child has just died
+ *    (killed by the same thread exhaustion, mid-respawn) the *parent* sees a
+ *    bare `connect ECONNREFUSED 127.0.0.1:<port>` — no panic text at all,
+ *    because nothing caught and formatted it. This is easy to mistake for an
+ *    ordinary "database unreachable", which would point someone at
+ *    credentials or SSL instead of the real cause. It is distinguished from a
+ *    genuine unreachable *database* by what is absent: a real connection
+ *    failure is caught by the engine and always carries "Can't reach database
+ *    server" in the message; a dead engine child never gets that far.
+ *
+ * Confirmed empirically: repeatedly killing the engine's own child process
+ * eventually produces exactly the shape in (2), and a normal bad DATABASE_URL
+ * never does — it always produces "Can't reach database server at …".
  */
-function isEnginePanic(error: unknown): boolean {
+export function isEnginePanic(error: unknown): boolean {
   const name = (error as { name?: string } | null)?.name;
   if (name === 'PrismaClientRustPanicError') return true;
-  // Match the whole message, not just the summary line: the panic text sits
-  // several lines into the trace ("PANIC: timer has gone away" is the one seen
-  // in production), so testing a single line would miss it.
+
   const raw = error instanceof Error ? error.message : String(error);
-  return /PANIC:/.test(raw);
+  if (/PANIC:/.test(raw)) return true;
+
+  const code = (error as { code?: string } | null)?.code;
+  const engineUnreachable = code === 'ECONNREFUSED' || /connect ECONNREFUSED/.test(raw);
+  const realDatabaseFailure = /Can't reach database server/.test(raw);
+  return engineUnreachable && !realDatabaseFailure;
 }
 
 async function ping(timeoutMs: number): Promise<void> {
@@ -197,32 +217,33 @@ function reportFailure(): void {
 
   const remedy = health.enginePanic
     ? [
-        ' The Prisma query engine panicked while starting. The connection was never',
-        ' attempted, so this is not a credentials problem.',
+        ' The Prisma query engine could not be reached. The connection was never',
+        ' attempted, so this is not a credentials problem. Two log shapes mean the',
+        ' same thing:',
+        '   - a literal "PANIC: timer has gone away" trace, or',
+        '   - a bare "connect ECONNREFUSED 127.0.0.1:<port>" with no "Can\'t reach',
+        '     database server" text — that is the engine\'s own child process,',
+        '     already dead, not the Postgres connection.',
         '',
-        ' "PANIC: timer has gone away" comes from the engine failing to spawn its',
-        ' timer thread. On shared hosting that means the account\'s process/thread',
-        ' allowance is exhausted — the engine is the victim, not the cause. Reduce',
-        ' the demand, in this order:',
+        ' Root cause: the engine failed to spawn a thread. On shared hosting that',
+        ' means the account\'s process/thread allowance is exhausted — the engine is',
+        ' the victim, not the cause. This app already runs the engine as its own',
+        ' child process (binaryTargets + engineType=binary in schema.prisma) to keep',
+        ' its threads out of the Node process; if it still panics, reduce the',
+        ' remaining demand, in this order:',
         '',
         ' 1. Stop other processes on the account. Old deployment versions left',
         '    running are the usual culprit — restart the app from the host panel so',
         '    only the current version is live.',
-        ' 2. Lower the thread demand of this process. Each pool below sizes itself',
-        '    from the CPU count the host reports, which on shared hosting is the',
-        '    whole machine\'s, not your slice:',
-        '      - `npm start` already passes --v8-pool-size=2',
-        '      - DATABASE_CONNECTION_LIMIT (default 5) caps the connection pool',
-        '      - UV_THREADPOOL_SIZE=2 in the host environment saves two more',
-        ' 3. If it still panics, switch to the binary engine, which runs the engine',
-        '    in its own process: set PRISMA_CLIENT_ENGINE_TYPE=binary in the host',
-        '    environment, then redeploy so npm install / prisma generate runs WITH',
-        '    it set. The engine type is baked in at generate time — setting this',
-        '    variable only at runtime is silently ignored and changes nothing.',
+        ' 2. Set UV_THREADPOOL_SIZE=2 in the host environment (measured: 9 threads',
+        '    down to 7 for the Node process).',
+        ' 3. Set DATABASE_CONNECTION_LIMIT=2 (default 5; Prisma\'s own default is',
+        '    CPUs * 2 + 1, sized from the whole host, not this account\'s slice).',
         '',
-        ' The client is replaced automatically after a panic, so a transient',
-        ' exhaustion recovers without a manual restart. Repeated recoveries mean',
-        ' the ceiling is genuinely too low for the current configuration.',
+        ' The engine child usually respawns on its own — Prisma retries internally',
+        ' before this is ever reported. The client is replaced here as a second line',
+        ' of defence, bounded so a genuinely exhausted host cannot be spun on',
+        ' forever. Repeated recoveries mean the ceiling is still too low.',
       ]
     : [
         ' Check, in this order:',

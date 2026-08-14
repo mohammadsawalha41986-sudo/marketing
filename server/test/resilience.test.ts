@@ -2,10 +2,12 @@
  * Startup and engine-resilience behaviour.
  *
  * These cover the machinery that keeps the app alive on constrained shared
- * hosting, where the Rust query engine panics with "PANIC: timer has gone away"
- * because it cannot spawn a thread. That panic poisons the client permanently,
- * so the swap-and-continue path below is the difference between a blip and an
- * outage that needs a human to restart the process.
+ * hosting, where the query engine cannot spawn a thread. That shows up two
+ * ways: a literal "PANIC: timer has gone away" trace, or — with the binary
+ * engine, which runs the engine as its own child process — a bare
+ * "connect ECONNREFUSED" once that child has died. Both need the same
+ * diagnosis and the same recovery; the health-detection tests below prove the
+ * second shape is actually caught, not just assumed to look like the first.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -14,7 +16,7 @@ import request from 'supertest';
 
 import { app } from './helpers.js';
 import { prisma, resetPrismaClient } from '../src/lib/prisma.js';
-import { checkDatabase, dbHealth, readiness } from '../src/lib/db-health.js';
+import { checkDatabase, dbHealth, isEnginePanic, readiness } from '../src/lib/db-health.js';
 import { runtimeReport, threadCount } from '../src/lib/runtime-report.js';
 
 describe('prisma client handle', () => {
@@ -65,6 +67,46 @@ describe('database health', () => {
     // Inside the cache window the timestamp must not move — that is the proof
     // no second query was issued.
     expect(second).toBe(first);
+  });
+
+  it('classifies a dead engine child as an engine problem, not "database unreachable"', async () => {
+    // Proves the fix for a real gap: with the binary engine, a dead engine
+    // child does not surface as "PANIC:" text at all — it surfaces to Node as
+    // a bare `connect ECONNREFUSED` on the loopback port Prisma talks to the
+    // engine over, because nothing caught and formatted it. Reproduced by
+    // actually killing the engine's child process (see the session record);
+    // asserted here as a unit case so the classifier's contract is pinned down
+    // without the flakiness and cross-test disruption of killing a real
+    // process inside the suite.
+    const engineChildDied = new Error(
+      "\nInvalid `prisma.$queryRaw()` invocation:\n\n\nconnect ECONNREFUSED 127.0.0.1:42829",
+    ) as Error & { code?: string };
+    engineChildDied.code = 'ECONNREFUSED';
+
+    expect(isEnginePanic(engineChildDied)).toBe(true);
+  });
+
+  it('does not confuse a genuinely unreachable database with a dead engine', async () => {
+    // The distinguishing signal: a real connection failure is caught by the
+    // engine and always carries this text; a dead engine child never gets that
+    // far to say it. Getting this wrong either way is a real regression — one
+    // direction hides a resource-exhaustion outage as a credentials problem,
+    // the other panics-recovers a database that just needs its URL fixed.
+    const databaseDown = new Error(
+      "\nInvalid `prisma.$queryRaw()` invocation:\n\n\nCan't reach database server at `127.0.0.1:59999`\n\n" +
+        'Please make sure your database server is running at `127.0.0.1:59999`.',
+    );
+
+    expect(isEnginePanic(databaseDown)).toBe(false);
+  });
+
+  it('still recognizes the original in-process panic shape', async () => {
+    const libraryPanic = new Error('PANIC: timer has gone away');
+    libraryPanic.name = 'PrismaClientRustPanicError';
+    expect(isEnginePanic(libraryPanic)).toBe(true);
+
+    const panicTraceOnly = new Error('some wrapper text\nPANIC: timer has gone away\nmore trace');
+    expect(isEnginePanic(panicTraceOnly)).toBe(true);
   });
 });
 
