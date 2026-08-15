@@ -265,7 +265,7 @@ build.
 | Setting | Value | Why |
 | --- | --- | --- |
 | Build command | `npm run build` | Builds **both** workspaces. A workspace-scoped build (`npm run build --workspace=@marketing-os/server`) compiles the API only, leaves `web/dist` absent, and every page request then 404s — the container logs `WARNING — the front end has not been built` at startup, which is the symptom to look for |
-| Pre-deploy command | `npx prisma migrate deploy` | Applies committed migrations to the Railway database before the new container takes traffic. Without it the schema is never created and every query fails with `The table public.Session does not exist` |
+| Pre-deploy command | `npx prisma migrate deploy && node scripts/verify-database-schema.mjs` | Applies committed migrations before the new container takes traffic, then checks the tables are genuinely there. `migrate deploy` trusts the `_prisma_migrations` table alone: if a migration is *recorded* but its objects are absent it prints "No pending migrations to apply" and the app boots broken, which is how this deployment kept failing with `The table public.Session does not exist`. The check reads catalog views only and fails the deploy rather than letting a bad schema take traffic |
 | Start command | `npm run start` | Production Node process. Never `npm run dev`, never `vite` |
 | Healthcheck path | `/api/health` | Reports database and engine state, not just liveness |
 
