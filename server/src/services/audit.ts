@@ -1,7 +1,7 @@
 /** Append-only activity log. Never throws into the request path. */
 
 import { prisma } from '../lib/prisma.js';
-import type { Actor } from '../lib/scope.js';
+import type { Actor } from '../lib/actor.js';
 
 export async function recordAudit(input: {
   actor?: Actor | null;
@@ -14,7 +14,6 @@ export async function recordAudit(input: {
   try {
     await prisma.auditLog.create({
       data: {
-        organizationId: input.actor?.organizationId ?? null,
         userId: input.actor?.id ?? null,
         action: input.action,
         entity: input.entity,
@@ -30,9 +29,7 @@ export async function recordAudit(input: {
 }
 
 export async function recordAiUsage(input: {
-  organizationId: string;
-  clientId?: string | null;
-  userId?: string | null;
+  restaurantId?: string | null;
   kind: 'CONTENT' | 'HASHTAGS' | 'ANALYSIS' | 'BRAND';
   model: string;
   provider: string;
@@ -42,9 +39,7 @@ export async function recordAiUsage(input: {
   try {
     await prisma.aiUsage.create({
       data: {
-        organizationId: input.organizationId,
-        clientId: input.clientId ?? null,
-        userId: input.userId ?? null,
+        restaurantId: input.restaurantId ?? null,
         kind: input.kind,
         model: input.model,
         provider: input.provider,

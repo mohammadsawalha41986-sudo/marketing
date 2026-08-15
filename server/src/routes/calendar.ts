@@ -1,15 +1,14 @@
 /** /api/calendar — scheduled content by month, week or day. */
 
 import { Router } from 'express';
-import { ContentStatus, Platform, Prisma } from '@prisma/client';
+import { ContentStatus, ContentType, Platform, Prisma } from '@prisma/client';
 import { z } from 'zod';
 
 import { prisma } from '../lib/prisma.js';
 import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
-import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
+import { actorOf, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { dateString, idParam } from '../lib/http.js';
-import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
 import { recordAudit } from '../services/audit.js';
 
 export const calendarRouter: Router = Router();
@@ -18,8 +17,10 @@ calendarRouter.use(requireAuth);
 const viewQuery = z.object({
   view: z.enum(['month', 'week', 'day']).default('month'),
   anchor: dateString.optional(),
-  clientId: z.string().max(40).optional(),
+  restaurantId: z.string().max(40).optional(),
+  campaignId: z.string().max(40).optional(),
   platform: z.nativeEnum(Platform).optional(),
+  type: z.nativeEnum(ContentType).optional(),
   status: z.nativeEnum(ContentStatus).optional(),
 });
 
@@ -49,16 +50,15 @@ calendarRouter.get(
   '/',
   validateQuery(viewQuery),
   asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
     const query = req.query as unknown as z.infer<typeof viewQuery>;
     const { from, to } = windowFor(query.view, query.anchor ?? new Date());
-    const clientId = resolveClientId(actor, query.clientId);
 
     const where: Prisma.ContentWhereInput = {
-      organizationId: orgId(actor),
       scheduledAt: { gte: from, lte: to },
-      ...(clientId ? { clientId } : {}),
+      ...(query.restaurantId ? { restaurantId: query.restaurantId } : {}),
+      ...(query.campaignId ? { campaignId: query.campaignId } : {}),
       ...(query.platform ? { platform: query.platform } : {}),
+      ...(query.type ? { type: query.type } : {}),
       ...(query.status ? { status: query.status } : {}),
     };
 
@@ -68,7 +68,7 @@ calendarRouter.get(
       select: {
         id: true, name: true, status: true, platform: true, type: true, language: true,
         scheduledAt: true, timezone: true, headline: true, publishedAt: true, failureReason: true,
-        client: { select: { id: true, name: true, logoUrl: true } },
+        restaurant: { select: { id: true, name: true, logoUrl: true } },
         campaign: { select: { id: true, name: true } },
         mediaLinks: {
           take: 1,
@@ -96,16 +96,14 @@ calendarRouter.get(
 /** Drag-and-drop rescheduling from the calendar. */
 calendarRouter.patch(
   '/:id/reschedule',
-  requireAgency,
   validateParams(idParam),
   validateBody(z.object({ scheduledAt: z.coerce.date(), timezone: z.string().trim().max(60).optional() })),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
     const { scheduledAt, timezone } = req.body as { scheduledAt: Date; timezone?: string };
 
-    const existing = await prisma.content.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
+    const existing = await prisma.content.findUnique({
+      where: { id: req.params.id },
       select: { id: true, status: true, timezone: true },
     });
     if (!existing) throw notFound('Content');
@@ -114,15 +112,14 @@ calendarRouter.patch(
     const content = await prisma.content.update({
       where: { id: existing.id },
       data: { scheduledAt, timezone: timezone ?? existing.timezone },
-      select: { id: true, name: true, scheduledAt: true, timezone: true, status: true, platform: true, organizationId: true, clientId: true },
+      select: { id: true, name: true, scheduledAt: true, timezone: true, status: true, platform: true, restaurantId: true },
     });
 
     await prisma.calendarEvent.upsert({
       where: { contentId: content.id },
       create: {
         contentId: content.id,
-        organizationId: content.organizationId,
-        clientId: content.clientId,
+        restaurantId: content.restaurantId,
         title: content.name,
         platform: content.platform,
         startAt: scheduledAt,

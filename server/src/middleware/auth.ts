@@ -1,10 +1,9 @@
-/** Authentication, CSRF and role gates. */
+/** Authentication and CSRF. */
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { Role } from '@prisma/client';
 import { forbidden, unauthorized } from '../lib/errors.js';
 import { CSRF_COOKIE, SESSION_COOKIE, resolveSession, safeEqual } from '../lib/session.js';
-import type { Actor } from '../lib/scope.js';
+import type { Actor } from '../lib/actor.js';
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -25,8 +24,6 @@ export const loadActor: RequestHandler = (req, _res, next) => {
           email: user.email,
           name: user.name,
           role: user.role,
-          organizationId: user.organizationId,
-          clientId: user.clientId,
         } satisfies Actor;
         req.sessionToken = token;
       }
@@ -35,6 +32,13 @@ export const loadActor: RequestHandler = (req, _res, next) => {
     .catch(next);
 };
 
+/**
+ * The only gate in the application.
+ *
+ * There are no roles to check beyond this. The product has one operator, so
+ * "signed in" and "allowed" are the same question — a role matrix here would be
+ * scaffolding around a set with one element.
+ */
 export const requireAuth: RequestHandler = (req, _res, next) => {
   if (!req.actor) {
     next(unauthorized());
@@ -45,7 +49,7 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
 
 /**
  * Double-submit CSRF. Applied only to authenticated mutations: an unauthenticated
- * POST (login, register) has no session to ride on, so there is nothing to forge.
+ * POST (login) has no session to ride on, so there is nothing to forge.
  */
 export const csrfGuard = (req: Request, _res: Response, next: NextFunction): void => {
   if (!MUTATING.has(req.method) || !req.actor) {
@@ -61,28 +65,6 @@ export const csrfGuard = (req: Request, _res: Response, next: NextFunction): voi
   }
   next();
 };
-
-export function requireRole(...roles: Role[]): RequestHandler {
-  return (req, _res, next) => {
-    if (!req.actor) {
-      next(unauthorized());
-      return;
-    }
-    if (!roles.includes(req.actor.role)) {
-      next(forbidden('Your role does not allow this action'));
-      return;
-    }
-    next();
-  };
-}
-
-/** Agency-side staff and above. Blocks client portal accounts. */
-export const requireAgency = requireRole(Role.SUPER_ADMIN, Role.AGENCY_ADMIN, Role.AGENCY_STAFF);
-
-/** Create/update/delete inside a tenant. */
-export const requireManager = requireRole(Role.SUPER_ADMIN, Role.AGENCY_ADMIN);
-
-export const requireSuperAdmin = requireRole(Role.SUPER_ADMIN);
 
 /** Convenience accessor for handlers that run behind `requireAuth`. */
 export function actorOf(req: Request): Actor {

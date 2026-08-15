@@ -4,17 +4,18 @@ import { Router } from 'express';
 
 import { readiness } from '../lib/db-health.js';
 import { authRouter } from './auth.js';
-import { clientsRouter } from './clients.js';
+import { restaurantsRouter } from './restaurants.js';
 import { brandsRouter } from './brands.js';
 import { mediaRouter } from './media.js';
 import { campaignsRouter } from './campaigns.js';
+import { adsRouter } from './ads.js';
 import { contentRouter } from './content.js';
 import { calendarRouter } from './calendar.js';
-import { approvalsRouter } from './approvals.js';
 import { analyticsRouter } from './analytics.js';
 import { reportsRouter } from './reports.js';
-import { adminRouter } from './admin.js';
-import { integrationsRouter, notificationsRouter, subscriptionsRouter, usersRouter } from './misc.js';
+import { tasksRouter } from './tasks.js';
+import { settingsRouter } from './settings.js';
+import { integrationsRouter, notificationsRouter } from './misc.js';
 
 export const apiRouter: Router = Router();
 
@@ -51,17 +52,16 @@ apiRouter.get('/health', (_req, res) => {
 });
 
 apiRouter.use('/auth', authRouter);
-apiRouter.use('/users', usersRouter);
-apiRouter.use('/clients', clientsRouter);
+apiRouter.use('/restaurants', restaurantsRouter);
 apiRouter.use('/brands', brandsRouter);
 apiRouter.use('/media', mediaRouter);
 apiRouter.use('/campaigns', campaignsRouter);
+apiRouter.use('/ads', adsRouter);
 apiRouter.use('/content', contentRouter);
 apiRouter.use('/calendar', calendarRouter);
-apiRouter.use('/approvals', approvalsRouter);
 apiRouter.use('/analytics', analyticsRouter);
 apiRouter.use('/reports', reportsRouter);
+apiRouter.use('/tasks', tasksRouter);
 apiRouter.use('/notifications', notificationsRouter);
 apiRouter.use('/integrations', integrationsRouter);
-apiRouter.use('/subscriptions', subscriptionsRouter);
-apiRouter.use('/admin', adminRouter);
+apiRouter.use('/settings', settingsRouter);

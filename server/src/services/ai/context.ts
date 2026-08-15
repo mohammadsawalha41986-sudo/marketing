@@ -10,8 +10,7 @@ import type { Brand, Language, Platform } from '@prisma/client';
 
 export interface BrandContext {
   businessName: string;
-  businessType?: string | null;
-  industry?: string | null;
+  cuisine?: string | null;
   description?: string | null;
   targetAudience?: string | null;
   location?: string | null;
@@ -25,6 +24,7 @@ export interface BrandContext {
   keywords: string[];
   forbiddenWords: string[];
   ctaStyle?: string | null;
+  visualStyle?: string | null;
 }
 
 export interface ContentRequest {
@@ -41,8 +41,7 @@ export interface ContentRequest {
 export function brandContext(brand: Brand): BrandContext {
   return {
     businessName: brand.businessName,
-    businessType: brand.businessType,
-    industry: brand.industry,
+    cuisine: brand.cuisine,
     description: brand.description,
     targetAudience: brand.targetAudience,
     location: brand.location,
@@ -56,6 +55,7 @@ export function brandContext(brand: Brand): BrandContext {
     keywords: brand.keywords,
     forbiddenWords: brand.forbiddenWords,
     ctaStyle: brand.ctaStyle,
+    visualStyle: brand.visualStyle,
   };
 }
 

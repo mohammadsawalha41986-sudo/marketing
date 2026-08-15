@@ -3,12 +3,18 @@
 import type { Report } from '@prisma/client';
 
 interface ReportPayload {
-  client: { name: string; businessName: string };
+  restaurant: { name: string; businessName: string };
+  currency: string;
   period: { from: string; to: string };
   totals: Record<string, number>;
   changes: Record<string, number | null>;
   platforms: Array<{ label: string; spend: number; impressions: number; clicks: number; conversions: number; ctr: number; roas: number }>;
   campaigns: Array<{ name: string; status: string; budget: number; spend: number }>;
+  ads: Array<{
+    name: string; platform: string; status: string; spend: number; impressions: number;
+    clicks: number; leads: number; conversions: number; revenue: number; metricsAt: string | null;
+  }>;
+  topContent: Array<{ name: string; type: string; platform: string; publishedAt: string | null }>;
   analysis: null | {
     summary: string;
     working: string[];
@@ -20,7 +26,13 @@ interface ReportPayload {
   generatedAt: string;
 }
 
-const money = (value: number) => `$${Math.round(value).toLocaleString('en-US')}`;
+/*
+ * Currency comes from the workspace and is frozen into the payload at
+ * generation time, so a report keeps the currency it was produced in even if
+ * the workspace setting changes later.
+ */
+const moneyIn = (currency: string) => (value: number) =>
+  `${currency} ${Math.round(value).toLocaleString('en-US')}`;
 const num = (value: number) => Math.round(value).toLocaleString('en-US');
 const pct = (value: number, digits = 2) => `${(value * 100).toFixed(digits)}%`;
 const delta = (value: number | null | undefined) =>
@@ -35,10 +47,11 @@ function payloadOf(report: Report): ReportPayload {
 
 export function renderReportMarkdown(report: Report): string {
   const data = payloadOf(report);
+  const money = moneyIn(data.currency ?? 'SAR');
   const lines: string[] = [];
 
   lines.push(`# ${report.title}`, '');
-  lines.push(`**Client:** ${data.client.businessName}  `);
+  lines.push(`**Restaurant:** ${data.restaurant.businessName}  `);
   lines.push(`**Period:** ${data.period.from} to ${data.period.to}  `);
   lines.push(`**Generated:** ${new Date(data.generatedAt).toISOString().slice(0, 10)}`, '');
 
@@ -53,6 +66,7 @@ export function renderReportMarkdown(report: Report): string {
   lines.push(`| Impressions | ${num(data.totals.impressions ?? 0)} | — |`);
   lines.push(`| Clicks | ${num(data.totals.clicks ?? 0)} | ${delta(data.changes.clicks)} |`);
   lines.push(`| CTR | ${pct(data.totals.ctr ?? 0)} | — |`);
+  lines.push(`| Leads | ${num(data.totals.leads ?? 0)} | ${delta(data.changes.leads)} |`);
   lines.push(`| Conversions | ${num(data.totals.conversions ?? 0)} | ${delta(data.changes.conversions)} |`);
   lines.push(`| Revenue | ${money(data.totals.revenue ?? 0)} | — |`);
   lines.push(`| ROAS | ${(data.totals.roas ?? 0).toFixed(2)}x | ${delta(data.changes.roas)} |`, '');
@@ -73,6 +87,33 @@ export function renderReportMarkdown(report: Report): string {
     lines.push('| Campaign | Status | Budget | Spend |', '| --- | --- | --- | --- |');
     for (const campaign of data.campaigns) {
       lines.push(`| ${campaign.name} | ${campaign.status} | ${money(campaign.budget)} | ${money(campaign.spend)} |`);
+    }
+    lines.push('');
+  }
+
+  if (data.ads?.length > 0) {
+    lines.push('## Advertising', '');
+    lines.push('| Ad | Platform | Spend | Impressions | Clicks | Leads | Conversions | ROAS |', '| --- | --- | --- | --- | --- | --- | --- | --- |');
+    for (const ad of data.ads) {
+      // An ad with no figures entered says so, rather than reporting zeroes it
+      // cannot stand behind.
+      if (!ad.metricsAt) {
+        lines.push(`| ${ad.name} | ${ad.platform} | _not recorded_ | — | — | — | — | — |`);
+        continue;
+      }
+      const roas = ad.spend === 0 ? 0 : ad.revenue / ad.spend;
+      lines.push(
+        `| ${ad.name} | ${ad.platform} | ${money(ad.spend)} | ${num(ad.impressions)} | ${num(ad.clicks)} | ${num(ad.leads)} | ${num(ad.conversions)} | ${roas.toFixed(2)}x |`,
+      );
+    }
+    lines.push('');
+  }
+
+  if (data.topContent?.length > 0) {
+    lines.push('## Published content', '');
+    lines.push('| Content | Type | Platform | Published |', '| --- | --- | --- | --- |');
+    for (const item of data.topContent) {
+      lines.push(`| ${item.name} | ${item.type} | ${item.platform} | ${item.publishedAt?.slice(0, 10) ?? '—'} |`);
     }
     lines.push('');
   }
@@ -104,6 +145,7 @@ export function renderReportMarkdown(report: Report): string {
 
 export function renderReportHtml(report: Report): string {
   const data = payloadOf(report);
+  const money = moneyIn(data.currency ?? 'SAR');
 
   const kpi = (label: string, value: string, change?: number | null) => `
     <div class="kpi">
@@ -128,6 +170,33 @@ export function renderReportHtml(report: Report): string {
       (campaign) => `<tr>
         <td>${esc(campaign.name)}</td><td>${esc(campaign.status)}</td>
         <td class="n">${esc(money(campaign.budget))}</td><td class="n">${esc(money(campaign.spend))}</td>
+      </tr>`,
+    )
+    .join('');
+
+  const adRows = (data.ads ?? [])
+    .map((ad) => {
+      if (!ad.metricsAt) {
+        return `<tr>
+        <td>${esc(ad.name)}</td><td>${esc(ad.platform)}</td>
+        <td class="n muted" colspan="6">not recorded</td>
+      </tr>`;
+      }
+      const roas = ad.spend === 0 ? 0 : ad.revenue / ad.spend;
+      return `<tr>
+        <td>${esc(ad.name)}</td><td>${esc(ad.platform)}</td>
+        <td class="n">${esc(money(ad.spend))}</td><td class="n">${esc(num(ad.impressions))}</td>
+        <td class="n">${esc(num(ad.clicks))}</td><td class="n">${esc(num(ad.leads))}</td>
+        <td class="n">${esc(num(ad.conversions))}</td><td class="n">${roas.toFixed(2)}x</td>
+      </tr>`;
+    })
+    .join('');
+
+  const contentRows = (data.topContent ?? [])
+    .map(
+      (item) => `<tr>
+        <td>${esc(item.name)}</td><td>${esc(item.type)}</td><td>${esc(item.platform)}</td>
+        <td>${esc(item.publishedAt?.slice(0, 10) ?? '—')}</td>
       </tr>`,
     )
     .join('');
@@ -187,11 +256,12 @@ export function renderReportHtml(report: Report): string {
   .rec p { margin:0; color:var(--muted); }
   .tag { font-size:11px; text-transform:uppercase; letter-spacing:.05em; border:1px solid var(--line); border-radius:999px; padding:1px 8px; color:var(--muted); }
   .tag.high { color:var(--down); border-color:currentColor; }
+  td.muted { color:var(--muted); font-style:italic; }
   .footnote { color:var(--muted); font-size:13px; border-top:1px solid var(--line); padding-top:14px; margin-top:32px; }
 </style></head>
 <body><div class="wrap">
   <h1>${esc(report.title)}</h1>
-  <div class="meta">${esc(data.client.businessName)} · ${esc(data.period.from)} to ${esc(data.period.to)} · generated ${esc(new Date(data.generatedAt).toISOString().slice(0, 10))}</div>
+  <div class="meta">${esc(data.restaurant.businessName)} · ${esc(data.period.from)} to ${esc(data.period.to)} · generated ${esc(new Date(data.generatedAt).toISOString().slice(0, 10))}</div>
 
   <h2>Performance</h2>
   <div class="kpis">
@@ -199,12 +269,15 @@ export function renderReportHtml(report: Report): string {
     ${kpi('Reach', num(data.totals.reach ?? 0), data.changes.reach)}
     ${kpi('Clicks', num(data.totals.clicks ?? 0), data.changes.clicks)}
     ${kpi('CTR', pct(data.totals.ctr ?? 0))}
+    ${kpi('Leads', num(data.totals.leads ?? 0), data.changes.leads)}
     ${kpi('Conversions', num(data.totals.conversions ?? 0), data.changes.conversions)}
     ${kpi('ROAS', `${(data.totals.roas ?? 0).toFixed(2)}x`, data.changes.roas)}
   </div>
 
   ${platformRows ? `<h2>By platform</h2><div class="scroll"><table><thead><tr><th>Platform</th><th class="n">Spend</th><th class="n">Impressions</th><th class="n">Clicks</th><th class="n">CTR</th><th class="n">Conversions</th><th class="n">ROAS</th></tr></thead><tbody>${platformRows}</tbody></table></div>` : ''}
   ${campaignRows ? `<h2>Campaigns</h2><div class="scroll"><table><thead><tr><th>Campaign</th><th>Status</th><th class="n">Budget</th><th class="n">Spend</th></tr></thead><tbody>${campaignRows}</tbody></table></div>` : ''}
+  ${adRows ? `<h2>Advertising</h2><div class="scroll"><table><thead><tr><th>Ad</th><th>Platform</th><th class="n">Spend</th><th class="n">Impressions</th><th class="n">Clicks</th><th class="n">Leads</th><th class="n">Conversions</th><th class="n">ROAS</th></tr></thead><tbody>${adRows}</tbody></table></div>` : ''}
+  ${contentRows ? `<h2>Published content</h2><div class="scroll"><table><thead><tr><th>Content</th><th>Type</th><th>Platform</th><th>Published</th></tr></thead><tbody>${contentRows}</tbody></table></div>` : ''}
   ${analysisSection}
 </div></body></html>`;
 }

@@ -1,4 +1,4 @@
-import type { Actor } from '../lib/scope.js';
+import type { Actor } from '../lib/actor.js';
 
 declare global {
   namespace Express {

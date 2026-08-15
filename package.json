@@ -1,7 +1,7 @@
 {
-  "name": "marketing-os",
+  "name": "restaurant-marketing-os",
   "version": "1.0.0",
-  "description": "Marketing OS — AI-powered multi-tenant marketing management platform.",
+  "description": "Private restaurant marketing management system for a single marketing operator.",
   "private": true,
   "license": "UNLICENSED",
   "engines": {
@@ -22,12 +22,12 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
-    "db:reset": "prisma migrate reset --force && npm run db:seed",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
     "lint": "eslint . --ext .ts,.tsx",
     "test": "npm run test -w server",
     "test:web": "npm run test -w web",
-    "verify": "npm run typecheck && npm run test && npm run build"
+    "verify": "npm run typecheck && npm run test && npm run build",
+    "owner:create": "node scripts/create-owner.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -10,7 +10,7 @@ import type { Derived, PlatformBreakdown } from '../analytics.js';
 import { changeRatio, derive, sumSnapshots, byPlatform, type RawSnapshot } from '../analytics.js';
 
 export interface CampaignFacts {
-  clientName: string;
+  restaurantName: string;
   campaignNames: string[];
   periodStart: string;
   periodEnd: string;
@@ -27,7 +27,7 @@ export interface CampaignFacts {
 }
 
 export function buildFacts(input: {
-  clientName: string;
+  restaurantName: string;
   campaignNames: string[];
   current: RawSnapshot[];
   previous: RawSnapshot[];
@@ -44,7 +44,7 @@ export function buildFacts(input: {
   );
 
   return {
-    clientName: input.clientName,
+    restaurantName: input.restaurantName,
     campaignNames: input.campaignNames,
     periodStart: input.periodStart.toISOString().slice(0, 10),
     periodEnd: input.periodEnd.toISOString().slice(0, 10),

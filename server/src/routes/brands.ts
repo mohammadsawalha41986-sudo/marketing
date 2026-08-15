@@ -7,10 +7,9 @@ import sharp from 'sharp';
 
 import { prisma } from '../lib/prisma.js';
 import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
-import { actorOf, requireAuth, requireAgency } from '../middleware/auth.js';
+import { actorOf, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { hexColor } from '../lib/http.js';
-import { assertWritable, isClientUser, orgId, type Actor } from '../lib/scope.js';
 import { assertRealImage, uploadImage } from '../middleware/upload.js';
 import { storage } from '../services/storage/index.js';
 import { contrastRatio, extractPalette, readableTextOn } from '../services/palette.js';
@@ -19,15 +18,13 @@ import { recordAudit } from '../services/audit.js';
 export const brandsRouter: Router = Router();
 brandsRouter.use(requireAuth);
 
-const clientParam = z.object({ clientId: z.string().min(1).max(40) });
+const restaurantParam = z.object({ restaurantId: z.string().min(1).max(40) });
 
-/** Loads the brand for a client the actor may reach, or 404s. */
-async function loadBrand(actor: Actor, clientId: string) {
-  if (isClientUser(actor) && actor.clientId !== clientId) throw notFound('Client');
-
-  const brand = await prisma.brand.findFirst({
-    where: { clientId, organizationId: orgId(actor) },
-    include: { assets: true, client: { select: { id: true, name: true, businessName: true } } },
+/** Loads a restaurant's brand, or 404s. */
+async function loadBrand(restaurantId: string) {
+  const brand = await prisma.brand.findUnique({
+    where: { restaurantId },
+    include: { assets: true, restaurant: { select: { id: true, name: true, businessName: true } } },
   });
   if (!brand) throw notFound('Brand');
   return brand;
@@ -37,8 +34,7 @@ const stringList = z.array(z.string().trim().min(1).max(120)).max(40);
 
 const brandSchema = z.object({
   businessName: z.string().trim().min(1).max(160),
-  businessType: z.string().trim().max(120).nullish(),
-  industry: z.string().trim().max(120).nullish(),
+  cuisine: z.string().trim().max(120).nullish(),
   description: z.string().trim().max(4000).nullish(),
   targetAudience: z.string().trim().max(2000).nullish(),
   location: z.string().trim().max(200).nullish(),
@@ -52,28 +48,29 @@ const brandSchema = z.object({
   keywords: stringList,
   forbiddenWords: stringList,
   ctaStyle: z.string().trim().max(120).nullish(),
+  visualStyle: z.string().trim().max(200).nullish(),
   preferredLanguage: z.nativeEnum(Language),
   fontFamily: z.string().trim().max(80),
+  headingFont: z.string().trim().max(80).nullish(),
+  bodyFont: z.string().trim().max(80).nullish(),
 });
 
 brandsRouter.get(
-  '/:clientId',
-  validateParams(clientParam),
+  '/:restaurantId',
+  validateParams(restaurantParam),
   asyncHandler(async (req, res) => {
-    const brand = await loadBrand(actorOf(req), req.params.clientId as string);
+    const brand = await loadBrand(req.params.restaurantId as string);
     res.json({ brand });
   }),
 );
 
 brandsRouter.patch(
-  '/:clientId',
-  requireAgency,
-  validateParams(clientParam),
+  '/:restaurantId',
+  validateParams(restaurantParam),
   validateBody(brandSchema.partial()),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
-    const existing = await loadBrand(actor, req.params.clientId as string);
+    const existing = await loadBrand(req.params.restaurantId as string);
 
     const brand = await prisma.brand.update({
       where: { id: existing.id },
@@ -92,14 +89,12 @@ brandsRouter.patch(
  * change until someone approves them at `/palette`.
  */
 brandsRouter.post(
-  '/:clientId/logo',
-  requireAgency,
-  validateParams(clientParam),
+  '/:restaurantId/logo',
+  validateParams(restaurantParam),
   uploadImage.single('file'),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
-    const brand = await loadBrand(actor, req.params.clientId as string);
+    const brand = await loadBrand(req.params.restaurantId as string);
 
     const file = req.file;
     if (!file) throw badRequest('No file uploaded. Send it as multipart field "file".');
@@ -109,7 +104,7 @@ brandsRouter.post(
     const stored = await storage.save(file.buffer, {
       filename: file.originalname,
       mimeType: file.mimetype,
-      prefix: `brands/${brand.clientId}`,
+      prefix: `brands/${brand.restaurantId}`,
     });
 
     const palette = await extractPalette(file.buffer);
@@ -132,11 +127,10 @@ brandsRouter.post(
           meta: { width: meta.width ?? null, height: meta.height ?? null, format: meta.format ?? null } as Prisma.InputJsonValue,
         },
       }),
-      prisma.client.update({ where: { id: brand.clientId }, data: { logoUrl: stored.url } }),
+      prisma.restaurant.update({ where: { id: brand.restaurantId }, data: { logoUrl: stored.url } }),
       prisma.media.create({
         data: {
-          organizationId: orgId(actor),
-          clientId: brand.clientId,
+          restaurantId: brand.restaurantId,
           type: MediaType.LOGO,
           filename: stored.key,
           originalName: file.originalname.slice(0, 200),
@@ -171,14 +165,12 @@ const paletteSchema = z.object({
 
 /** Approve (and optionally edit) the identity. This is what goes live. */
 brandsRouter.post(
-  '/:clientId/palette',
-  requireAgency,
-  validateParams(clientParam),
+  '/:restaurantId/palette',
+  validateParams(restaurantParam),
   validateBody(paletteSchema),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
-    const brand = await loadBrand(actor, req.params.clientId as string);
+    const brand = await loadBrand(req.params.restaurantId as string);
     const body = req.body as z.infer<typeof paletteSchema>;
 
     const textColor = body.textColor ?? readableTextOn(body.backgroundColor);
@@ -206,13 +198,10 @@ brandsRouter.post(
 
 /** Re-run extraction against the logo already on file. */
 brandsRouter.post(
-  '/:clientId/palette/suggest',
-  requireAgency,
-  validateParams(clientParam),
+  '/:restaurantId/palette/suggest',
+  validateParams(restaurantParam),
   asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    assertWritable(actor);
-    const brand = await loadBrand(actor, req.params.clientId as string);
+    const brand = await loadBrand(req.params.restaurantId as string);
 
     if (!brand.logoUrl) throw badRequest('Upload a logo first');
 

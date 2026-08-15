@@ -53,7 +53,7 @@ function subject(brand: BrandContext, request: ContentRequest, seed: number): st
     request.productService?.trim() ||
     pick(brand.products, seed) ||
     pick(brand.services, seed) ||
-    brand.businessType ||
+    brand.cuisine ||
     brand.businessName
   );
 }
@@ -73,8 +73,7 @@ function tagify(value: string): string {
 export function templateHashtags(brand: BrandContext, request: ContentRequest, limit: number): string[] {
   const seeds = [
     brand.businessName,
-    brand.businessType ?? '',
-    brand.industry ?? '',
+    brand.cuisine ?? '',
     brand.location ?? '',
     request.productService ?? '',
     request.offer ?? '',
@@ -156,7 +155,7 @@ export function templateCopy(brand: BrandContext, request: ContentRequest): Gene
       slogan: slogan.slice(0, 120),
       cta: cta.slice(0, 80),
       hashtags: templateHashtags(brand, request, rule.hashtags),
-      keywords: [topic, brand.businessType ?? '', brand.industry ?? '', ...brand.keywords].filter(Boolean).slice(0, 12),
+      keywords: [topic, brand.cuisine ?? '', ...brand.keywords].filter(Boolean).slice(0, 12),
     };
   }
 
@@ -210,7 +209,7 @@ export function templateCopy(brand: BrandContext, request: ContentRequest): Gene
     slogan: slogan.slice(0, 120),
     cta: cta.slice(0, 80),
     hashtags: templateHashtags(brand, request, rule.hashtags),
-    keywords: [topic, brand.businessType ?? '', brand.industry ?? '', ...brand.keywords].filter(Boolean).slice(0, 12),
+    keywords: [topic, brand.cuisine ?? '', ...brand.keywords].filter(Boolean).slice(0, 12),
   };
 }
 

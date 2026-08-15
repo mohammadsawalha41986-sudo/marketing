@@ -7,10 +7,9 @@ import sharp from 'sharp';
 
 import { prisma } from '../lib/prisma.js';
 import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
-import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
+import { actorOf, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
-import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
 import { IMAGE_MIME, VIDEO_MIME, uploadAny, sniffImage } from '../middleware/upload.js';
 import { storage } from '../services/storage/index.js';
 import { recordAudit } from '../services/audit.js';
@@ -28,22 +27,19 @@ mediaRouter.get(
   '/',
   validateQuery(
     paginationQuery.extend({
-      clientId: z.string().max(40).optional(),
+      restaurantId: z.string().max(40).optional(),
       campaignId: z.string().max(40).optional(),
       type: z.nativeEnum(MediaType).optional(),
       category: z.string().max(80).optional(),
     }),
   ),
   asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
     const query = req.query as unknown as z.infer<typeof paginationQuery> & {
-      clientId?: string; campaignId?: string; type?: MediaType; category?: string;
+      restaurantId?: string; campaignId?: string; type?: MediaType; category?: string;
     };
 
-    const clientId = resolveClientId(actor, query.clientId);
     const where: Prisma.MediaWhereInput = {
-      organizationId: orgId(actor),
-      ...(clientId ? { clientId } : {}),
+      ...(query.restaurantId ? { restaurantId: query.restaurantId } : {}),
       ...(query.campaignId ? { campaignId: query.campaignId } : {}),
       ...(query.type ? { type: query.type } : {}),
       ...(query.category ? { category: query.category } : {}),
@@ -62,7 +58,7 @@ mediaRouter.get(
         where,
         ...paginate(query),
         orderBy: { createdAt: 'desc' },
-        include: { client: { select: { id: true, name: true } } },
+        include: { restaurant: { select: { id: true, name: true } } },
       }),
       prisma.media.count({ where }),
     ]);
@@ -73,26 +69,24 @@ mediaRouter.get(
 
 mediaRouter.post(
   '/',
-  requireAgency,
   uploadAny.array('files', 10),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
 
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
     if (files.length === 0) throw badRequest('No files uploaded. Send them as multipart field "files".');
 
-    const clientId = resolveClientId(actor, typeof req.body.clientId === 'string' ? req.body.clientId : undefined);
+    const restaurantId = typeof req.body.restaurantId === 'string' && req.body.restaurantId ? req.body.restaurantId : undefined;
     const campaignId = typeof req.body.campaignId === 'string' && req.body.campaignId ? req.body.campaignId : undefined;
     const category = typeof req.body.category === 'string' ? req.body.category.slice(0, 80) : undefined;
 
-    // Both references must belong to this tenant before anything is stored.
-    if (clientId) {
-      const client = await prisma.client.findFirst({ where: { id: clientId, organizationId: orgId(actor) }, select: { id: true } });
-      if (!client) throw notFound('Client');
+    // Both references must resolve before anything is written to storage.
+    if (restaurantId) {
+      const restaurant = await prisma.restaurant.findUnique({ where: { id: restaurantId }, select: { id: true } });
+      if (!restaurant) throw notFound('Restaurant');
     }
     if (campaignId) {
-      const campaign = await prisma.campaign.findFirst({ where: { id: campaignId, organizationId: orgId(actor) }, select: { id: true } });
+      const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { id: true } });
       if (!campaign) throw notFound('Campaign');
     }
 
@@ -113,14 +107,13 @@ mediaRouter.post(
       const stored = await storage.save(file.buffer, {
         filename: file.originalname,
         mimeType: file.mimetype,
-        prefix: clientId ? `clients/${clientId}` : 'shared',
+        prefix: restaurantId ? `restaurants/${restaurantId}` : 'shared',
       });
 
       created.push(
         await prisma.media.create({
           data: {
-            organizationId: orgId(actor),
-            clientId: clientId ?? null,
+            restaurantId: restaurantId ?? null,
             campaignId: campaignId ?? null,
             type: typeFor(file.mimetype),
             filename: stored.key,
@@ -145,25 +138,18 @@ mediaRouter.post(
 
 mediaRouter.patch(
   '/:id',
-  requireAgency,
   validateParams(idParam),
   validateBody(
     z.object({
       originalName: z.string().trim().min(1).max(200).optional(),
       category: z.string().trim().max(80).nullish(),
       tags: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
-      clientId: z.string().max(40).nullish(),
+      restaurantId: z.string().max(40).nullish(),
       campaignId: z.string().max(40).nullish(),
     }),
   ),
   asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    assertWritable(actor);
-
-    const existing = await prisma.media.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
-      select: { id: true },
-    });
+    const existing = await prisma.media.findUnique({ where: { id: req.params.id }, select: { id: true } });
     if (!existing) throw notFound('Media');
 
     const media = await prisma.media.update({
@@ -176,14 +162,12 @@ mediaRouter.patch(
 
 mediaRouter.delete(
   '/:id',
-  requireAgency,
   validateParams(idParam),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
 
-    const existing = await prisma.media.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
+    const existing = await prisma.media.findUnique({
+      where: { id: req.params.id },
       select: { id: true, filename: true, originalName: true },
     });
     if (!existing) throw notFound('Media');
@@ -203,14 +187,12 @@ mediaRouter.delete(
   }),
 );
 
-/** Storage totals for the subscription limits panel. */
+/** Storage totals, shown in settings so the operator can see what is on disk. */
 mediaRouter.get(
   '/usage/summary',
-  asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
+  asyncHandler(async (_req, res) => {
     const grouped = await prisma.media.groupBy({
       by: ['type'],
-      where: scopeWhere(actor),
       _sum: { sizeBytes: true },
       _count: { _all: true },
     });

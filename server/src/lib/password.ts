@@ -22,7 +22,7 @@ export async function verifyPassword(hash: string, plain: string): Promise<boole
   }
 }
 
-/** Minimum policy, enforced identically at registration and reset. */
+/** Minimum policy, enforced identically on the API and in `owner:create`. */
 export const PASSWORD_MIN = 10;
 
 export function passwordProblems(password: string): string[] {

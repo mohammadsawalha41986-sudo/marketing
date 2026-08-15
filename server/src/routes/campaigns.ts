@@ -6,25 +6,25 @@ import { z } from 'zod';
 
 import { prisma } from '../lib/prisma.js';
 import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
-import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
+import { actorOf, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { dateRangeQuery, decimalToNumber, idParam, pageResult, paginate, paginationQuery, resolveRange } from '../lib/http.js';
-import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
 import { byDay, byPlatform, derive, previousWindow, sumSnapshots } from '../services/analytics.js';
 import { recordAudit } from '../services/audit.js';
 import { notify } from '../services/notify.js';
+import { workspaceCurrency } from '../lib/workspace.js';
 
 export const campaignsRouter: Router = Router();
 campaignsRouter.use(requireAuth);
 
 const campaignSchema = z
   .object({
-    clientId: z.string().min(1).max(40),
+    restaurantId: z.string().min(1).max(40),
     name: z.string().trim().min(2).max(200),
     objective: z.nativeEnum(CampaignObjective).default(CampaignObjective.AWARENESS),
-    status: z.nativeEnum(CampaignStatus).default(CampaignStatus.DRAFT),
+    status: z.nativeEnum(CampaignStatus).default(CampaignStatus.PLANNING),
     budget: z.coerce.number().nonnegative().max(1_000_000_000),
-    currency: z.string().trim().length(3).default('USD'),
+    currency: z.string().trim().length(3).optional(),
     startDate: z.coerce.date(),
     endDate: z.coerce.date(),
     targetAudience: z.string().trim().max(2000).nullish(),
@@ -41,28 +41,27 @@ const campaignSchema = z
     path: ['endDate'],
   });
 
-const serialise = <T extends { budget: unknown; spend: unknown }>(campaign: T) =>
-  decimalToNumber(campaign as never, ['budget', 'spend']);
+const serialise = <T extends Record<string, unknown>>(campaign: T): T =>
+  decimalToNumber(campaign, ['budget', 'spend']);
+
+const restaurantSelect = { select: { id: true, name: true, businessName: true, logoUrl: true } } as const;
 
 campaignsRouter.get(
   '/',
   validateQuery(
     paginationQuery.extend({
-      clientId: z.string().max(40).optional(),
+      restaurantId: z.string().max(40).optional(),
       status: z.nativeEnum(CampaignStatus).optional(),
       platform: z.nativeEnum(Platform).optional(),
     }),
   ),
   asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
     const query = req.query as unknown as z.infer<typeof paginationQuery> & {
-      clientId?: string; status?: CampaignStatus; platform?: Platform;
+      restaurantId?: string; status?: CampaignStatus; platform?: Platform;
     };
-    const clientId = resolveClientId(actor, query.clientId);
 
     const where: Prisma.CampaignWhereInput = {
-      organizationId: orgId(actor),
-      ...(clientId ? { clientId } : {}),
+      ...(query.restaurantId ? { restaurantId: query.restaurantId } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.platform ? { platforms: { some: { platform: query.platform } } } : {}),
       ...(query.search ? { name: { contains: query.search, mode: 'insensitive' } } : {}),
@@ -74,9 +73,9 @@ campaignsRouter.get(
         ...paginate(query),
         orderBy: [{ status: 'asc' }, { startDate: 'desc' }],
         include: {
-          client: { select: { id: true, name: true, businessName: true, logoUrl: true } },
+          restaurant: restaurantSelect,
           platforms: true,
-          _count: { select: { contents: true } },
+          _count: { select: { contents: true, ads: true } },
         },
       }),
       prisma.campaign.count({ where }),
@@ -88,38 +87,34 @@ campaignsRouter.get(
 
 campaignsRouter.post(
   '/',
-  requireAgency,
   validateBody(campaignSchema),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
     const body = req.body as z.infer<typeof campaignSchema>;
 
-    const client = await prisma.client.findFirst({
-      where: { id: body.clientId, organizationId: orgId(actor) },
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: body.restaurantId },
       select: { id: true, name: true },
     });
-    if (!client) throw notFound('Client');
+    if (!restaurant) throw notFound('Restaurant');
 
-    const { platforms, ...data } = body;
+    const { platforms, currency, ...data } = body;
     const campaign = await prisma.campaign.create({
       data: {
         ...data,
-        organizationId: orgId(actor),
+        currency: currency ?? (await workspaceCurrency()),
         budget: new Prisma.Decimal(data.budget),
         platforms: { create: platforms.map((p) => ({ platform: p.platform, budget: new Prisma.Decimal(p.budget) })) },
       },
-      include: { platforms: true, client: { select: { id: true, name: true } } },
+      include: { platforms: true, restaurant: restaurantSelect },
     });
 
     await notify({
-      organizationId: orgId(actor),
-      clientId: client.id,
+      restaurantId: restaurant.id,
       type: NotificationType.CAMPAIGN_CREATED,
       title: `New campaign: ${campaign.name}`,
-      body: `Created for ${client.name}.`,
-      link: `/app/campaigns/${campaign.id}`,
-      audience: 'both',
+      body: `Created for ${restaurant.name}.`,
+      link: `/campaigns/${campaign.id}`,
     });
     await recordAudit({ actor, action: 'campaign.create', entity: 'Campaign', entityId: campaign.id, ip: req.ip });
 
@@ -131,11 +126,10 @@ campaignsRouter.get(
   '/:id',
   validateParams(idParam),
   asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    const campaign = await prisma.campaign.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: req.params.id },
       include: {
-        client: { select: { id: true, name: true, businessName: true, logoUrl: true } },
+        restaurant: restaurantSelect,
         platforms: true,
         contents: {
           orderBy: { scheduledAt: 'asc' },
@@ -144,11 +138,24 @@ campaignsRouter.get(
             scheduledAt: true, headline: true, updatedAt: true,
           },
         },
-        _count: { select: { contents: true, media: true } },
+        ads: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true, name: true, platform: true, status: true, spend: true,
+            impressions: true, clicks: true, conversions: true, metricsAt: true,
+          },
+        },
+        _count: { select: { contents: true, media: true, ads: true } },
       },
     });
     if (!campaign) throw notFound('Campaign');
-    res.json({ campaign: serialise(campaign) });
+
+    res.json({
+      campaign: {
+        ...serialise(campaign),
+        ads: campaign.ads.map((ad) => decimalToNumber(ad, ['spend'])),
+      },
+    });
   }),
 );
 
@@ -157,9 +164,8 @@ campaignsRouter.get(
   validateParams(idParam),
   validateQuery(dateRangeQuery),
   asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    const campaign = await prisma.campaign.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: req.params.id },
       select: { id: true, budget: true, startDate: true, endDate: true },
     });
     if (!campaign) throw notFound('Campaign');
@@ -169,7 +175,7 @@ campaignsRouter.get(
 
     const select = {
       platform: true, date: true, spend: true, reach: true, impressions: true,
-      clicks: true, conversions: true, revenue: true, engagements: true,
+      clicks: true, leads: true, conversions: true, revenue: true, engagements: true,
     } as const;
 
     const [current, previous] = await Promise.all([
@@ -200,15 +206,13 @@ campaignsRouter.get(
 
 campaignsRouter.patch(
   '/:id',
-  requireAgency,
   validateParams(idParam),
   validateBody(campaignSchema.innerType().partial()),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
 
-    const existing = await prisma.campaign.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
+    const existing = await prisma.campaign.findUnique({
+      where: { id: req.params.id },
       select: { id: true, startDate: true, endDate: true },
     });
     if (!existing) throw notFound('Campaign');
@@ -218,7 +222,9 @@ campaignsRouter.patch(
     const end = body.endDate ?? existing.endDate;
     if (end < start) throw badRequest('End date must fall on or after the start date');
 
-    const { platforms, clientId: _ignored, budget, ...rest } = body;
+    // The restaurant a campaign belongs to is fixed at creation: moving it would
+    // orphan its content, ads and analytics from the restaurant they describe.
+    const { platforms, restaurantId: _pinned, budget, ...rest } = body;
 
     const campaign = await prisma.campaign.update({
       where: { id: existing.id },
@@ -234,7 +240,7 @@ campaignsRouter.patch(
             }
           : {}),
       },
-      include: { platforms: true, client: { select: { id: true, name: true } } },
+      include: { platforms: true, restaurant: restaurantSelect },
     });
 
     await recordAudit({ actor, action: 'campaign.update', entity: 'Campaign', entityId: campaign.id, ip: req.ip });
@@ -244,14 +250,12 @@ campaignsRouter.patch(
 
 campaignsRouter.delete(
   '/:id',
-  requireAgency,
   validateParams(idParam),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
 
-    const existing = await prisma.campaign.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
+    const existing = await prisma.campaign.findUnique({
+      where: { id: req.params.id },
       select: { id: true, name: true },
     });
     if (!existing) throw notFound('Campaign');

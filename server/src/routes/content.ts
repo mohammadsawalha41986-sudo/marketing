@@ -1,4 +1,4 @@
-/** /api/content — the content studio: CRUD, AI generation, scheduling, submission. */
+/** /api/content — the content studio: CRUD, AI generation, scheduling. */
 
 import { Router } from 'express';
 import { ContentStatus, ContentType, Language, NotificationType, Platform, Prisma } from '@prisma/client';
@@ -6,10 +6,9 @@ import { z } from 'zod';
 
 import { prisma } from '../lib/prisma.js';
 import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
-import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
+import { actorOf, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
-import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
 import { brandContext, generateCopy, generateHashtags, platformRule } from '../services/ai/index.js';
 import { recordAiUsage, recordAudit } from '../services/audit.js';
 import { notify } from '../services/notify.js';
@@ -28,35 +27,40 @@ const copyFields = {
 };
 
 const createSchema = z.object({
-  clientId: z.string().min(1).max(40),
+  restaurantId: z.string().min(1).max(40),
   campaignId: z.string().max(40).nullish(),
   name: z.string().trim().min(2).max(200),
   type: z.nativeEnum(ContentType).default(ContentType.POST),
+  status: z.nativeEnum(ContentStatus).default(ContentStatus.IDEA),
   platform: z.nativeEnum(Platform),
   language: z.nativeEnum(Language).default(Language.EN),
   tone: z.string().trim().max(120).nullish(),
   productService: z.string().trim().max(300).nullish(),
   offer: z.string().trim().max(300).nullish(),
   audience: z.string().trim().max(500).nullish(),
+  brief: z.string().trim().max(4000).nullish(),
+  notes: z.string().trim().max(4000).nullish(),
   scheduledAt: z.coerce.date().nullish(),
-  timezone: z.string().trim().max(60).default('UTC'),
+  timezone: z.string().trim().max(60).default('Asia/Riyadh'),
   mediaIds: z.array(z.string().max(40)).max(10).default([]),
   hashtags: z.array(z.string().trim().min(2).max(60)).max(30).default([]),
   ...copyFields,
 });
 
-const updateSchema = createSchema.partial().extend({
-  status: z.nativeEnum(ContentStatus).optional(),
-});
+const updateSchema = createSchema.partial();
 
-/** Confirms both the client and (optional) campaign belong to this tenant. */
-async function assertRefs(organizationId: string, clientId: string, campaignId?: string | null) {
-  const client = await prisma.client.findFirst({ where: { id: clientId, organizationId }, select: { id: true } });
-  if (!client) throw notFound('Client');
+/**
+ * Confirms the restaurant exists and that the campaign, if given, belongs to
+ * that same restaurant. This is what keeps one restaurant's content from ever
+ * being filed under another's campaign.
+ */
+async function assertRefs(restaurantId: string, campaignId?: string | null) {
+  const restaurant = await prisma.restaurant.findUnique({ where: { id: restaurantId }, select: { id: true } });
+  if (!restaurant) throw notFound('Restaurant');
 
   if (campaignId) {
     const campaign = await prisma.campaign.findFirst({
-      where: { id: campaignId, organizationId, clientId },
+      where: { id: campaignId, restaurantId },
       select: { id: true },
     });
     if (!campaign) throw notFound('Campaign');
@@ -64,43 +68,42 @@ async function assertRefs(organizationId: string, clientId: string, campaignId?:
 }
 
 const contentInclude = {
-  client: { select: { id: true, name: true, businessName: true, logoUrl: true } },
+  restaurant: { select: { id: true, name: true, businessName: true, logoUrl: true } },
   campaign: { select: { id: true, name: true } },
   author: { select: { id: true, name: true } },
   hashtags: { select: { id: true, tag: true, source: true } },
   mediaLinks: { include: { media: true }, orderBy: { position: 'asc' } },
-  approvals: { orderBy: { createdAt: 'desc' }, take: 5, include: { decidedBy: { select: { id: true, name: true } } } },
-  comments: { orderBy: { createdAt: 'desc' }, take: 20, include: { author: { select: { id: true, name: true } } } },
 } satisfies Prisma.ContentInclude;
 
 contentRouter.get(
   '/',
   validateQuery(
     paginationQuery.extend({
-      clientId: z.string().max(40).optional(),
+      restaurantId: z.string().max(40).optional(),
       campaignId: z.string().max(40).optional(),
       status: z.nativeEnum(ContentStatus).optional(),
+      type: z.nativeEnum(ContentType).optional(),
       platform: z.nativeEnum(Platform).optional(),
     }),
   ),
   asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
     const query = req.query as unknown as z.infer<typeof paginationQuery> & {
-      clientId?: string; campaignId?: string; status?: ContentStatus; platform?: Platform;
+      restaurantId?: string; campaignId?: string; status?: ContentStatus;
+      type?: ContentType; platform?: Platform;
     };
-    const clientId = resolveClientId(actor, query.clientId);
 
     const where: Prisma.ContentWhereInput = {
-      organizationId: orgId(actor),
-      ...(clientId ? { clientId } : {}),
+      ...(query.restaurantId ? { restaurantId: query.restaurantId } : {}),
       ...(query.campaignId ? { campaignId: query.campaignId } : {}),
       ...(query.status ? { status: query.status } : {}),
+      ...(query.type ? { type: query.type } : {}),
       ...(query.platform ? { platform: query.platform } : {}),
       ...(query.search
         ? {
             OR: [
               { name: { contains: query.search, mode: 'insensitive' } },
               { headline: { contains: query.search, mode: 'insensitive' } },
+              { caption: { contains: query.search, mode: 'insensitive' } },
             ],
           }
         : {}),
@@ -112,7 +115,7 @@ contentRouter.get(
         ...paginate(query),
         orderBy: { updatedAt: 'desc' },
         include: {
-          client: { select: { id: true, name: true } },
+          restaurant: { select: { id: true, name: true, logoUrl: true } },
           campaign: { select: { id: true, name: true } },
           hashtags: { select: { tag: true } },
           mediaLinks: { include: { media: { select: { id: true, url: true, thumbnailUrl: true, type: true } } }, take: 1 },
@@ -127,27 +130,25 @@ contentRouter.get(
 
 contentRouter.post(
   '/',
-  requireAgency,
   validateBody(createSchema),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
     const body = req.body as z.infer<typeof createSchema>;
-    await assertRefs(orgId(actor), body.clientId, body.campaignId);
+    await assertRefs(body.restaurantId, body.campaignId);
 
     const { mediaIds, hashtags, ...data } = body;
 
     const content = await prisma.content.create({
       data: {
         ...data,
-        organizationId: orgId(actor),
         authorId: actor.id,
-        status: data.scheduledAt ? ContentStatus.DRAFT : ContentStatus.DRAFT,
         hashtags: { create: hashtags.map((tag) => ({ tag, source: 'manual' })) },
         mediaLinks: { create: mediaIds.map((mediaId, position) => ({ mediaId, position })) },
       },
       include: contentInclude,
     });
+
+    if (content.scheduledAt) await syncCalendar(content.id);
 
     await recordAudit({ actor, action: 'content.create', entity: 'Content', entityId: content.id, ip: req.ip });
     res.status(201).json({ content });
@@ -158,9 +159,8 @@ contentRouter.get(
   '/:id',
   validateParams(idParam),
   asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    const content = await prisma.content.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
+    const content = await prisma.content.findUnique({
+      where: { id: req.params.id },
       include: contentInclude,
     });
     if (!content) throw notFound('Content');
@@ -170,28 +170,29 @@ contentRouter.get(
 
 contentRouter.patch(
   '/:id',
-  requireAgency,
   validateParams(idParam),
   validateBody(updateSchema),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
 
-    const existing = await prisma.content.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
-      select: { id: true, clientId: true },
+    const existing = await prisma.content.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, restaurantId: true },
     });
     if (!existing) throw notFound('Content');
 
     const body = req.body as z.infer<typeof updateSchema>;
-    if (body.campaignId) await assertRefs(orgId(actor), existing.clientId, body.campaignId);
+    if (body.campaignId) await assertRefs(existing.restaurantId, body.campaignId);
 
-    const { mediaIds, hashtags, clientId: _pinned, ...data } = body;
+    // The restaurant is fixed at creation, for the same reason a campaign's is.
+    const { mediaIds, hashtags, restaurantId: _pinned, ...data } = body;
 
     const content = await prisma.content.update({
       where: { id: existing.id },
       data: {
         ...data,
+        // Publishing stamps the date the dashboards count from.
+        ...(data.status === ContentStatus.PUBLISHED ? { publishedAt: new Date() } : {}),
         ...(hashtags ? { hashtags: { deleteMany: {}, create: hashtags.map((tag) => ({ tag, source: 'manual' })) } } : {}),
         ...(mediaIds
           ? { mediaLinks: { deleteMany: {}, create: mediaIds.map((mediaId, position) => ({ mediaId, position })) } }
@@ -201,7 +202,9 @@ contentRouter.patch(
     });
 
     // The calendar row mirrors the schedule, so it is kept in step here.
-    if (data.scheduledAt !== undefined) await syncCalendar(content.id);
+    if (data.scheduledAt !== undefined || data.name !== undefined || data.platform !== undefined) {
+      await syncCalendar(content.id);
+    }
 
     await recordAudit({ actor, action: 'content.update', entity: 'Content', entityId: content.id, ip: req.ip });
     res.json({ content });
@@ -210,14 +213,12 @@ contentRouter.patch(
 
 contentRouter.delete(
   '/:id',
-  requireAgency,
   validateParams(idParam),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
 
-    const existing = await prisma.content.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
+    const existing = await prisma.content.findUnique({
+      where: { id: req.params.id },
       select: { id: true, name: true },
     });
     if (!existing) throw notFound('Content');
@@ -235,28 +236,27 @@ contentRouter.delete(
 
 const scheduleSchema = z.object({
   scheduledAt: z.coerce.date(),
-  timezone: z.string().trim().max(60).default('UTC'),
+  timezone: z.string().trim().max(60).default('Asia/Riyadh'),
 });
 
 contentRouter.post(
   '/:id/schedule',
-  requireAgency,
   validateParams(idParam),
   validateBody(scheduleSchema),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    assertWritable(actor);
     const { scheduledAt, timezone } = req.body as z.infer<typeof scheduleSchema>;
 
-    const existing = await prisma.content.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
-      select: { id: true, status: true },
+    const existing = await prisma.content.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, status: true, restaurantId: true, name: true },
     });
     if (!existing) throw notFound('Content');
 
-    // Scheduling unapproved work is the mistake this guard exists to prevent.
-    if (existing.status !== ContentStatus.APPROVED && existing.status !== ContentStatus.SCHEDULED) {
-      throw badRequest('Content must be approved before it can be scheduled');
+    // Already-published work is history. Re-dating it would silently rewrite
+    // what the analytics and reports say went out, and when.
+    if (existing.status === ContentStatus.PUBLISHED) {
+      throw badRequest('This content has already been published and cannot be rescheduled');
     }
 
     const content = await prisma.content.update({
@@ -266,7 +266,50 @@ contentRouter.post(
     });
     await syncCalendar(content.id);
 
+    await notify({
+      restaurantId: existing.restaurantId,
+      type: NotificationType.CONTENT_SCHEDULED,
+      title: `Scheduled: ${content.name}`,
+      body: `${content.restaurant.name} · ${scheduledAt.toISOString().slice(0, 16).replace('T', ' ')}`,
+      link: `/content/${content.id}`,
+    });
     await recordAudit({ actor, action: 'content.schedule', entity: 'Content', entityId: content.id, ip: req.ip });
+    res.json({ content });
+  }),
+);
+
+contentRouter.post(
+  '/:id/publish',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+
+    const existing = await prisma.content.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, status: true, restaurantId: true },
+    });
+    if (!existing) throw notFound('Content');
+    if (existing.status === ContentStatus.PUBLISHED) throw badRequest('This content is already published');
+
+    /*
+     * This records that the operator published the post; it does not post to
+     * any network. No publishing integration exists — the ad-platform adapters
+     * are architecture only — and marking it "published" here is a statement
+     * about what the operator did, not a claim that the app did it.
+     */
+    const content = await prisma.content.update({
+      where: { id: existing.id },
+      data: { status: ContentStatus.PUBLISHED, publishedAt: new Date() },
+      include: contentInclude,
+    });
+
+    await notify({
+      restaurantId: existing.restaurantId,
+      type: NotificationType.CONTENT_PUBLISHED,
+      title: `Published: ${content.name}`,
+      link: `/content/${content.id}`,
+    });
+    await recordAudit({ actor, action: 'content.publish', entity: 'Content', entityId: content.id, ip: req.ip });
     res.json({ content });
   }),
 );
@@ -275,10 +318,7 @@ contentRouter.post(
 async function syncCalendar(contentId: string): Promise<void> {
   const content = await prisma.content.findUnique({
     where: { id: contentId },
-    select: {
-      id: true, name: true, platform: true, scheduledAt: true, timezone: true,
-      organizationId: true, clientId: true,
-    },
+    select: { id: true, name: true, platform: true, scheduledAt: true, timezone: true, restaurantId: true },
   });
   if (!content) return;
 
@@ -291,8 +331,7 @@ async function syncCalendar(contentId: string): Promise<void> {
     where: { contentId },
     create: {
       contentId,
-      organizationId: content.organizationId,
-      clientId: content.clientId,
+      restaurantId: content.restaurantId,
       title: content.name,
       platform: content.platform,
       startAt: content.scheduledAt,
@@ -307,51 +346,10 @@ async function syncCalendar(contentId: string): Promise<void> {
   });
 }
 
-// ------------------------------------------------------------------ approval flow
-
-contentRouter.post(
-  '/:id/submit',
-  requireAgency,
-  validateParams(idParam),
-  asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    assertWritable(actor);
-
-    const existing = await prisma.content.findFirst({
-      where: { id: req.params.id, ...scopeWhere(actor) },
-      include: { client: { select: { id: true, name: true } } },
-    });
-    if (!existing) throw notFound('Content');
-
-    const content = await prisma.content.update({
-      where: { id: existing.id },
-      data: {
-        status: ContentStatus.SUBMITTED,
-        approvals: {
-          create: { organizationId: existing.organizationId, clientId: existing.clientId, status: 'PENDING' },
-        },
-      },
-      include: contentInclude,
-    });
-
-    await notify({
-      organizationId: existing.organizationId,
-      clientId: existing.clientId,
-      type: NotificationType.APPROVAL_REQUESTED,
-      title: `Approval needed: ${content.name}`,
-      body: `${existing.client.name} has content waiting for review.`,
-      link: `/client/approvals`,
-      audience: 'both',
-    });
-
-    res.json({ content });
-  }),
-);
-
 // ------------------------------------------------------------------ AI studio
 
 const generateSchema = z.object({
-  clientId: z.string().min(1).max(40),
+  restaurantId: z.string().min(1).max(40),
   platform: z.nativeEnum(Platform),
   contentType: z.nativeEnum(ContentType).default(ContentType.POST),
   language: z.nativeEnum(Language).default(Language.EN),
@@ -363,21 +361,21 @@ const generateSchema = z.object({
 });
 
 /**
- * Generate copy. Nothing is written to the database here — the result goes back
- * to the studio for the user to edit and then save through the normal endpoints.
+ * Generate copy for one restaurant.
+ *
+ * The brand context is loaded from the named restaurant and nothing else is
+ * passed in, so a generation for one restaurant cannot pick up another's tone,
+ * offers or forbidden words. Nothing is written to the database here — the
+ * result goes back to the studio for the operator to edit and then save through
+ * the normal endpoints.
  */
 contentRouter.post(
   '/generate',
-  requireAgency,
   validateBody(generateSchema),
   asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    assertWritable(actor);
     const body = req.body as z.infer<typeof generateSchema>;
 
-    const brand = await prisma.brand.findFirst({
-      where: { clientId: body.clientId, organizationId: orgId(actor) },
-    });
+    const brand = await prisma.brand.findUnique({ where: { restaurantId: body.restaurantId } });
     if (!brand) throw notFound('Brand');
 
     const result = await generateCopy(brandContext(brand), {
@@ -392,9 +390,7 @@ contentRouter.post(
     });
 
     await recordAiUsage({
-      organizationId: orgId(actor),
-      clientId: body.clientId,
-      userId: actor.id,
+      restaurantId: body.restaurantId,
       kind: 'CONTENT',
       model: result.model,
       provider: result.provider,
@@ -410,16 +406,11 @@ contentRouter.post(
 
 contentRouter.post(
   '/hashtags',
-  requireAgency,
   validateBody(generateSchema.extend({ limit: z.coerce.number().int().min(1).max(30).optional() })),
   asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    assertWritable(actor);
     const body = req.body as z.infer<typeof generateSchema> & { limit?: number };
 
-    const brand = await prisma.brand.findFirst({
-      where: { clientId: body.clientId, organizationId: orgId(actor) },
-    });
+    const brand = await prisma.brand.findUnique({ where: { restaurantId: body.restaurantId } });
     if (!brand) throw notFound('Brand');
 
     const result = await generateHashtags(
@@ -437,9 +428,7 @@ contentRouter.post(
     );
 
     await recordAiUsage({
-      organizationId: orgId(actor),
-      clientId: body.clientId,
-      userId: actor.id,
+      restaurantId: body.restaurantId,
       kind: 'HASHTAGS',
       model: result.model,
       provider: result.provider,

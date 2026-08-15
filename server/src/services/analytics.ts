@@ -13,6 +13,7 @@ export interface RawSnapshot {
   reach: number;
   impressions: number;
   clicks: number;
+  leads: number;
   conversions: number;
   revenue: Prisma.Decimal | number;
   engagements: number;
@@ -23,6 +24,7 @@ export interface Totals {
   reach: number;
   impressions: number;
   clicks: number;
+  leads: number;
   conversions: number;
   revenue: number;
   engagements: number;
@@ -33,6 +35,7 @@ export interface Derived extends Totals {
   cpc: number;
   cpm: number;
   cpa: number;
+  costPerLead: number;
   conversionRate: number;
   roas: number;
   engagementRate: number;
@@ -42,7 +45,7 @@ const toNumber = (value: Prisma.Decimal | number): number =>
   typeof value === 'number' ? value : Number(value.toString());
 
 export function emptyTotals(): Totals {
-  return { spend: 0, reach: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0, engagements: 0 };
+  return { spend: 0, reach: 0, impressions: 0, clicks: 0, leads: 0, conversions: 0, revenue: 0, engagements: 0 };
 }
 
 export function sumSnapshots(rows: RawSnapshot[]): Totals {
@@ -51,6 +54,7 @@ export function sumSnapshots(rows: RawSnapshot[]): Totals {
     acc.reach += row.reach;
     acc.impressions += row.impressions;
     acc.clicks += row.clicks;
+    acc.leads += row.leads;
     acc.conversions += row.conversions;
     acc.revenue += toNumber(row.revenue);
     acc.engagements += row.engagements;
@@ -67,6 +71,7 @@ export function derive(totals: Totals): Derived {
     cpc: safe(totals.spend, totals.clicks),
     cpm: safe(totals.spend * 1000, totals.impressions),
     cpa: safe(totals.spend, totals.conversions),
+    costPerLead: safe(totals.spend, totals.leads),
     conversionRate: safe(totals.conversions, totals.clicks),
     roas: safe(totals.revenue, totals.spend),
     engagementRate: safe(totals.engagements, totals.impressions),
@@ -153,4 +158,44 @@ export function daysBetween(from: Date, to: Date): number {
 export function previousWindow(from: Date, to: Date): { from: Date; to: Date } {
   const span = to.getTime() - from.getTime();
   return { from: new Date(from.getTime() - span - 86400000), to: new Date(from.getTime() - 86400000) };
+}
+
+// ---------------------------------------------------------------- ads
+
+/** The stored figures an ad's ratios are computed from. */
+export interface AdMetricSource {
+  spend: Prisma.Decimal | number;
+  revenue: Prisma.Decimal | number;
+  impressions: number;
+  reach: number;
+  clicks: number;
+  leads: number;
+  conversions: number;
+}
+
+/**
+ * Per-ad ratios, derived on read.
+ *
+ * Deliberately not columns on the Ad table. A stored CTR is a second copy of
+ * something the clicks and impressions already say, and the two only ever
+ * disagree — the moment someone corrects a figure, every rate saved beside it
+ * is wrong until it is recomputed.
+ */
+export function deriveAd(ad: AdMetricSource): {
+  ctr: number; cpc: number; cpm: number; cpa: number;
+  costPerLead: number; conversionRate: number; roas: number;
+} {
+  const safe = (numerator: number, denominator: number) => (denominator === 0 ? 0 : numerator / denominator);
+  const spend = toNumber(ad.spend);
+  const revenue = toNumber(ad.revenue);
+
+  return {
+    ctr: safe(ad.clicks, ad.impressions),
+    cpc: safe(spend, ad.clicks),
+    cpm: safe(spend * 1000, ad.impressions),
+    cpa: safe(spend, ad.conversions),
+    costPerLead: safe(spend, ad.leads),
+    conversionRate: safe(ad.conversions, ad.clicks),
+    roas: safe(revenue, spend),
+  };
 }
