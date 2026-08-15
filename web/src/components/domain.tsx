@@ -9,41 +9,37 @@ import { Badge, Card, type BadgeTone } from './ui';
 import { cn } from '../lib/utils';
 import { useI18n } from '../lib/i18n';
 import { delta, money, num, PLATFORM_COLORS, PLATFORM_LABELS, pct, ratio } from '../lib/format';
-import type { ApprovalStatus, CampaignStatus, ContentStatus, Platform } from '../lib/api';
+import type { AdStatus, CampaignStatus, ContentStatus, RestaurantStatus, Platform } from '../lib/api';
 
 // ---------------------------------------------------------------- status
 
-const CAMPAIGN_TONES: Record<CampaignStatus, BadgeTone> = {
+/*
+ * Campaign, ad and restaurant statuses share a badge because they share a
+ * lifecycle shape — planning, running, paused, finished — and giving each its
+ * own map would be three copies of the same colours.
+ */
+const CAMPAIGN_TONES: Record<CampaignStatus | AdStatus | RestaurantStatus, BadgeTone> = {
+  PLANNING: 'neutral',
   DRAFT: 'neutral',
-  SCHEDULED: 'brand',
-  RUNNING: 'ok',
+  ACTIVE: 'ok',
   PAUSED: 'warn',
   COMPLETED: 'accent',
-  CANCELLED: 'danger',
+  ARCHIVED: 'neutral',
 };
 
 const CONTENT_TONES: Record<ContentStatus, BadgeTone> = {
+  IDEA: 'neutral',
   DRAFT: 'neutral',
-  SUBMITTED: 'warn',
-  APPROVED: 'ok',
-  REJECTED: 'danger',
-  CHANGES_REQUESTED: 'warn',
+  READY: 'warn',
   SCHEDULED: 'brand',
   PUBLISHED: 'accent',
-  FAILED: 'danger',
-};
-
-const APPROVAL_TONES: Record<ApprovalStatus, BadgeTone> = {
-  PENDING: 'warn',
-  APPROVED: 'ok',
-  REJECTED: 'danger',
-  CHANGES_REQUESTED: 'warn',
+  ARCHIVED: 'neutral',
 };
 
 const label = (value: string) => value.replace(/_/g, ' ').toLowerCase();
 
-export function StatusBadge({ status, kind }: { status: string; kind: 'campaign' | 'content' | 'approval' }) {
-  const tones = kind === 'campaign' ? CAMPAIGN_TONES : kind === 'content' ? CONTENT_TONES : APPROVAL_TONES;
+export function StatusBadge({ status, kind }: { status: string; kind: 'campaign' | 'content' }) {
+  const tones = kind === 'campaign' ? CAMPAIGN_TONES : CONTENT_TONES;
   const tone = (tones as Record<string, BadgeTone>)[status] ?? 'neutral';
   return <Badge tone={tone} dot>{label(status)}</Badge>;
 }

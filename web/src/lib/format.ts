@@ -4,15 +4,36 @@ import type { Lang } from './i18n';
 
 const locales: Record<Lang, string> = { en: 'en-US', ar: 'ar-JO-u-nu-latn' };
 
+/*
+ * The workspace currency, held at module scope.
+ *
+ * money() is called from roughly a hundred places, most of them deep inside
+ * table cells and chart tooltips. Threading a currency prop through all of them
+ * would add a parameter to every one of those call sites to carry a value that
+ * is the same everywhere in the application. The AuthProvider sets this once
+ * when the workspace loads, which is before any figure is rendered.
+ */
+let currencyCode = 'SAR';
+
+export function setCurrency(code: string): void {
+  if (/^[A-Z]{3}$/.test(code)) currencyCode = code;
+}
+
+export function currency(): string {
+  return currencyCode;
+}
+
 export function money(value: number, lang: Lang = 'en', compact = false): string {
   const abs = Math.abs(value);
   if (compact && abs >= 1000) {
-    if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 1 : 2)}M`;
-    return `$${(value / 1000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
+    const unit = abs >= 1_000_000
+      ? `${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 1 : 2)}M`
+      : `${(value / 1000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
+    return `${currencyCode} ${unit}`;
   }
   return new Intl.NumberFormat(locales[lang], {
     style: 'currency',
-    currency: 'USD',
+    currency: currencyCode,
     maximumFractionDigits: abs < 100 ? 2 : 0,
   }).format(value);
 }

@@ -1,12 +1,12 @@
 /** The application shell: sidebar, top bar, mobile navigation. */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, CreditCard, FileText, Image,
-  LayoutDashboard, Languages, LogOut, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
-  Settings, Shield, Sparkles, Sun, ThumbsUp, Users, X, type LucideIcon,
+  Bell, CalendarDays, ChartNoAxesCombined, ChevronDown, FileText, Image, LayoutDashboard,
+  Languages, ListChecks, LogOut, Megaphone, Menu, Moon, PenLine, Settings, Sparkles, Store,
+  Sun, Target, X, type LucideIcon,
 } from 'lucide-react';
 
 import { api, qs, type Paginated } from '../lib/api';
@@ -15,7 +15,7 @@ import { useI18n, type TranslationKey } from '../lib/i18n';
 import { useTheme } from '../lib/theme';
 import { cn } from '../lib/utils';
 import { relative } from '../lib/format';
-import { Avatar, Badge, useToast } from './ui';
+import { Avatar, useToast } from './ui';
 
 interface NavItem {
   to: string;
@@ -24,74 +24,41 @@ interface NavItem {
   end?: boolean;
 }
 
-const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
+/**
+ * One navigation, grouped by what the operator is doing rather than by feature
+ * area: the daily production work, then the things that measure it.
+ */
+const NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
   {
     heading: 'nav.overview',
     items: [
-      { to: '/app/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard },
-      { to: '/app/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
-      { to: '/app/reports', labelKey: 'nav.reports', icon: FileText },
+      { to: '/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard },
+      { to: '/restaurants', labelKey: 'nav.restaurants', icon: Store },
     ],
   },
   {
-    heading: 'nav.workspace',
+    heading: 'nav.operate',
     items: [
-      { to: '/app/clients', labelKey: 'nav.clients', icon: Building2 },
-      { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
-      { to: '/app/content', labelKey: 'nav.content', icon: PenLine },
-      { to: '/app/studio', labelKey: 'nav.studio', icon: Sparkles },
-      { to: '/app/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
-      { to: '/app/media', labelKey: 'nav.media', icon: Image },
-      { to: '/app/approvals', labelKey: 'nav.approvals', icon: ThumbsUp },
+      { to: '/content', labelKey: 'nav.content', icon: PenLine },
+      { to: '/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
+      { to: '/ads', labelKey: 'nav.ads', icon: Target },
+      { to: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
+      { to: '/media', labelKey: 'nav.media', icon: Image },
+      { to: '/ai', labelKey: 'nav.ai', icon: Sparkles },
+      { to: '/tasks', labelKey: 'nav.tasks', icon: ListChecks },
     ],
   },
   {
-    heading: 'nav.settings',
+    heading: 'nav.measure',
     items: [
-      { to: '/app/brand', labelKey: 'nav.brand', icon: Palette },
-      { to: '/app/integrations', labelKey: 'nav.integrations', icon: CreditCard },
-      { to: '/app/settings', labelKey: 'nav.settings', icon: Settings },
+      { to: '/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
+      { to: '/reports', labelKey: 'nav.reports', icon: FileText },
+      { to: '/settings', labelKey: 'nav.settings', icon: Settings },
     ],
   },
 ];
 
-const CLIENT_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
-  {
-    heading: 'nav.overview',
-    items: [
-      { to: '/client/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard },
-      { to: '/client/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
-      { to: '/client/reports', labelKey: 'nav.reports', icon: FileText },
-    ],
-  },
-  {
-    heading: 'nav.workspace',
-    items: [
-      { to: '/client/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
-      { to: '/client/content', labelKey: 'nav.content', icon: PenLine },
-      { to: '/client/approvals', labelKey: 'nav.approvals', icon: ThumbsUp },
-      { to: '/client/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
-      { to: '/client/brand', labelKey: 'nav.brand', icon: Palette },
-    ],
-  },
-];
-
-const ADMIN_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
-  {
-    heading: 'nav.admin',
-    items: [
-      { to: '/admin/dashboard', labelKey: 'nav.dashboard', icon: Shield },
-      { to: '/admin/clients', labelKey: 'nav.clients', icon: Building2 },
-      { to: '/admin/users', labelKey: 'nav.users', icon: Users },
-      { to: '/admin/plans', labelKey: 'nav.plans', icon: CreditCard },
-      { to: '/admin/subscriptions', labelKey: 'nav.subscriptions', icon: FileText },
-      { to: '/admin/settings', labelKey: 'nav.settings', icon: Settings },
-      { to: '/admin/audit', labelKey: 'nav.audit', icon: ScrollText },
-    ],
-  },
-];
-
-function Logo({ collapsed }: { collapsed?: boolean }) {
+function Logo({ collapsed, name }: { collapsed?: boolean; name: string }) {
   return (
     <span className="flex items-center gap-2.5">
       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand to-accent text-white shadow-glow">
@@ -99,14 +66,14 @@ function Logo({ collapsed }: { collapsed?: boolean }) {
       </span>
       {!collapsed ? (
         <span className="min-w-0">
-          <span className="block truncate text-[15px] font-semibold leading-tight text-fg">Marketing OS</span>
+          <span className="block truncate text-[15px] font-semibold leading-tight text-fg">{name}</span>
         </span>
       ) : null}
     </span>
   );
 }
 
-function NavSection({ section, onNavigate }: { section: (typeof AGENCY_NAV)[number]; onNavigate?: () => void }) {
+function NavSection({ section, onNavigate }: { section: (typeof NAV)[number]; onNavigate?: () => void }) {
   const { t } = useI18n();
   return (
     <div className="mb-5">
@@ -304,7 +271,7 @@ function NotificationBell() {
 }
 
 function UserMenu() {
-  const { user, signOut, isSuperAdmin, isClientUser } = useAuth();
+  const { user, signOut } = useAuth();
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
@@ -322,7 +289,6 @@ function UserMenu() {
 
   if (!user) return null;
 
-  const roleLabel = user.role.replace(/_/g, ' ').toLowerCase();
 
   return (
     <div className="relative" ref={ref}>
@@ -333,7 +299,7 @@ function UserMenu() {
         <Avatar name={user.name} src={user.avatarUrl} size={28} />
         <span className="hidden min-w-0 text-start sm:block">
           <span className="block max-w-[9rem] truncate text-[13px] font-medium leading-tight text-fg">{user.name}</span>
-          <span className="block text-[11px] capitalize leading-tight text-muted">{roleLabel}</span>
+          <span className="block max-w-[9rem] truncate text-[11px] leading-tight text-muted">{user.email}</span>
         </span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted" />
       </button>
@@ -350,28 +316,15 @@ function UserMenu() {
             <div className="border-b border-line px-3 py-2.5">
               <p className="truncate text-sm font-medium text-fg">{user.name}</p>
               <p className="truncate text-[12px] text-muted">{user.email}</p>
-              {user.organization ? (
-                <Badge tone="brand" className="mt-2">{user.organization.name}</Badge>
-              ) : null}
             </div>
 
             <div className="py-1">
-              {!isClientUser ? (
-                <button
-                  onClick={() => { navigate('/app/settings'); setOpen(false); }}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] text-muted transition-colors hover:bg-elevated hover:text-fg"
-                >
-                  <Settings className="h-4 w-4" /> {t('nav.settings')}
-                </button>
-              ) : null}
-              {isSuperAdmin ? (
-                <button
-                  onClick={() => { navigate('/admin/dashboard'); setOpen(false); }}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] text-muted transition-colors hover:bg-elevated hover:text-fg"
-                >
-                  <Shield className="h-4 w-4" /> {t('nav.admin')}
-                </button>
-              ) : null}
+              <button
+                onClick={() => { navigate('/settings'); setOpen(false); }}
+                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] text-muted transition-colors hover:bg-elevated hover:text-fg"
+              >
+                <Settings className="h-4 w-4" /> {t('nav.settings')}
+              </button>
               <button
                 onClick={async () => {
                   await signOut();
@@ -390,17 +343,13 @@ function UserMenu() {
   );
 }
 
-export function AppShell({ children, variant }: { children: React.ReactNode; variant: 'agency' | 'client' | 'admin' }) {
+export function AppShell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const { user, isSuperAdmin } = useAuth();
+  const { workspace } = useAuth();
   const location = useLocation();
   const { t } = useI18n();
 
-  const sections = useMemo(() => {
-    if (variant === 'admin') return ADMIN_NAV;
-    if (variant === 'client') return CLIENT_NAV;
-    return AGENCY_NAV;
-  }, [variant]);
+  const workspaceName = workspace?.name ?? t('app.name');
 
   // Route changes close the mobile drawer; leaving it open feels broken.
   useEffect(() => setMobileOpen(false), [location.pathname]);
@@ -408,46 +357,18 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
   const sidebar = (onNavigate?: () => void) => (
     <div className="flex h-full flex-col">
       <div className="flex h-16 shrink-0 items-center justify-between px-4">
-        <Link to={variant === 'client' ? '/client/dashboard' : variant === 'admin' ? '/admin/dashboard' : '/app/dashboard'}>
-          <Logo />
+        <Link to="/dashboard" onClick={onNavigate}>
+          <Logo name={workspaceName} />
         </Link>
         <button onClick={onNavigate} className="text-muted lg:hidden" aria-label="Close menu">
           <X className="h-5 w-5" />
         </button>
       </div>
 
-      {variant === 'client' && user?.client ? (
-        <div className="mx-3 mb-4 flex items-center gap-2.5 rounded-xl border border-line bg-elevated p-2.5">
-          <Avatar name={user.client.businessName} src={user.client.logoUrl} size={32} />
-          <div className="min-w-0">
-            <p className="truncate text-[13px] font-medium text-fg">{user.client.businessName}</p>
-            <p className="text-[11px] text-muted">{t('nav.clientPortal')}</p>
-          </div>
-        </div>
-      ) : null}
-
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
-        {sections.map((section) => (
+        {NAV.map((section) => (
           <NavSection key={section.heading} section={section} onNavigate={onNavigate} />
         ))}
-
-        {variant === 'admin' ? (
-          <Link
-            to="/app/dashboard"
-            onClick={onNavigate}
-            className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm text-muted transition-colors hover:bg-elevated hover:text-fg"
-          >
-            <LayoutDashboard className="h-[18px] w-[18px]" /> Back to workspace
-          </Link>
-        ) : isSuperAdmin && variant === 'agency' ? (
-          <Link
-            to="/admin/dashboard"
-            onClick={onNavigate}
-            className="flex items-center gap-3 rounded-xl border border-dashed border-line px-3 py-2 text-sm text-muted transition-colors hover:border-brand/40 hover:text-brand"
-          >
-            <Shield className="h-[18px] w-[18px]" /> {t('nav.admin')}
-          </Link>
-        ) : null}
       </div>
     </div>
   );
@@ -494,11 +415,7 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
           </button>
 
           <div className="min-w-0 flex-1">
-            {variant === 'admin' ? (
-              <Badge tone="danger" dot>Super Admin</Badge>
-            ) : user?.organization ? (
-              <p className="truncate text-sm font-medium text-fg">{user.organization.name}</p>
-            ) : null}
+            <p className="truncate text-sm font-medium text-fg">{workspaceName}</p>
           </div>
 
           <div className="flex items-center gap-2">

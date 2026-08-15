@@ -610,7 +610,7 @@ export function Pagination({
 
 export function PageHeader({
   title, subtitle, action, children,
-}: { title: string; subtitle?: string; action?: ReactNode; children?: ReactNode }) {
+}: { title: string; subtitle?: ReactNode; action?: ReactNode; children?: ReactNode }) {
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
       <div className="min-w-0 flex-1">

@@ -3,18 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="description" content="Marketing OS — AI-powered marketing management for agencies and brands." />
+    <meta name="description" content="Private restaurant marketing management system for a single marketing operator." />
     <meta name="theme-color" content="#0B0F1A" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366F1'/%3E%3Cpath d='M8 22V10l8 7 8-7v12' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
-    <title>Marketing OS</title>
+    <title>Restaurant Marketing OS</title>
     <script>
       // Applied before first paint so the app never flashes the wrong theme.
       (function () {
         try {
-          var stored = localStorage.getItem('mos.theme') || 'dark';
+          var stored = localStorage.getItem('rmos.theme') || 'dark';
           var dark = stored === 'dark' || (stored === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
           document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-          var lang = localStorage.getItem('mos.lang') || 'en';
+          var lang = localStorage.getItem('rmos.lang') || 'en';
           document.documentElement.lang = lang;
           document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
         } catch (e) {}

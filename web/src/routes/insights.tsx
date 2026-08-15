@@ -3,11 +3,10 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Bot, Download, FileText, Plus, Sparkles, TrendingUp } from 'lucide-react';
+import { Bot, Download, FileText, Plus, Printer, Sparkles, TrendingUp } from 'lucide-react';
 
-import { api, qs, type Metrics, type Paginated, type Platform } from '../lib/api';
+import { api, qs, PLATFORMS, type Metrics, type Paginated, type Platform, type RestaurantRef } from '../lib/api';
 import { useQuery } from '../lib/hooks';
-import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
 import { date, isoDate, money, num, pct, ratio, humanize } from '../lib/format';
 import {
@@ -32,12 +31,13 @@ interface Analysis {
   nextActions: string[];
 }
 
-export function AnalyticsPage({ portal = false }: { portal?: boolean }) {
+export function AnalyticsPage({ restaurantId, embedded = false }: { restaurantId?: string; embedded?: boolean } = {}) {
   const { t, lang } = useI18n();
-  const { user, isAgency } = useAuth();
   const { push } = useToast();
   const [days, setDays] = useState(30);
-  const [clientId, setClientId] = useState(portal ? user?.clientId ?? '' : '');
+  const [filterRestaurant, setFilterRestaurant] = useState('');
+  const [campaignId, setCampaignId] = useState('');
+  const [platform, setPlatform] = useState('');
   const [analysis, setAnalysis] = useState<{ analysis: Analysis; meta: { isFallback: boolean; notice?: string; disclaimer: string } } | null>(null);
   const [analysing, setAnalysing] = useState(false);
 
@@ -47,21 +47,35 @@ export function AnalyticsPage({ portal = false }: { portal?: boolean }) {
     return { from: isoDate(from), to: isoDate(to) };
   }, [days]);
 
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(portal ? null : `/clients${qs({ pageSize: 100 })}`);
+  const scoped = restaurantId ?? filterRestaurant;
+
+  const restaurants = useQuery<Paginated<RestaurantRef>>(
+    embedded ? null : `/restaurants${qs({ pageSize: 100 })}`,
+  );
+  // Campaigns are only offered once a restaurant is chosen, so the filter can
+  // never name a campaign belonging to a different one.
+  const campaigns = useQuery<Paginated<{ id: string; name: string }>>(
+    scoped ? `/campaigns${qs({ restaurantId: scoped, pageSize: 100 })}` : null,
+    [scoped],
+  );
   const { data, loading, error, refetch } = useQuery<SeriesResponse>(
-    `/analytics/series${qs({ ...range, clientId })}`,
-    [range.from, range.to, clientId],
+    `/analytics/series${qs({ ...range, restaurantId: scoped || undefined, campaignId, platform })}`,
+    [range.from, range.to, scoped, campaignId, platform],
   );
 
   const runAnalysis = async () => {
-    const target = clientId || clients.data?.items[0]?.id;
+    const target = scoped || restaurants.data?.items[0]?.id;
     if (!target) {
-      push({ tone: 'error', title: 'Choose a client to analyse' });
+      push({ tone: 'error', title: 'Choose a restaurant to analyse' });
       return;
     }
     setAnalysing(true);
     try {
-      const response = await api.post<typeof analysis>('/analytics/analyze', { clientId: target, ...range });
+      const response = await api.post<typeof analysis>('/analytics/analyze', {
+        restaurantId: target,
+        campaignId: campaignId || undefined,
+        ...range,
+      });
       setAnalysis(response);
     } catch (err) {
       push({ tone: 'error', title: 'Analysis failed', body: err instanceof Error ? err.message : undefined });
@@ -72,30 +86,46 @@ export function AnalyticsPage({ portal = false }: { portal?: boolean }) {
 
   const totals = data?.totals;
 
+  const controls = (
+    <>
+      {embedded ? null : (
+        <Select
+          value={filterRestaurant}
+          onChange={(event) => { setFilterRestaurant(event.target.value); setCampaignId(''); setAnalysis(null); }}
+          className="w-48"
+        >
+          <option value="">{t('common.restaurant')}</option>
+          {restaurants.data?.items.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+        </Select>
+      )}
+      <Select value={campaignId} onChange={(e) => setCampaignId(e.target.value)} className="w-44" disabled={!scoped}>
+        <option value="">{t('common.campaign')}</option>
+        {campaigns.data?.items.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+      </Select>
+      <Select value={platform} onChange={(e) => setPlatform(e.target.value)} className="w-40">
+        <option value="">{t('common.platform')}</option>
+        {PLATFORMS.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
+      </Select>
+      <Select value={days} onChange={(event) => setDays(Number(event.target.value))} className="w-36">
+        {[7, 30, 90].map((value) => <option key={value} value={value}>Last {value} days</option>)}
+      </Select>
+      <Button icon={Bot} onClick={runAnalysis} loading={analysing}>
+        {analysing ? t('ai.analyzing') : t('ai.analyze')}
+      </Button>
+    </>
+  );
+
   return (
     <>
-      <PageHeader
-        title={t('nav.analytics')}
-        subtitle="Every number here is computed from stored campaign data."
-        action={
-          <>
-            {!portal ? (
-              <Select value={clientId} onChange={(event) => { setClientId(event.target.value); setAnalysis(null); }} className="w-48">
-                <option value="">All clients</option>
-                {clients.data?.items.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-              </Select>
-            ) : null}
-            <Select value={days} onChange={(event) => setDays(Number(event.target.value))} className="w-36">
-              {[7, 30, 90].map((value) => <option key={value} value={value}>Last {value} days</option>)}
-            </Select>
-            {isAgency ? (
-              <Button icon={Bot} onClick={runAnalysis} loading={analysing}>
-                {analysing ? t('ai.analyzing') : t('ai.analyze')}
-              </Button>
-            ) : null}
-          </>
-        }
-      />
+      {embedded ? (
+        <div className="mb-4 flex flex-wrap gap-2">{controls}</div>
+      ) : (
+        <PageHeader
+          title={t('nav.analytics')}
+          subtitle="Every number here is computed from stored campaign data."
+          action={controls}
+        />
+      )}
 
       {error ? (
         <Card><ErrorState message={error} onRetry={refetch} /></Card>
@@ -265,37 +295,42 @@ interface ReportRow {
   periodStart: string;
   periodEnd: string;
   createdAt: string;
-  client: { id: string; name: string; logoUrl: string | null };
+  restaurant: RestaurantRef;
   campaign: { id: string; name: string } | null;
 }
 
-export function ReportsPage({ portal = false }: { portal?: boolean }) {
+export function ReportsPage({ restaurantId, embedded = false }: { restaurantId?: string; embedded?: boolean } = {}) {
   const { t, lang } = useI18n();
-  const { isAgency } = useAuth();
   const { push } = useToast();
   const navigate = useNavigate();
   const [page, setPage] = useState(1);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({
-    clientId: '',
+    restaurantId: restaurantId ?? '',
     type: 'MONTHLY',
     from: isoDate(new Date(Date.now() - 29 * 86400000)),
     to: isoDate(new Date()),
     includeAi: true,
   });
 
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(portal ? null : `/clients${qs({ pageSize: 100 })}`);
-  const { data, loading, error, refetch } = useQuery<Paginated<ReportRow>>(`/reports${qs({ page, pageSize: 15 })}`, [page]);
+  const restaurants = useQuery<Paginated<RestaurantRef>>(`/restaurants${qs({ pageSize: 100 })}`);
+  const { data, loading, error, refetch } = useQuery<Paginated<ReportRow>>(
+    `/reports${qs({ page, pageSize: 15, restaurantId })}`,
+    [page, restaurantId],
+  );
 
   const generate = async () => {
     setBusy(true);
     try {
-      const response = await api.post<{ report: { id: string } }>('/reports/generate', form);
+      const response = await api.post<{ report: { id: string } }>('/reports/generate', {
+        ...form,
+        restaurantId: restaurantId ?? form.restaurantId,
+      });
       push({ tone: 'success', title: 'Report generated' });
       setCreating(false);
       refetch();
-      navigate(`${portal ? '/client' : '/app'}/reports/${response.report.id}`);
+      navigate(`/reports/${response.report.id}`);
     } catch (err) {
       push({ tone: 'error', title: 'Could not generate', body: err instanceof Error ? err.message : undefined });
     } finally {
@@ -303,15 +338,19 @@ export function ReportsPage({ portal = false }: { portal?: boolean }) {
     }
   };
 
-  const base = portal ? '/client' : '/app';
+  const generateButton = <Button icon={Plus} onClick={() => setCreating(true)}>Generate report</Button>;
 
   return (
     <>
-      <PageHeader
-        title={t('nav.reports')}
-        subtitle="Figures are frozen at generation time, so a report reads the same next quarter."
-        action={isAgency ? <Button icon={Plus} onClick={() => setCreating(true)}>Generate report</Button> : undefined}
-      />
+      {embedded ? (
+        <div className="mb-4 flex justify-end">{generateButton}</div>
+      ) : (
+        <PageHeader
+          title={t('nav.reports')}
+          subtitle="Figures are frozen at generation time, so a report reads the same next quarter."
+          action={generateButton}
+        />
+      )}
 
       {error ? (
         <Card><ErrorState message={error} onRetry={refetch} /></Card>
@@ -321,13 +360,13 @@ export function ReportsPage({ portal = false }: { portal?: boolean }) {
         <Card>
           <TableWrap>
             <thead>
-              <tr><Th>Report</Th><Th>{t('common.client')}</Th><Th>Period</Th><Th>Type</Th><Th align="end">{t('common.actions')}</Th></tr>
+              <tr><Th>Report</Th><Th>{t('common.restaurant')}</Th><Th>Period</Th><Th>Type</Th><Th align="end">{t('common.actions')}</Th></tr>
             </thead>
             <tbody>
               {data.items.map((report) => (
-                <tr key={report.id} className="cursor-pointer transition-colors hover:bg-elevated" onClick={() => navigate(`${base}/reports/${report.id}`)}>
+                <tr key={report.id} className="cursor-pointer transition-colors hover:bg-elevated" onClick={() => navigate(`/reports/${report.id}`)}>
                   <Td><span className="font-medium">{report.title}</span></Td>
-                  <Td className="text-muted">{report.client.name}</Td>
+                  <Td className="text-muted">{report.restaurant.name}</Td>
                   <Td className="text-muted">{date(report.periodStart, lang)} → {date(report.periodEnd, lang)}</Td>
                   <Td><Badge>{humanize(report.type)}</Badge></Td>
                   <Td align="end">
@@ -351,7 +390,7 @@ export function ReportsPage({ portal = false }: { portal?: boolean }) {
             icon={FileText}
             title={t('empty.reports.title')}
             body={t('empty.reports.body')}
-            action={isAgency ? <Button icon={Plus} onClick={() => setCreating(true)}>Generate report</Button> : undefined}
+            action={generateButton}
           />
         </Card>
       )}
@@ -363,20 +402,22 @@ export function ReportsPage({ portal = false }: { portal?: boolean }) {
         footer={
           <>
             <Button variant="secondary" onClick={() => setCreating(false)}>Cancel</Button>
-            <Button onClick={generate} loading={busy} disabled={!form.clientId}>Generate</Button>
+            <Button onClick={generate} loading={busy} disabled={!(restaurantId ?? form.restaurantId)}>Generate</Button>
           </>
         }
       >
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label={t('common.client')} required className="sm:col-span-2">
-            <Select value={form.clientId} onChange={(event) => setForm({ ...form, clientId: event.target.value })} required>
-              <option value="">Select a client</option>
-              {clients.data?.items.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-            </Select>
-          </Field>
+          {restaurantId ? null : (
+            <Field label={t('common.restaurant')} required className="sm:col-span-2">
+              <Select value={form.restaurantId} onChange={(event) => setForm({ ...form, restaurantId: event.target.value })} required>
+                <option value="">Select a restaurant</option>
+                {restaurants.data?.items.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </Select>
+            </Field>
+          )}
           <Field label="Type">
             <Select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value })}>
-              {['CLIENT', 'CAMPAIGN', 'MONTHLY', 'PLATFORM'].map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
+              {['RESTAURANT', 'CAMPAIGN', 'MONTHLY', 'PLATFORM'].map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
             </Select>
           </Field>
           <Field label="Include AI insights">
@@ -394,13 +435,20 @@ export function ReportsPage({ portal = false }: { portal?: boolean }) {
 }
 
 interface ReportPayload {
-  client: { name: string; businessName: string };
+  restaurant: { name: string; businessName: string };
+  currency: string;
   period: { from: string; to: string };
   totals: Metrics;
   changes: Record<string, number | null>;
   series: Array<{ date: string } & Metrics>;
   platforms: Array<{ platform: Platform; label: string } & Metrics>;
   campaigns: Array<{ id: string; name: string; status: string; budget: number; spend: number }>;
+  ads: Array<{
+    id: string; name: string; platform: Platform; status: string; spend: number;
+    impressions: number; clicks: number; leads: number; conversions: number;
+    revenue: number; metricsAt: string | null;
+  }>;
+  topContent: Array<{ id: string; name: string; type: string; platform: Platform; publishedAt: string | null }>;
   analysis: Analysis | null;
   aiMeta: { isFallback: boolean } | null;
   generatedAt: string;
@@ -425,7 +473,7 @@ export function ReportDetailPage() {
     <>
       <PageHeader
         title={data.report.title}
-        subtitle={`${payload.client?.businessName ?? ''} · ${payload.period?.from} → ${payload.period?.to}`}
+        subtitle={`${payload.restaurant?.businessName ?? ''} · ${payload.period?.from} → ${payload.period?.to}`}
         action={
           <>
             <a href={`/api/reports/${id}/export?format=html`} className="inline-flex h-10 items-center gap-2 rounded-xl border border-line bg-elevated px-4 text-sm text-fg transition-colors hover:bg-line/60">
@@ -434,6 +482,7 @@ export function ReportDetailPage() {
             <a href={`/api/reports/${id}/export?format=md`} className="inline-flex h-10 items-center gap-2 rounded-xl border border-line bg-elevated px-4 text-sm text-fg transition-colors hover:bg-line/60">
               <Download className="h-4 w-4" />Markdown
             </a>
+            <Button variant="secondary" icon={Printer} onClick={() => window.print()}>{t('common.print')}</Button>
           </>
         }
       />
@@ -449,7 +498,7 @@ export function ReportDetailPage() {
           <div className="mb-4 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
             <KpiCard label={t('kpi.spend')} value={payload.totals.spend} format="money" compact />
             <KpiCard label={t('kpi.reach')} value={payload.totals.reach} compact />
-            <KpiCard label={t('kpi.conversions')} value={payload.totals.conversions} />
+            <KpiCard label={t('kpi.leads')} value={payload.totals.leads ?? 0} />
             <KpiCard label={t('kpi.roas')} value={payload.totals.roas} format="ratio" />
           </div>
 
@@ -482,6 +531,62 @@ export function ReportDetailPage() {
                       <Td align="end">{pct(row.ctr)}</Td>
                       <Td align="end">{num(row.conversions, lang)}</Td>
                       <Td align="end">{ratio(row.roas)}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </TableWrap>
+            </Card>
+          ) : null}
+
+          {payload.ads?.length ? (
+            <Card className="mb-4">
+              <CardHeader title="Advertising" subtitle={t('ads.manualNotice')} />
+              <TableWrap>
+                <thead>
+                  <tr>
+                    <Th>Ad</Th><Th>{t('common.platform')}</Th><Th align="end">{t('kpi.spend')}</Th>
+                    <Th align="end">{t('kpi.impressions')}</Th><Th align="end">{t('kpi.clicks')}</Th>
+                    <Th align="end">{t('kpi.leads')}</Th><Th align="end">{t('kpi.roas')}</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payload.ads.map((ad) => (
+                    <tr key={ad.id}>
+                      <Td>{ad.name}</Td>
+                      <Td><PlatformChip platform={ad.platform} size="sm" /></Td>
+                      {/* Ads with no figures entered say so rather than reporting zeroes. */}
+                      {ad.metricsAt ? (
+                        <>
+                          <Td align="end">{money(ad.spend, lang, true)}</Td>
+                          <Td align="end">{num(ad.impressions, lang, true)}</Td>
+                          <Td align="end">{num(ad.clicks, lang, true)}</Td>
+                          <Td align="end">{num(ad.leads, lang)}</Td>
+                          <Td align="end">{ratio(ad.spend === 0 ? 0 : ad.revenue / ad.spend)}</Td>
+                        </>
+                      ) : (
+                        <Td align="end" className="italic text-muted">{t('common.notRecorded')}</Td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </TableWrap>
+            </Card>
+          ) : null}
+
+          {payload.topContent?.length ? (
+            <Card className="mb-4">
+              <CardHeader title="Published content" />
+              <TableWrap>
+                <thead>
+                  <tr><Th>Content</Th><Th>{t('common.type')}</Th><Th>{t('common.platform')}</Th><Th align="end">{t('common.date')}</Th></tr>
+                </thead>
+                <tbody>
+                  {payload.topContent.map((item) => (
+                    <tr key={item.id}>
+                      <Td>{item.name}</Td>
+                      <Td className="text-muted">{humanize(item.type)}</Td>
+                      <Td><PlatformChip platform={item.platform} size="sm" /></Td>
+                      <Td align="end" className="text-muted">{item.publishedAt ? date(item.publishedAt, lang) : '—'}</Td>
                     </tr>
                   ))}
                 </tbody>

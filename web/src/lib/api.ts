@@ -84,17 +84,37 @@ export function qs(params: Record<string, string | number | boolean | undefined 
 
 // ---------------------------------------------------------------- shared types
 
-export type Role = 'SUPER_ADMIN' | 'AGENCY_ADMIN' | 'AGENCY_STAFF' | 'CLIENT_ADMIN' | 'CLIENT_USER';
 export type Language = 'AR' | 'EN';
 export type Platform =
   | 'FACEBOOK' | 'INSTAGRAM' | 'TIKTOK' | 'SNAPCHAT'
   | 'GOOGLE_ADS' | 'GOOGLE_BUSINESS' | 'X' | 'LINKEDIN';
-export type CampaignStatus = 'DRAFT' | 'SCHEDULED' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'CANCELLED';
-export type ContentStatus =
-  | 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED'
-  | 'CHANGES_REQUESTED' | 'SCHEDULED' | 'PUBLISHED' | 'FAILED';
-export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CHANGES_REQUESTED';
+export type RestaurantStatus = 'ACTIVE' | 'PAUSED' | 'ARCHIVED';
+export type CampaignStatus = 'PLANNING' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
+export type CampaignObjective =
+  | 'AWARENESS' | 'TRAFFIC' | 'ENGAGEMENT' | 'LEADS' | 'SALES' | 'APP_INSTALLS' | 'VIDEO_VIEWS';
+export type ContentStatus = 'IDEA' | 'DRAFT' | 'READY' | 'SCHEDULED' | 'PUBLISHED' | 'ARCHIVED';
+export type ContentType =
+  | 'POST' | 'STORY' | 'REEL' | 'CAROUSEL' | 'AD_CREATIVE' | 'VIDEO' | 'ARTICLE' | 'EMAIL';
+export type AdStatus = 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
+export type TaskStatus = 'TODO' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE';
+export type TaskPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
 export type MediaType = 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'LOGO';
+export type ReportType = 'RESTAURANT' | 'CAMPAIGN' | 'MONTHLY' | 'PLATFORM';
+
+export const CONTENT_STATUSES: ContentStatus[] =
+  ['IDEA', 'DRAFT', 'READY', 'SCHEDULED', 'PUBLISHED', 'ARCHIVED'];
+export const CONTENT_TYPES: ContentType[] =
+  ['POST', 'STORY', 'REEL', 'CAROUSEL', 'AD_CREATIVE', 'VIDEO', 'ARTICLE', 'EMAIL'];
+export const CAMPAIGN_STATUSES: CampaignStatus[] =
+  ['PLANNING', 'ACTIVE', 'PAUSED', 'COMPLETED', 'ARCHIVED'];
+export const CAMPAIGN_OBJECTIVES: CampaignObjective[] =
+  ['AWARENESS', 'TRAFFIC', 'ENGAGEMENT', 'LEADS', 'SALES', 'APP_INSTALLS', 'VIDEO_VIEWS'];
+export const AD_STATUSES: AdStatus[] = ['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'ARCHIVED'];
+export const RESTAURANT_STATUSES: RestaurantStatus[] = ['ACTIVE', 'PAUSED', 'ARCHIVED'];
+export const TASK_STATUSES: TaskStatus[] = ['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE'];
+export const TASK_PRIORITIES: TaskPriority[] = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
+export const PLATFORMS: Platform[] =
+  ['INSTAGRAM', 'FACEBOOK', 'TIKTOK', 'SNAPCHAT', 'GOOGLE_ADS', 'GOOGLE_BUSINESS', 'X', 'LINKEDIN'];
 
 export interface BrandColors {
   primaryColor: string;
@@ -110,20 +130,26 @@ export interface CurrentUser {
   id: string;
   email: string;
   name: string;
-  role: Role;
+  role: 'OWNER';
   locale: Language;
   themePref: string;
   avatarUrl: string | null;
-  organizationId: string | null;
-  clientId: string | null;
-  organization?: { id: string; name: string; slug: string; logoUrl: string | null } | null;
-  client?: {
-    id: string;
-    name: string;
-    businessName: string;
-    logoUrl: string | null;
-    brand: BrandColors | null;
-  } | null;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  currency: string;
+  timezone: string;
+  locale: Language;
+  logoUrl: string | null;
+}
+
+export interface RestaurantRef {
+  id: string;
+  name: string;
+  businessName?: string;
+  logoUrl?: string | null;
 }
 
 export interface Paginated<T> {
@@ -136,6 +162,7 @@ export interface Metrics {
   reach: number;
   impressions: number;
   clicks: number;
+  leads: number;
   conversions: number;
   revenue: number;
   engagements: number;
@@ -143,7 +170,19 @@ export interface Metrics {
   cpc: number;
   cpm: number;
   cpa: number;
+  costPerLead: number;
   conversionRate: number;
   roas: number;
   engagementRate: number;
+}
+
+/** The ratios the API derives for a single ad on every read. */
+export interface AdMetrics {
+  ctr: number;
+  cpc: number;
+  cpm: number;
+  cpa: number;
+  costPerLead: number;
+  conversionRate: number;
+  roas: number;
 }

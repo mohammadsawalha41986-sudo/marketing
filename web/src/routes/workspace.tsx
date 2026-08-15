@@ -1,25 +1,28 @@
-/** Calendar, media library, approvals, integrations, notifications and settings. */
+/** Calendar, media library and notifications. */
 
-import { useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
-  Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Film, FileText, Image as ImageIcon,
-  Link2, MessageSquare, Plug, Search, ThumbsUp, Trash2, Upload, X,
+  Bell, CalendarDays, ChevronLeft, ChevronRight, Film, FileText, Image as ImageIcon,
+  Search, Trash2, Upload,
 } from 'lucide-react';
 
-import { api, qs, type ApprovalStatus, type MediaType, type Paginated, type Platform } from '../lib/api';
+import {
+  api, qs, CONTENT_STATUSES, CONTENT_TYPES, PLATFORMS,
+  type MediaType, type Paginated, type Platform, type RestaurantRef,
+} from '../lib/api';
 import { useDebounced, useQuery } from '../lib/hooks';
-import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
 import { bytes, cn } from '../lib/utils';
 import { date, dateTime, humanize, isoDate, relative } from '../lib/format';
 import {
   Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Field, Input, Modal,
-  PageHeader, Pagination, Select, Tabs, Textarea, Toggle, useToast,
+  PageHeader, Pagination, Select, Tabs, Toggle, useToast,
 } from '../components/ui';
-import { PlatformChip, PlatformPreview, StatusBadge } from '../components/domain';
+import { PlatformChip, StatusBadge } from '../components/domain';
 import { ThemeSwitch } from '../components/layout';
+import { useAuth } from '../lib/auth';
 
 // ---------------------------------------------------------------- calendar
 
@@ -31,33 +34,48 @@ interface CalendarItem {
   type: string;
   scheduledAt: string | null;
   headline: string | null;
-  client: { id: string; name: string; logoUrl: string | null };
+  restaurant: RestaurantRef;
   campaign: { id: string; name: string } | null;
 }
 
 const STATUS_DOT: Record<string, string> = {
+  IDEA: 'bg-muted/60',
   DRAFT: 'bg-muted',
-  SUBMITTED: 'bg-warn',
-  APPROVED: 'bg-ok',
+  READY: 'bg-warn',
   SCHEDULED: 'bg-brand',
   PUBLISHED: 'bg-accent',
-  FAILED: 'bg-danger',
-  REJECTED: 'bg-danger',
-  CHANGES_REQUESTED: 'bg-warn',
+  ARCHIVED: 'bg-muted/40',
 };
 
-export function CalendarPage({ portal = false }: { portal?: boolean }) {
+export function CalendarPage({ restaurantId, embedded = false }: { restaurantId?: string; embedded?: boolean } = {}) {
   const { t, lang } = useI18n();
   const navigate = useNavigate();
-  const [view, setView] = useState<'month' | 'week' | 'day'>('month');
+  const [params] = useSearchParams();
+  const [view, setView] = useState<'month' | 'week' | 'day' | 'list'>('month');
   const [anchor, setAnchor] = useState(new Date());
+  const [platform, setPlatform] = useState('');
+  const [type, setType] = useState('');
+  const [status, setStatus] = useState('');
+  const [filterRestaurant, setFilterRestaurant] = useState('');
+
+  const scoped = restaurantId ?? params.get('restaurant') ?? filterRestaurant ?? undefined;
+  const restaurants = useQuery<Paginated<RestaurantRef>>(
+    embedded ? null : `/restaurants${qs({ pageSize: 100 })}`,
+  );
+
+  // The list view is the month's rows without the grid, so it asks the API for
+  // a month and renders it differently rather than being its own server view.
+  const apiView = view === 'list' ? 'month' : view;
 
   const { data, loading, error, refetch } = useQuery<{
     view: string;
     range: { from: string; to: string };
     items: CalendarItem[];
     counts: Record<string, number>;
-  }>(`/calendar${qs({ view, anchor: isoDate(anchor) })}`, [view, isoDate(anchor)]);
+  }>(
+    `/calendar${qs({ view: apiView, anchor: isoDate(anchor), restaurantId: scoped || undefined, platform, type, status })}`,
+    [apiView, isoDate(anchor), scoped, platform, type, status],
+  );
 
   const shift = (direction: number) => {
     const next = new Date(anchor);
@@ -92,37 +110,56 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
     return map;
   }, [data]);
 
-  const base = portal ? '/client' : '/app';
   const title = new Intl.DateTimeFormat(lang === 'ar' ? 'ar-JO-u-nu-latn' : 'en-US', {
     month: 'long', year: 'numeric',
   }).format(anchor);
 
   return (
     <>
-      <PageHeader
-        title={t('nav.calendar')}
-        subtitle="Everything scheduled, colour-coded by where it is in the workflow."
-        action={
-          <>
-            <div className="flex items-center gap-1 rounded-xl border border-line bg-elevated p-0.5">
-              <Button variant="ghost" size="icon" onClick={() => shift(-1)} aria-label="Previous">
-                <ChevronLeft className="h-4 w-4 rtl:rotate-180" />
-              </Button>
-              <button onClick={() => setAnchor(new Date())} className="px-3 text-[13px] font-medium text-fg">
-                {t('common.today')}
-              </button>
-              <Button variant="ghost" size="icon" onClick={() => shift(1)} aria-label="Next">
-                <ChevronRight className="h-4 w-4 rtl:rotate-180" />
-              </Button>
-            </div>
-            <Select value={view} onChange={(event) => setView(event.target.value as typeof view)} className="w-32">
-              <option value="month">Month</option>
-              <option value="week">Week</option>
-              <option value="day">Day</option>
-            </Select>
-          </>
-        }
-      />
+      {embedded ? null : (
+        <PageHeader
+          title={t('nav.calendar')}
+          subtitle="Everything scheduled across every restaurant."
+        />
+      )}
+
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-1 rounded-xl border border-line bg-elevated p-0.5">
+          <Button variant="ghost" size="icon" onClick={() => shift(-1)} aria-label={t('common.previous')}>
+            <ChevronLeft className="h-4 w-4 rtl:rotate-180" />
+          </Button>
+          <button onClick={() => setAnchor(new Date())} className="px-3 text-[13px] font-medium text-fg">
+            {t('common.today')}
+          </button>
+          <Button variant="ghost" size="icon" onClick={() => shift(1)} aria-label={t('common.next')}>
+            <ChevronRight className="h-4 w-4 rtl:rotate-180" />
+          </Button>
+        </div>
+        <Select value={view} onChange={(event) => setView(event.target.value as typeof view)} className="w-32">
+          <option value="month">Month</option>
+          <option value="week">Week</option>
+          <option value="day">Day</option>
+          <option value="list">List</option>
+        </Select>
+        {embedded ? null : (
+          <Select value={filterRestaurant} onChange={(e) => setFilterRestaurant(e.target.value)} className="w-48">
+            <option value="">{t('common.restaurant')}</option>
+            {restaurants.data?.items.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </Select>
+        )}
+        <Select value={platform} onChange={(e) => setPlatform(e.target.value)} className="w-40">
+          <option value="">{t('common.platform')}</option>
+          {PLATFORMS.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
+        </Select>
+        <Select value={type} onChange={(e) => setType(e.target.value)} className="w-36">
+          <option value="">{t('common.type')}</option>
+          {CONTENT_TYPES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
+        </Select>
+        <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-36">
+          <option value="">{t('common.status')}</option>
+          {CONTENT_STATUSES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
+        </Select>
+      </div>
 
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <h2 className="text-base font-semibold text-fg">{title}</h2>
@@ -175,7 +212,7 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
                     {items.slice(0, 3).map((item) => (
                       <button
                         key={item.id}
-                        onClick={() => navigate(`${base}/content/${item.id}`)}
+                        onClick={() => navigate(`/content/${item.id}`)}
                         className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-start text-[11px] transition-colors hover:bg-elevated"
                       >
                         <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', STATUS_DOT[item.status] ?? 'bg-muted')} />
@@ -195,14 +232,14 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
         <Card>
           <div className="divide-y divide-line/60">
             {data.items.map((item) => (
-              <Link key={item.id} to={`${base}/content/${item.id}`} className="flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-elevated">
+              <Link key={item.id} to={`/content/${item.id}`} className="flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-elevated">
                 <span className={cn('h-2 w-2 shrink-0 rounded-full', STATUS_DOT[item.status] ?? 'bg-muted')} />
                 <span className="w-32 shrink-0 text-[13px] text-muted">
                   {item.scheduledAt ? dateTime(item.scheduledAt, lang) : '—'}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] font-medium text-fg">{item.name}</span>
-                  <span className="block truncate text-[12px] text-muted">{item.client.name}</span>
+                  <span className="block truncate text-[12px] text-muted">{item.restaurant.name}</span>
                 </span>
                 <PlatformChip platform={item.platform} size="sm" />
                 <StatusBadge status={item.status} kind="content" />
@@ -231,26 +268,30 @@ interface MediaRow {
   thumbnailUrl: string | null;
   category: string | null;
   createdAt: string;
-  client: { id: string; name: string } | null;
+  restaurant: RestaurantRef | null;
 }
 
-export function MediaPage() {
+export function MediaPage({ restaurantId, embedded = false }: { restaurantId?: string; embedded?: boolean } = {}) {
   const { t, lang } = useI18n();
-  const { canManage } = useAuth();
   const { push } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
+  const [params] = useSearchParams();
   const [search, setSearch] = useState('');
   const [type, setType] = useState('');
-  const [clientId, setClientId] = useState('');
+  const [filterRestaurant, setFilterRestaurant] = useState('');
   const [page, setPage] = useState(1);
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<MediaRow | null>(null);
   const debounced = useDebounced(search);
 
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(`/clients${qs({ pageSize: 100 })}`);
+  const scoped = restaurantId ?? params.get('restaurant') ?? filterRestaurant ?? undefined;
+
+  const restaurants = useQuery<Paginated<RestaurantRef>>(
+    embedded ? null : `/restaurants${qs({ pageSize: 100 })}`,
+  );
   const { data, loading, error, refetch } = useQuery<Paginated<MediaRow>>(
-    `/media${qs({ page, pageSize: 24, search: debounced, type, clientId })}`,
-    [page, debounced, type, clientId],
+    `/media${qs({ page, pageSize: 24, search: debounced, type, restaurantId: scoped || undefined })}`,
+    [page, debounced, type, scoped],
   );
   const usage = useQuery<{ totalMb: number; byType: Array<{ type: string; count: number }> }>('/media/usage/summary');
 
@@ -259,7 +300,9 @@ export function MediaPage() {
     try {
       const body = new FormData();
       for (const file of Array.from(files).slice(0, 10)) body.append('files', file);
-      if (clientId) body.append('clientId', clientId);
+      // Uploads land against the restaurant in scope, so media is filed correctly
+      // rather than dropped into a shared pool the operator has to sort later.
+      if (scoped) body.append('restaurantId', scoped);
       const response = await api.post<{ items: MediaRow[] }>('/media', body);
       push({ tone: 'success', title: `${response.items.length} file(s) uploaded` });
       refetch();
@@ -285,38 +328,38 @@ export function MediaPage() {
 
   return (
     <>
-      <PageHeader
-        title={t('nav.media')}
-        subtitle={usage.data ? `${usage.data.totalMb} MB stored across ${data?.pagination.total ?? 0} files` : undefined}
-        action={
-          canManage ? (
-            <>
-              <input
-                ref={fileRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={(event) => event.target.files && upload(event.target.files)}
-              />
-              <Button icon={Upload} loading={uploading} onClick={() => fileRef.current?.click()}>{t('common.upload')}</Button>
-            </>
-          ) : undefined
-        }
+      <input
+        ref={fileRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => event.target.files && upload(event.target.files)}
       />
+
+      {embedded ? null : (
+        <PageHeader
+          title={t('nav.media')}
+          subtitle={usage.data ? `${usage.data.totalMb} MB stored across ${data?.pagination.total ?? 0} files` : undefined}
+          action={<Button icon={Upload} loading={uploading} onClick={() => fileRef.current?.click()}>{t('common.upload')}</Button>}
+        />
+      )}
 
       <div className="mb-4 flex flex-wrap gap-2">
         <div className="relative min-w-[200px] flex-1">
           <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
           <Input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder={t('common.search')} className="ps-9" />
         </div>
-        <Select value={clientId} onChange={(e) => { setClientId(e.target.value); setPage(1); }} className="w-48">
-          <option value="">All clients</option>
-          {clients.data?.items.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-        </Select>
+        {embedded ? null : (
+          <Select value={filterRestaurant} onChange={(e) => { setFilterRestaurant(e.target.value); setPage(1); }} className="w-48">
+            <option value="">{t('common.restaurant')}</option>
+            {restaurants.data?.items.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </Select>
+        )}
         <Select value={type} onChange={(e) => { setType(e.target.value); setPage(1); }} className="w-40">
           <option value="">{t('common.all')}</option>
           {['IMAGE', 'VIDEO', 'DOCUMENT', 'LOGO'].map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
         </Select>
+        {embedded ? <Button icon={Upload} loading={uploading} onClick={() => fileRef.current?.click()}>{t('common.upload')}</Button> : null}
       </div>
 
       {error ? (
@@ -357,7 +400,7 @@ export function MediaPage() {
             icon={ImageIcon}
             title={debounced ? t('empty.search.title') : t('empty.media.title')}
             body={debounced ? t('empty.search.body') : t('empty.media.body')}
-            action={canManage ? <Button icon={Upload} onClick={() => fileRef.current?.click()}>{t('common.upload')}</Button> : undefined}
+            action={<Button icon={Upload} onClick={() => fileRef.current?.click()}>{t('common.upload')}</Button>}
           />
         </Card>
       )}
@@ -368,9 +411,7 @@ export function MediaPage() {
         title={preview?.originalName ?? ''}
         size="lg"
         footer={
-          canManage && preview ? (
-            <Button variant="danger" icon={Trash2} onClick={() => remove(preview.id)}>{t('common.delete')}</Button>
-          ) : null
+          preview ? <Button variant="danger" icon={Trash2} onClick={() => remove(preview.id)}>{t('common.delete')}</Button> : null
         }
       >
         {preview ? (
@@ -391,7 +432,7 @@ export function MediaPage() {
                 { label: 'Type', value: preview.mimeType },
                 { label: 'Size', value: bytes(preview.sizeBytes) },
                 { label: 'Dimensions', value: preview.width ? `${preview.width} × ${preview.height}` : '—' },
-                { label: 'Client', value: preview.client?.name ?? 'Shared' },
+                { label: t('common.restaurant'), value: preview.restaurant?.name ?? 'Shared' },
                 { label: 'Uploaded', value: date(preview.createdAt, lang) },
                 { label: 'Category', value: preview.category ?? '—' },
               ].map((row) => (
@@ -404,346 +445,6 @@ export function MediaPage() {
           </div>
         ) : null}
       </Modal>
-    </>
-  );
-}
-
-// ---------------------------------------------------------------- approvals
-
-interface ApprovalRow {
-  id: string;
-  status: ApprovalStatus;
-  note: string | null;
-  createdAt: string;
-  decidedAt: string | null;
-  decidedBy: { name: string } | null;
-  content: {
-    id: string;
-    name: string;
-    platform: Platform;
-    type: string;
-    headline: string | null;
-    caption: string | null;
-    cta: string | null;
-    scheduledAt: string | null;
-    client: { id: string; name: string; logoUrl: string | null };
-    campaign: { id: string; name: string } | null;
-    hashtags: Array<{ tag: string }>;
-    mediaLinks: Array<{ media: { id: string; url: string; thumbnailUrl: string | null } }>;
-  };
-}
-
-export function ApprovalsPage({ portal = false }: { portal?: boolean }) {
-  const { t, lang } = useI18n();
-  const { user } = useAuth();
-  const { push } = useToast();
-  const [status, setStatus] = useState<ApprovalStatus | ''>('PENDING');
-  const [active, setActive] = useState<ApprovalRow | null>(null);
-  const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const { data, loading, error, refetch } = useQuery<Paginated<ApprovalRow>>(
-    `/approvals${qs({ status, pageSize: 30 })}`,
-    [status],
-  );
-
-  const canDecide = user?.role !== 'CLIENT_USER';
-
-  const decide = async (decision: 'APPROVED' | 'REJECTED' | 'CHANGES_REQUESTED') => {
-    if (!active) return;
-    setBusy(true);
-    try {
-      await api.post(`/approvals/${active.id}/decision`, { status: decision, note: note.trim() || undefined });
-      push({ tone: 'success', title: `Marked as ${humanize(decision).toLowerCase()}` });
-      setActive(null);
-      setNote('');
-      refetch();
-    } catch (err) {
-      push({ tone: 'error', title: 'Could not record the decision', body: err instanceof Error ? err.message : undefined });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <PageHeader
-        title={t('nav.approvals')}
-        subtitle={
-          portal
-            ? 'Review what your agency has drafted. Nothing goes live until you approve it.'
-            : 'Nothing is scheduled until the client has signed it off here.'
-        }
-        action={
-          <Select value={status} onChange={(event) => setStatus(event.target.value as ApprovalStatus | '')} className="w-48">
-            <option value="">{t('common.all')}</option>
-            {(['PENDING', 'APPROVED', 'REJECTED', 'CHANGES_REQUESTED'] as ApprovalStatus[]).map((value) => (
-              <option key={value} value={value}>{humanize(value)}</option>
-            ))}
-          </Select>
-        }
-      />
-
-      {error ? (
-        <Card><ErrorState message={error} onRetry={refetch} /></Card>
-      ) : loading ? (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {Array.from({ length: 6 }).map((_, index) => <CardSkeleton key={index} />)}
-        </div>
-      ) : data && data.items.length > 0 ? (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {data.items.map((approval) => {
-            const thumb = approval.content.mediaLinks[0]?.media;
-            return (
-              <Card key={approval.id} hover className="cursor-pointer overflow-hidden" onClick={() => { setActive(approval); setNote(''); }}>
-                <div className="flex aspect-[16/9] items-center justify-center bg-elevated">
-                  {thumb ? <img src={thumb.thumbnailUrl ?? thumb.url} alt="" className="h-full w-full object-cover" /> : <ImageIcon className="h-7 w-7 text-muted/40" />}
-                </div>
-                <div className="p-4">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <PlatformChip platform={approval.content.platform} size="sm" />
-                    <StatusBadge status={approval.status} kind="approval" />
-                  </div>
-                  <p className="truncate text-[14px] font-medium text-fg">{approval.content.name}</p>
-                  <p className="mt-0.5 line-clamp-2 text-[13px] text-muted">{approval.content.headline ?? '—'}</p>
-                  <p className="mt-3 border-t border-line pt-2.5 text-[12px] text-muted">
-                    {approval.content.client.name} · {relative(approval.createdAt, lang)}
-                  </p>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
-      ) : (
-        <Card><EmptyState icon={ThumbsUp} title={t('empty.approvals.title')} body={t('empty.approvals.body')} /></Card>
-      )}
-
-      <Modal
-        open={active !== null}
-        onClose={() => setActive(null)}
-        title={active?.content.name ?? ''}
-        subtitle={active ? `${active.content.client.name} · ${humanize(active.content.platform)}` : undefined}
-        size="lg"
-        footer={
-          canDecide && active?.status === 'PENDING' ? (
-            <>
-              <Button variant="secondary" icon={MessageSquare} loading={busy} onClick={() => decide('CHANGES_REQUESTED')}>
-                {t('common.requestChanges')}
-              </Button>
-              <Button variant="danger" icon={X} loading={busy} onClick={() => decide('REJECTED')}>{t('common.reject')}</Button>
-              <Button icon={Check} loading={busy} onClick={() => decide('APPROVED')}>{t('common.approve')}</Button>
-            </>
-          ) : (
-            <Button variant="secondary" onClick={() => setActive(null)}>{t('common.close')}</Button>
-          )
-        }
-      >
-        {active ? (
-          <div className="grid gap-5 sm:grid-cols-2">
-            <PlatformPreview
-              platform={active.content.platform}
-              brandName={active.content.client.name}
-              logoUrl={active.content.client.logoUrl}
-              headline={active.content.headline}
-              caption={active.content.caption}
-              cta={active.content.cta}
-              hashtags={active.content.hashtags.map((tag) => tag.tag)}
-              mediaUrl={active.content.mediaLinks[0]?.media.url}
-            />
-            <div className="space-y-4">
-              <div className="space-y-2 text-[13px]">
-                {[
-                  { label: t('common.campaign'), value: active.content.campaign?.name ?? '—' },
-                  { label: 'Type', value: humanize(active.content.type) },
-                  { label: 'Scheduled', value: active.content.scheduledAt ? date(active.content.scheduledAt, lang) : 'Not scheduled' },
-                  { label: 'Submitted', value: date(active.createdAt, lang) },
-                ].map((row) => (
-                  <div key={row.label} className="flex justify-between gap-3">
-                    <span className="text-muted">{row.label}</span>
-                    <span className="text-fg">{row.value}</span>
-                  </div>
-                ))}
-              </div>
-
-              {active.status === 'PENDING' && canDecide ? (
-                <Field label="Comment" hint="Shared with the agency and saved to the content history.">
-                  <Textarea value={note} onChange={(event) => setNote(event.target.value)} rows={4} placeholder="Anything you want changed?" />
-                </Field>
-              ) : active.note ? (
-                <div className="rounded-xl border border-line bg-elevated p-3">
-                  <p className="text-[12px] uppercase tracking-wide text-muted">Decision note</p>
-                  <p className="mt-1 text-[13px] text-fg">{active.note}</p>
-                  {active.decidedBy ? <p className="mt-1.5 text-[12px] text-muted">— {active.decidedBy.name}</p> : null}
-                </div>
-              ) : null}
-
-              {!canDecide ? (
-                <p className="rounded-xl border border-line bg-elevated p-3 text-[13px] text-muted">
-                  Your account can view content but not approve it. Ask a client admin to decide.
-                </p>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-      </Modal>
-    </>
-  );
-}
-
-// ---------------------------------------------------------------- integrations
-
-interface AdapterInfo {
-  platform: Platform;
-  label: string;
-  implemented: boolean;
-  ready: boolean;
-  missingEnv: string[];
-  capabilities: { publish: boolean; metrics: boolean; audiences: boolean };
-  scopes: string[];
-  docsUrl: string;
-}
-
-interface IntegrationRow {
-  id: string;
-  clientId: string;
-  platform: Platform;
-  status: string;
-  accountName: string | null;
-  lastSyncAt: string | null;
-  lastError: string | null;
-  client: { id: string; name: string };
-}
-
-export function IntegrationsPage() {
-  const { t, lang } = useI18n();
-  const { push } = useToast();
-  const [clientId, setClientId] = useState('');
-
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(`/clients${qs({ pageSize: 100 })}`);
-  const catalog = useQuery<{ ai: { provider: string; model: string; configured: boolean }; adapters: AdapterInfo[] }>('/integrations/catalog');
-  const { data, loading, refetch } = useQuery<{ items: IntegrationRow[] }>(
-    `/integrations${qs({ clientId })}`,
-    [clientId],
-  );
-
-  const connect = async (platform: Platform) => {
-    if (!clientId) {
-      push({ tone: 'error', title: 'Pick a client first' });
-      return;
-    }
-    try {
-      await api.post(`/integrations/${clientId}/${platform}/connect`);
-      refetch();
-    } catch (err) {
-      // A 501 here is the expected, honest answer while adapters are stubs.
-      push({
-        tone: 'info',
-        title: 'Adapter not implemented',
-        body: err instanceof Error ? err.message : undefined,
-      });
-    }
-  };
-
-  const byPlatform = useMemo(() => {
-    const map = new Map<string, IntegrationRow>();
-    for (const row of data?.items ?? []) {
-      if (!clientId || row.clientId === clientId) map.set(row.platform, row);
-    }
-    return map;
-  }, [data, clientId]);
-
-  return (
-    <>
-      <PageHeader
-        title={t('nav.integrations')}
-        subtitle="Connection architecture for every ad platform, with adapters ready to be implemented."
-        action={
-          <Select value={clientId} onChange={(event) => setClientId(event.target.value)} className="w-52">
-            <option value="">All clients</option>
-            {clients.data?.items.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-          </Select>
-        }
-      />
-
-      <Card className="mb-4 p-4">
-        <div className="flex flex-wrap items-center gap-3 text-[13px]">
-          <Badge tone={catalog.data?.ai.configured ? 'ok' : 'warn'} dot>
-            AI: {catalog.data?.ai.configured ? catalog.data.ai.model : 'built-in engine'}
-          </Badge>
-          <span className="text-muted">
-            {catalog.data?.ai.configured
-              ? 'A language model is configured and will be used for generation.'
-              : 'No OPENAI_API_KEY is set, so content is written by the built-in template engine and labelled as such.'}
-          </span>
-        </div>
-      </Card>
-
-      {loading || catalog.loading ? (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {Array.from({ length: 6 }).map((_, index) => <CardSkeleton key={index} />)}
-        </div>
-      ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {catalog.data?.adapters.map((adapter) => {
-            const integration = byPlatform.get(adapter.platform);
-            const connected = integration?.status === 'CONNECTED';
-            return (
-              <Card key={adapter.platform} className="p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <PlatformChip platform={adapter.platform} />
-                  <Badge tone={connected ? 'ok' : adapter.implemented ? 'neutral' : 'warn'} dot>
-                    {connected ? t('integration.connected') : adapter.implemented ? t('integration.disconnected') : t('integration.notImplemented')}
-                  </Badge>
-                </div>
-
-                <div className="mt-4 space-y-1.5 text-[13px] text-muted">
-                  <p className="flex justify-between gap-2">
-                    <span>Account</span><span className="text-fg">{integration?.accountName ?? '—'}</span>
-                  </p>
-                  <p className="flex justify-between gap-2">
-                    <span>{t('integration.lastSync')}</span>
-                    <span className="text-fg">{integration?.lastSyncAt ? relative(integration.lastSyncAt, lang) : '—'}</span>
-                  </p>
-                  <p className="flex justify-between gap-2">
-                    <span>Capabilities</span>
-                    <span className="text-fg">
-                      {[adapter.capabilities.publish && 'publish', adapter.capabilities.metrics && 'metrics'].filter(Boolean).join(', ') || 'none yet'}
-                    </span>
-                  </p>
-                </div>
-
-                {adapter.missingEnv.length > 0 ? (
-                  <div className="mt-3 rounded-lg border border-warn/25 bg-warn/10 p-2.5 text-[12px] text-warn">
-                    Needs: {adapter.missingEnv.join(', ')}
-                  </div>
-                ) : null}
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <Button size="sm" variant={connected ? 'secondary' : 'primary'} icon={Plug} onClick={() => connect(adapter.platform)} disabled={!clientId}>
-                    {connected ? t('integration.sync') : t('integration.connect')}
-                  </Button>
-                  <a
-                    href={adapter.docsUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-3 text-[13px] text-muted transition-colors hover:text-fg"
-                  >
-                    <Link2 className="h-3.5 w-3.5" />Docs
-                  </a>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-
-      <Card className="mt-4 p-5">
-        <p className="text-[13px] leading-relaxed text-muted">
-          Each platform has an adapter behind a shared interface. The routes, credential storage, connection status and
-          this UI are all real — the adapters themselves refuse to connect until real API credentials and provider code
-          are supplied, rather than reporting a connection that does not exist.
-        </p>
-      </Card>
     </>
   );
 }
@@ -812,23 +513,68 @@ export function NotificationsPage() {
   );
 }
 
+
 // ---------------------------------------------------------------- settings
+
+interface SettingsResponse {
+  workspace: {
+    id: string; name: string; currency: string; timezone: string;
+    locale: 'AR' | 'EN'; logoUrl: string | null;
+  };
+  ai: { provider: string; model: string; configured: boolean };
+  storage: { driver: string; files: number; bytes: number; megabytes: number; maxUploadMb: number };
+  totals: { restaurants: number; campaigns: number; contents: number; ads: number };
+}
+
+interface AdapterInfo {
+  platform: Platform;
+  label: string;
+  implemented: boolean;
+  ready: boolean;
+  missingEnv: string[];
+  docsUrl: string;
+}
+
+/** Currencies offered in the picker. Any ISO code the API accepts still works. */
+const CURRENCIES = ['SAR', 'AED', 'KWD', 'QAR', 'BHD', 'OMR', 'EGP', 'JOD', 'USD', 'EUR', 'GBP'];
 
 export function SettingsPage() {
   const { t } = useI18n();
   const { user, refresh } = useAuth();
   const { push } = useToast();
-  const [tab, setTab] = useState<'profile' | 'security' | 'plan'>('profile');
-  const [name, setName] = useState(user?.name ?? '');
+  const [tab, setTab] = useState<'workspace' | 'profile' | 'security' | 'integrations'>('workspace');
   const [saving, setSaving] = useState(false);
+
+  const settings = useQuery<SettingsResponse>('/settings');
+  const catalog = useQuery<{ adapters: AdapterInfo[] }>('/integrations/catalog');
+
+  const [workspace, setWorkspace] = useState({ name: '', currency: 'SAR', timezone: '', locale: 'EN' });
+  const [name, setName] = useState(user?.name ?? '');
   const [passwords, setPasswords] = useState({ currentPassword: '', newPassword: '' });
 
-  const usage = useQuery<{
-    plan: { name: string; maxClients: number; maxUsers: number; maxCampaigns: number; maxAiPerMonth: number; maxStorageMb: number } | null;
-    usage: { clients: number; users: number; campaigns: number; aiThisMonth: number; storageMb: number; integrations: number };
-    limits: Record<string, number> | null;
-    billing: { provider: string | null; status: string };
-  }>('/subscriptions/usage');
+  // Seed the form once the current settings arrive.
+  useEffect(() => {
+    if (settings.data) {
+      const w = settings.data.workspace;
+      setWorkspace({ name: w.name, currency: w.currency, timezone: w.timezone, locale: w.locale });
+    }
+  }, [settings.data]);
+
+  const saveWorkspace = async () => {
+    setSaving(true);
+    try {
+      await api.patch('/settings', workspace);
+      // The currency drives every money figure in the UI, so the session is
+      // refreshed rather than waiting for the next full page load.
+      await refresh();
+      settings.refetch();
+      push({ tone: 'success', title: 'Settings saved' });
+    } catch (err) {
+      push({ tone: 'error', title: 'Could not save', body: err instanceof Error ? err.message : undefined });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const saveProfile = async () => {
     setSaving(true);
@@ -865,19 +611,106 @@ export function SettingsPage() {
         value={tab}
         onChange={setTab}
         tabs={[
+          { value: 'workspace', label: t('nav.workspace') },
           { value: 'profile', label: 'Profile' },
           { value: 'security', label: 'Security' },
-          { value: 'plan', label: 'Plan and usage' },
+          { value: 'integrations', label: t('nav.integrations') },
         ]}
       />
 
+      {tab === 'workspace' ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card>
+            <CardHeader title="Workspace" subtitle="Applies across the whole application." />
+            <div className="space-y-4 p-5">
+              <Field label="Application name">
+                <Input value={workspace.name} onChange={(e) => setWorkspace({ ...workspace, name: e.target.value })} />
+              </Field>
+              <Field label="Default currency" hint="Used for budgets, spend and reports.">
+                <Select value={workspace.currency} onChange={(e) => setWorkspace({ ...workspace, currency: e.target.value })}>
+                  {CURRENCIES.map((code) => <option key={code} value={code}>{code}</option>)}
+                </Select>
+              </Field>
+              <Field label="Timezone">
+                <Input value={workspace.timezone} onChange={(e) => setWorkspace({ ...workspace, timezone: e.target.value })} placeholder="Asia/Riyadh" />
+              </Field>
+              <Field label={t('common.language')}>
+                <Select value={workspace.locale} onChange={(e) => setWorkspace({ ...workspace, locale: e.target.value })}>
+                  <option value="EN">English</option>
+                  <option value="AR">العربية</option>
+                </Select>
+              </Field>
+              <Field label={t('theme.label')}><div><ThemeSwitch /></div></Field>
+              <Button onClick={saveWorkspace} loading={saving}>{t('common.save')}</Button>
+            </div>
+          </Card>
+
+          <div className="space-y-4">
+            <Card>
+              <CardHeader title="Storage" subtitle={`Driver: ${settings.data?.storage.driver ?? '—'}`} />
+              <div className="space-y-3 p-5 text-[13px]">
+                {[
+                  { label: 'Files', value: String(settings.data?.storage.files ?? 0) },
+                  { label: 'Stored', value: `${settings.data?.storage.megabytes ?? 0} MB` },
+                  { label: 'Max upload', value: `${settings.data?.storage.maxUploadMb ?? 0} MB` },
+                ].map((row) => (
+                  <div key={row.label} className="flex items-center justify-between gap-3">
+                    <span className="text-muted">{row.label}</span>
+                    <span className="tabular font-medium text-fg">{row.value}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            <Card>
+              <CardHeader title="AI" />
+              <div className="p-5">
+                {settings.data?.ai.configured ? (
+                  <>
+                    <Badge tone="ok" dot>Configured</Badge>
+                    <p className="mt-3 text-[13px] leading-relaxed text-muted">
+                      Generation calls {settings.data.ai.model}. The key stays server-side and never reaches the browser.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Badge tone="warn" dot>Built-in engine</Badge>
+                    <p className="mt-3 text-[13px] leading-relaxed text-muted">
+                      No <code className="rounded bg-elevated px-1">OPENAI_API_KEY</code> is set, so the built-in
+                      template engine writes the copy and every result is labelled as such. Generation keeps working
+                      either way — the key only changes which engine answers.
+                    </p>
+                  </>
+                )}
+              </div>
+            </Card>
+
+            <Card>
+              <CardHeader title="Contents" />
+              <div className="grid grid-cols-2 gap-3 p-5 text-center">
+                {[
+                  { label: t('nav.restaurants'), value: settings.data?.totals.restaurants ?? 0 },
+                  { label: t('nav.campaigns'), value: settings.data?.totals.campaigns ?? 0 },
+                  { label: t('nav.content'), value: settings.data?.totals.contents ?? 0 },
+                  { label: t('nav.ads'), value: settings.data?.totals.ads ?? 0 },
+                ].map((stat) => (
+                  <div key={stat.label}>
+                    <p className="tabular text-2xl font-semibold text-fg">{stat.value}</p>
+                    <p className="text-[12px] uppercase tracking-wide text-muted">{stat.label}</p>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+        </div>
+      ) : null}
+
       {tab === 'profile' ? (
         <Card className="max-w-2xl">
-          <CardHeader title="Your profile" />
+          <CardHeader title="Your profile" subtitle="The one account on this system." />
           <div className="space-y-4 p-5">
             <Field label="Name"><Input value={name} onChange={(event) => setName(event.target.value)} /></Field>
-            <Field label="Email" hint="Contact an administrator to change this."><Input value={user?.email ?? ''} disabled /></Field>
-            <Field label={t('theme.label')}><div><ThemeSwitch /></div></Field>
+            <Field label="Email"><Input value={user?.email ?? ''} disabled /></Field>
             <Button onClick={saveProfile} loading={saving}>{t('common.save')}</Button>
           </div>
         </Card>
@@ -896,51 +729,37 @@ export function SettingsPage() {
             <Button onClick={changePassword} loading={saving} disabled={!passwords.currentPassword || !passwords.newPassword}>
               Change password
             </Button>
+            <p className="text-[13px] leading-relaxed text-muted">
+              There is no password-reset email on this system. If you lose access, reset the password from the server
+              with <code className="rounded bg-elevated px-1">npm run owner:create</code>.
+            </p>
           </div>
         </Card>
       ) : null}
 
-      {tab === 'plan' ? (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card>
-            <CardHeader title={usage.data?.plan?.name ?? 'Plan'} subtitle="Current usage against your limits" />
-            <div className="space-y-4 p-5">
-              {usage.data?.limits
-                ? Object.entries(usage.data.usage).map(([key, value]) => {
-                    const limit = usage.data!.limits![key];
-                    const unlimited = limit === -1 || limit === undefined;
-                    const ratio = unlimited ? 0 : Math.min(1, value / Math.max(limit, 1));
-                    return (
-                      <div key={key}>
-                        <div className="mb-1.5 flex items-center justify-between text-[13px]">
-                          <span className="text-muted">{humanize(key)}</span>
-                          <span className="tabular text-fg">{value}{unlimited ? '' : ` / ${limit}`}</span>
-                        </div>
-                        <div className="h-1.5 overflow-hidden rounded-full bg-elevated">
-                          <div
-                            className={cn('h-full rounded-full', ratio > 0.9 ? 'bg-danger' : ratio > 0.7 ? 'bg-warn' : 'bg-brand')}
-                            style={{ width: `${unlimited ? 4 : ratio * 100}%` }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })
-                : <p className="text-sm text-muted">No plan attached.</p>}
-            </div>
-          </Card>
-
-          <Card>
-            <CardHeader title="Billing" />
-            <div className="p-5">
-              <Badge tone="warn" dot>Not configured</Badge>
-              <p className="mt-3 text-[13px] leading-relaxed text-muted">
-                Subscriptions, plans and limits are enforced by the application, but no payment provider is connected —
-                nothing has been charged and no card details are stored. The subscription model carries a
-                <code className="mx-1 rounded bg-elevated px-1">providerRef</code> field ready for a provider to populate.
-              </p>
-            </div>
-          </Card>
-        </div>
+      {tab === 'integrations' ? (
+        <Card>
+          <CardHeader
+            title={t('nav.integrations')}
+            subtitle="Architecture only. No adapter is implemented, and none reports a connection it does not have."
+          />
+          <div className="divide-y divide-line/60">
+            {catalog.data?.adapters.map((adapter) => (
+              <div key={adapter.platform} className="flex flex-wrap items-center gap-3 px-5 py-3.5">
+                <PlatformChip platform={adapter.platform} size="sm" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] font-medium text-fg">{adapter.label}</p>
+                  <p className="text-[12px] text-muted">
+                    {adapter.missingEnv.length > 0
+                      ? `Needs ${adapter.missingEnv.join(', ')}`
+                      : 'Credentials present; adapter not implemented'}
+                  </p>
+                </div>
+                <Badge tone="neutral">{t('integration.notImplemented')}</Badge>
+              </div>
+            ))}
+          </div>
+        </Card>
       ) : null}
     </>
   );

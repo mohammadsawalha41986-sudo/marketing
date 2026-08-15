@@ -1,43 +1,43 @@
-/** Session state and the role helpers the router and UI gate on. */
+/**
+ * Session state.
+ *
+ * The role helpers this used to export are gone: there is one operator, so
+ * "signed in" is the only distinction the UI ever needs to make.
+ */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { api, type CurrentUser, type Role } from './api';
-import { useTheme } from './theme';
+import { api, type CurrentUser, type Workspace } from './api';
+import { setCurrency } from './format';
 
 interface AuthValue {
   user: CurrentUser | null;
+  workspace: Workspace | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<CurrentUser>;
-  register: (input: { name: string; email: string; password: string; organizationName?: string }) => Promise<CurrentUser>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
-  isAgency: boolean;
-  isClientUser: boolean;
-  isSuperAdmin: boolean;
-  canManage: boolean;
 }
 
-const AGENCY_ROLES: Role[] = ['SUPER_ADMIN', 'AGENCY_ADMIN', 'AGENCY_STAFF'];
 const AuthContext = createContext<AuthValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [loading, setLoading] = useState(true);
-  const { applyBrand } = useTheme();
 
   const load = useCallback(async () => {
     try {
-      const { user: current } = await api.get<{ user: CurrentUser }>('/auth/me');
-      setUser(current);
-      // A portal user sees the app in their own brand colours.
-      applyBrand(current.client?.brand ?? null);
+      const data = await api.get<{ user: CurrentUser; workspace: Workspace }>('/auth/me');
+      setUser(data.user);
+      setWorkspace(data.workspace);
+      setCurrency(data.workspace.currency);
     } catch {
       setUser(null);
-      applyBrand(null);
+      setWorkspace(null);
     } finally {
       setLoading(false);
     }
-  }, [applyBrand]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -46,16 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signIn = useCallback(
     async (email: string, password: string) => {
       const { user: next } = await api.post<{ user: CurrentUser }>('/auth/login', { email, password });
-      // /me carries the nested organization and brand that /login omits.
-      await load();
-      return next;
-    },
-    [load],
-  );
-
-  const register = useCallback(
-    async (input: { name: string; email: string; password: string; organizationName?: string }) => {
-      const { user: next } = await api.post<{ user: CurrentUser }>('/auth/register', input);
+      // /me carries the workspace that /login omits.
       await load();
       return next;
     },
@@ -65,23 +56,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     await api.post('/auth/logout');
     setUser(null);
-    applyBrand(null);
-  }, [applyBrand]);
+    setWorkspace(null);
+  }, []);
 
   const value = useMemo<AuthValue>(
-    () => ({
-      user,
-      loading,
-      signIn,
-      register,
-      signOut,
-      refresh: load,
-      isAgency: user ? AGENCY_ROLES.includes(user.role) : false,
-      isClientUser: user ? user.role === 'CLIENT_ADMIN' || user.role === 'CLIENT_USER' : false,
-      isSuperAdmin: user?.role === 'SUPER_ADMIN',
-      canManage: user?.role === 'SUPER_ADMIN' || user?.role === 'AGENCY_ADMIN',
-    }),
-    [user, loading, signIn, register, signOut, load],
+    () => ({ user, workspace, loading, signIn, signOut, refresh: load }),
+    [user, workspace, loading, signIn, signOut, load],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

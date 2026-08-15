@@ -11,7 +11,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
 import { REPO_ROOT, corsOrigins, env, isProd, isTest, uploadDir } from './env.js';
 import { apiRouter } from './routes/index.js';

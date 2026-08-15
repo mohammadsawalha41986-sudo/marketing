@@ -37,7 +37,7 @@ function systemPrefersDark(): boolean {
 }
 
 function readStored(): ThemeMode {
-  const stored = localStorage.getItem('mos.theme');
+  const stored = localStorage.getItem('rmos.theme');
   return stored === 'light' || stored === 'system' || stored === 'dark' ? stored : 'dark';
 }
 
@@ -55,7 +55,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       document.documentElement.dataset.theme = next;
     };
     apply();
-    localStorage.setItem('mos.theme', mode);
+    localStorage.setItem('rmos.theme', mode);
 
     if (mode !== 'system') return;
     const query = window.matchMedia('(prefers-color-scheme: dark)');

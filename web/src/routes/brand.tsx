@@ -1,12 +1,11 @@
-/** Brand DNA editor, logo upload, and the suggested-identity approval flow. */
+/** Brand identity editor, logo upload, and the suggested-palette approval flow. */
 
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Check, Palette, Sparkles, Upload, Wand2 } from 'lucide-react';
 
-import { api, qs, type Language, type Paginated } from '../lib/api';
+import { api, qs, type Language, type Paginated, type RestaurantRef } from '../lib/api';
 import { useQuery } from '../lib/hooks';
-import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
 import {
   Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Field, Input,
@@ -29,10 +28,9 @@ interface SuggestedPalette {
 
 interface Brand {
   id: string;
-  clientId: string;
+  restaurantId: string;
   businessName: string;
-  businessType: string | null;
-  industry: string | null;
+  cuisine: string | null;
   description: string | null;
   targetAudience: string | null;
   location: string | null;
@@ -46,6 +44,7 @@ interface Brand {
   keywords: string[];
   forbiddenWords: string[];
   ctaStyle: string | null;
+  visualStyle: string | null;
   preferredLanguage: Language;
   primaryColor: string;
   secondaryColor: string;
@@ -53,10 +52,15 @@ interface Brand {
   backgroundColor: string;
   textColor: string;
   fontFamily: string;
+  headingFont: string | null;
+  bodyFont: string | null;
   logoUrl: string | null;
   suggestedPalette: SuggestedPalette | null;
   paletteApproved: boolean;
 }
+
+/** Arabic-capable faces first, so an Arabic-language brand has real options. */
+const FONTS = ['Inter', 'Cairo', 'Tajawal', 'Plus Jakarta Sans', 'Manrope', 'Poppins', 'DM Sans'];
 
 /** Comma-separated text ↔ string[] so lists stay easy to edit. */
 function ListField({
@@ -76,9 +80,8 @@ function ListField({
   );
 }
 
-export function BrandPage({ portal = false }: { portal?: boolean }) {
+export function BrandPage({ restaurantId, embedded = false }: { restaurantId?: string; embedded?: boolean } = {}) {
   const { t } = useI18n();
-  const { user, isAgency } = useAuth();
   const { push } = useToast();
   const [params, setParams] = useSearchParams();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -87,12 +90,12 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
   const [uploading, setUploading] = useState(false);
   const [draft, setDraft] = useState<Brand | null>(null);
 
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(
-    portal ? null : `/clients${qs({ pageSize: 100 })}`,
+  const restaurants = useQuery<Paginated<RestaurantRef>>(
+    embedded ? null : `/restaurants${qs({ pageSize: 100 })}`,
   );
 
-  const clientId = portal ? user?.clientId ?? '' : params.get('client') ?? clients.data?.items[0]?.id ?? '';
-  const { data, loading, error, refetch } = useQuery<{ brand: Brand }>(clientId ? `/brands/${clientId}` : null, [clientId]);
+  const targetId = restaurantId ?? params.get('restaurant') ?? restaurants.data?.items[0]?.id ?? '';
+  const { data, loading, error, refetch } = useQuery<{ brand: Brand }>(targetId ? `/brands/${targetId}` : null, [targetId]);
 
   useEffect(() => {
     if (data?.brand) setDraft(data.brand);
@@ -102,9 +105,9 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
     if (!draft) return;
     setSaving(true);
     try {
-      const { id: _id, clientId: _clientId, logoUrl: _logo, suggestedPalette: _suggested, paletteApproved: _approved, ...payload } = draft;
-      await api.patch(`/brands/${clientId}`, payload);
-      push({ tone: 'success', title: 'Brand DNA saved' });
+      const { id: _id, restaurantId: _rid, logoUrl: _logo, suggestedPalette: _suggested, paletteApproved: _approved, ...payload } = draft;
+      await api.patch(`/brands/${targetId}`, payload);
+      push({ tone: 'success', title: 'Brand identity saved' });
       refetch();
     } catch (err) {
       push({ tone: 'error', title: 'Could not save', body: err instanceof Error ? err.message : undefined });
@@ -118,7 +121,7 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
     try {
       const body = new FormData();
       body.append('file', file);
-      const response = await api.post<{ suggested: SuggestedPalette }>(`/brands/${clientId}/logo`, body);
+      const response = await api.post<{ suggested: SuggestedPalette }>(`/brands/${targetId}/logo`, body);
       push({
         tone: 'success',
         title: 'Logo uploaded',
@@ -151,7 +154,7 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
     if (!draft) return;
     setSaving(true);
     try {
-      const response = await api.post<{ warning?: string; contrast: number }>(`/brands/${clientId}/palette`, {
+      const response = await api.post<{ warning?: string; contrast: number }>(`/brands/${targetId}/palette`, {
         primaryColor: draft.primaryColor,
         secondaryColor: draft.secondaryColor,
         accentColor: draft.accentColor,
@@ -172,11 +175,11 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
     }
   };
 
-  if (!portal && clients.data && clients.data.items.length === 0) {
+  if (!embedded && restaurants.data && restaurants.data.items.length === 0) {
     return (
       <>
         <PageHeader title={t('brand.dna')} />
-        <Card><EmptyState icon={Palette} title={t('empty.clients.title')} body={t('empty.clients.body')} /></Card>
+        <Card><EmptyState icon={Palette} title={t('empty.restaurants.title')} body={t('empty.restaurants.body')} /></Card>
       </>
     );
   }
@@ -184,36 +187,38 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
   if (loading || !draft) {
     return (
       <>
-        <PageHeader title={t('brand.dna')} />
+        {embedded ? null : <PageHeader title={t('brand.dna')} />}
         {error ? <Card><ErrorState message={error} onRetry={refetch} /></Card> : <CardSkeleton rows={6} />}
       </>
     );
   }
 
-  const readOnly = !isAgency;
+  const controls = (
+    <>
+      {embedded || !restaurants.data ? null : (
+        <Select
+          value={targetId}
+          onChange={(event) => setParams({ restaurant: event.target.value })}
+          className="w-52"
+        >
+          {restaurants.data.items.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+        </Select>
+      )}
+      <Button onClick={save} loading={saving}>{t('common.save')}</Button>
+    </>
+  );
 
   return (
     <>
-      <PageHeader
-        title={t('brand.dna')}
-        subtitle="What the AI reads before it writes a single word for this client."
-        action={
-          <>
-            {!portal && clients.data ? (
-              <Select
-                value={clientId}
-                onChange={(event) => setParams({ client: event.target.value })}
-                className="w-52"
-              >
-                {clients.data.items.map((client) => (
-                  <option key={client.id} value={client.id}>{client.name}</option>
-                ))}
-              </Select>
-            ) : null}
-            {!readOnly ? <Button onClick={save} loading={saving}>{t('common.save')}</Button> : null}
-          </>
-        }
-      />
+      {embedded ? (
+        <div className="mb-4 flex justify-end gap-2">{controls}</div>
+      ) : (
+        <PageHeader
+          title={t('brand.dna')}
+          subtitle="What the AI reads before it writes a single word for this restaurant."
+          action={controls}
+        />
+      )}
 
       <Tabs
         className="mb-4"
@@ -227,21 +232,21 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
           <Card>
             <CardHeader title="The business" icon={Sparkles} />
             <div className="grid gap-4 p-5">
-              <Field label="Business name"><Input value={draft.businessName} disabled={readOnly} onChange={(e) => setDraft({ ...draft, businessName: e.target.value })} /></Field>
+              <Field label="Restaurant name"><Input value={draft.businessName} onChange={(e) => setDraft({ ...draft, businessName: e.target.value })} /></Field>
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Business type"><Input value={draft.businessType ?? ''} disabled={readOnly} onChange={(e) => setDraft({ ...draft, businessType: e.target.value })} /></Field>
-                <Field label="Industry"><Input value={draft.industry ?? ''} disabled={readOnly} onChange={(e) => setDraft({ ...draft, industry: e.target.value })} /></Field>
+                <Field label="Cuisine"><Input value={draft.cuisine ?? ''} onChange={(e) => setDraft({ ...draft, cuisine: e.target.value })} placeholder="Lebanese, Grill, Café…" /></Field>
+                <Field label="Visual style"><Input value={draft.visualStyle ?? ''} onChange={(e) => setDraft({ ...draft, visualStyle: e.target.value })} placeholder="Warm, rustic, appetite-led" /></Field>
               </div>
-              <Field label="Description" hint="What the business actually does, in one or two sentences.">
-                <Textarea value={draft.description ?? ''} disabled={readOnly} rows={3} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
+              <Field label="Description" hint="What the restaurant is known for, in one or two sentences.">
+                <Textarea value={draft.description ?? ''} rows={3} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
               </Field>
-              <Field label="Target audience">
-                <Textarea value={draft.targetAudience ?? ''} disabled={readOnly} rows={2} onChange={(e) => setDraft({ ...draft, targetAudience: e.target.value })} />
+              <Field label={t('brand.audience')}>
+                <Textarea value={draft.targetAudience ?? ''} rows={2} onChange={(e) => setDraft({ ...draft, targetAudience: e.target.value })} />
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Location"><Input value={draft.location ?? ''} disabled={readOnly} onChange={(e) => setDraft({ ...draft, location: e.target.value })} /></Field>
+                <Field label="Location"><Input value={draft.location ?? ''} onChange={(e) => setDraft({ ...draft, location: e.target.value })} /></Field>
                 <Field label="Content language">
-                  <Select value={draft.preferredLanguage} disabled={readOnly} onChange={(e) => setDraft({ ...draft, preferredLanguage: e.target.value as Language })}>
+                  <Select value={draft.preferredLanguage} onChange={(e) => setDraft({ ...draft, preferredLanguage: e.target.value as Language })}>
                     <option value="EN">English</option>
                     <option value="AR">العربية</option>
                   </Select>
@@ -254,13 +259,13 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
             <CardHeader title="Voice and substance" icon={Palette} />
             <div className="grid gap-4 p-5">
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Tone of voice"><Input value={draft.toneOfVoice ?? ''} disabled={readOnly} onChange={(e) => setDraft({ ...draft, toneOfVoice: e.target.value })} /></Field>
-                <Field label="CTA style" hint="The wording used on buttons."><Input value={draft.ctaStyle ?? ''} disabled={readOnly} onChange={(e) => setDraft({ ...draft, ctaStyle: e.target.value })} /></Field>
+                <Field label={t('brand.voice')}><Input value={draft.toneOfVoice ?? ''} onChange={(e) => setDraft({ ...draft, toneOfVoice: e.target.value })} /></Field>
+                <Field label="CTA style" hint="The wording used on buttons."><Input value={draft.ctaStyle ?? ''} onChange={(e) => setDraft({ ...draft, ctaStyle: e.target.value })} /></Field>
               </div>
               <ListField label="Personality" value={draft.personality} onChange={(value) => setDraft({ ...draft, personality: value })} />
               <ListField label="Values" value={draft.values} onChange={(value) => setDraft({ ...draft, values: value })} />
-              <ListField label="Products" value={draft.products} onChange={(value) => setDraft({ ...draft, products: value })} />
-              <ListField label="Services" value={draft.services} onChange={(value) => setDraft({ ...draft, services: value })} />
+              <ListField label="Signature dishes" value={draft.products} onChange={(value) => setDraft({ ...draft, products: value })} />
+              <ListField label="Services" hint="Delivery, catering, private dining…" value={draft.services} onChange={(value) => setDraft({ ...draft, services: value })} />
               <ListField label="Unique selling points" value={draft.usps} onChange={(value) => setDraft({ ...draft, usps: value })} />
               <ListField label="Current offers" value={draft.offers} onChange={(value) => setDraft({ ...draft, offers: value })} />
               <ListField label="Keywords" value={draft.keywords} onChange={(value) => setDraft({ ...draft, keywords: value })} />
@@ -293,8 +298,7 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm text-muted">PNG, JPEG or WebP, up to 25 MB. SVG is not accepted — it can carry script.</p>
-                  {!readOnly ? (
-                    <div className="mt-3 flex flex-wrap gap-2">
+                  <div className="mt-3 flex flex-wrap gap-2">
                       <input
                         ref={fileRef}
                         type="file"
@@ -313,7 +317,7 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
                           variant="secondary"
                           icon={Wand2}
                           onClick={async () => {
-                            await api.post(`/brands/${clientId}/palette/suggest`);
+                            await api.post(`/brands/${targetId}/palette/suggest`);
                             refetch();
                             push({ tone: 'success', title: 'Palette re-extracted' });
                           }}
@@ -321,8 +325,7 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
                           Re-analyse
                         </Button>
                       ) : null}
-                    </div>
-                  ) : null}
+                  </div>
                 </div>
               </div>
             </Card>
@@ -333,7 +336,7 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
                   title={t('brand.suggested')}
                   subtitle={`${draft.suggestedPalette.visualStyle} · suggested font ${draft.suggestedPalette.fontFamily}`}
                   icon={Sparkles}
-                  action={!readOnly ? <Button size="sm" variant="secondary" onClick={applySuggestion}>Use these</Button> : null}
+                  action={<Button size="sm" variant="secondary" onClick={applySuggestion}>Use these</Button>}
                 />
                 <div className="p-5">
                   <div className="mb-4 flex flex-wrap gap-2">
@@ -357,20 +360,30 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
             <Card>
               <CardHeader
                 title={t('brand.identity')}
-                subtitle="These colours skin the client's portal."
-                action={!readOnly ? <Button icon={Check} onClick={approve} loading={saving}>{t('brand.approve')}</Button> : null}
+                subtitle="Applied across content previews and the restaurant workspace."
+                action={<Button icon={Check} onClick={approve} loading={saving}>{t('brand.approve')}</Button>}
               />
               <div className="grid gap-3 p-5 sm:grid-cols-2">
-                <Swatch label="Primary" color={draft.primaryColor} readOnly={readOnly} onChange={(value) => setDraft({ ...draft, primaryColor: value })} />
-                <Swatch label="Secondary" color={draft.secondaryColor} readOnly={readOnly} onChange={(value) => setDraft({ ...draft, secondaryColor: value })} />
-                <Swatch label="Accent" color={draft.accentColor} readOnly={readOnly} onChange={(value) => setDraft({ ...draft, accentColor: value })} />
-                <Swatch label="Background" color={draft.backgroundColor} readOnly={readOnly} onChange={(value) => setDraft({ ...draft, backgroundColor: value })} />
-                <Swatch label="Text" color={draft.textColor} readOnly={readOnly} onChange={(value) => setDraft({ ...draft, textColor: value })} />
+                <Swatch label="Primary" color={draft.primaryColor} onChange={(value) => setDraft({ ...draft, primaryColor: value })} />
+                <Swatch label="Secondary" color={draft.secondaryColor} onChange={(value) => setDraft({ ...draft, secondaryColor: value })} />
+                <Swatch label="Accent" color={draft.accentColor} onChange={(value) => setDraft({ ...draft, accentColor: value })} />
+                <Swatch label="Background" color={draft.backgroundColor} onChange={(value) => setDraft({ ...draft, backgroundColor: value })} />
+                <Swatch label="Text" color={draft.textColor} onChange={(value) => setDraft({ ...draft, textColor: value })} />
                 <Field label="Font family">
-                  <Select value={draft.fontFamily} disabled={readOnly} onChange={(e) => setDraft({ ...draft, fontFamily: e.target.value })}>
-                    {['Inter', 'Plus Jakarta Sans', 'Manrope', 'Poppins', 'DM Sans', 'Cairo', 'Tajawal'].map((font) => (
-                      <option key={font} value={font}>{font}</option>
-                    ))}
+                  <Select value={draft.fontFamily} onChange={(e) => setDraft({ ...draft, fontFamily: e.target.value })}>
+                    {FONTS.map((font) => <option key={font} value={font}>{font}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Heading font" hint="Falls back to the family above.">
+                  <Select value={draft.headingFont ?? ''} onChange={(e) => setDraft({ ...draft, headingFont: e.target.value || null })}>
+                    <option value="">Same as family</option>
+                    {FONTS.map((font) => <option key={font} value={font}>{font}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Body font" hint="Falls back to the family above.">
+                  <Select value={draft.bodyFont ?? ''} onChange={(e) => setDraft({ ...draft, bodyFont: e.target.value || null })}>
+                    <option value="">Same as family</option>
+                    {FONTS.map((font) => <option key={font} value={font}>{font}</option>)}
                   </Select>
                 </Field>
               </div>

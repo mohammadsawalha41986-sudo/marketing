@@ -4,9 +4,11 @@ import { useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { CalendarRange, Megaphone, Plus, Search, Target, Wallet } from 'lucide-react';
 
-import { api, qs, type CampaignStatus, type Metrics, type Paginated, type Platform } from '../lib/api';
+import {
+  api, qs, CAMPAIGN_OBJECTIVES, CAMPAIGN_STATUSES, PLATFORMS,
+  type CampaignStatus, type Metrics, type Paginated, type Platform, type RestaurantRef,
+} from '../lib/api';
 import { useDebounced, useQuery } from '../lib/hooks';
-import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
 import { date, isoDate, money, num, humanize } from '../lib/format';
 import {
@@ -15,10 +17,6 @@ import {
 } from '../components/ui';
 import { KpiCard, PlatformChip, StatusBadge } from '../components/domain';
 import { ComparisonBars, TrendChart } from '../components/charts';
-
-const PLATFORMS: Platform[] = ['INSTAGRAM', 'FACEBOOK', 'TIKTOK', 'SNAPCHAT', 'GOOGLE_ADS', 'GOOGLE_BUSINESS', 'LINKEDIN', 'X'];
-const OBJECTIVES = ['AWARENESS', 'TRAFFIC', 'ENGAGEMENT', 'LEADS', 'SALES', 'APP_INSTALLS', 'VIDEO_VIEWS'];
-const STATUSES: CampaignStatus[] = ['DRAFT', 'SCHEDULED', 'RUNNING', 'PAUSED', 'COMPLETED', 'CANCELLED'];
 
 interface CampaignRow {
   id: string;
@@ -29,22 +27,23 @@ interface CampaignRow {
   spend: number;
   startDate: string;
   endDate: string;
-  client: { id: string; name: string; logoUrl: string | null };
+  restaurant: RestaurantRef;
   platforms: Array<{ platform: Platform; budget: number }>;
-  _count: { contents: number };
+  _count: { contents: number; ads: number };
 }
 
-function CampaignForm({ open, onClose, onSaved, presetClient }: { open: boolean; onClose: () => void; onSaved: () => void; presetClient?: string }) {
+function CampaignForm({ open, onClose, onSaved, restaurantId }: { open: boolean; onClose: () => void; onSaved: () => void; restaurantId?: string }) {
+  const { t } = useI18n();
   const { push } = useToast();
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(`/clients${qs({ pageSize: 100 })}`);
+  const restaurants = useQuery<Paginated<RestaurantRef>>(`/restaurants${qs({ pageSize: 100 })}`);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [platforms, setPlatforms] = useState<Platform[]>(['INSTAGRAM']);
   const [form, setForm] = useState({
-    clientId: presetClient ?? '',
+    restaurantId: restaurantId ?? '',
     name: '',
     objective: 'AWARENESS',
-    status: 'DRAFT',
+    status: 'PLANNING',
     budget: 5000,
     startDate: isoDate(new Date()),
     endDate: isoDate(new Date(Date.now() + 30 * 86400000)),
@@ -59,6 +58,7 @@ function CampaignForm({ open, onClose, onSaved, presetClient }: { open: boolean;
     try {
       await api.post('/campaigns', {
         ...form,
+        restaurantId: restaurantId ?? form.restaurantId,
         budget: Number(form.budget),
         platforms: platforms.map((platform) => ({ platform, budget: Number(form.budget) / platforms.length })),
       });
@@ -91,26 +91,28 @@ function CampaignForm({ open, onClose, onSaved, presetClient }: { open: boolean;
       }
     >
       <form id="campaign-form" onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
-        <Field label="Client" required>
-          <Select value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })} required>
-            <option value="">Select a client</option>
-            {clients.data?.items.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-          </Select>
-        </Field>
+        {restaurantId ? null : (
+          <Field label="Restaurant" required>
+            <Select value={form.restaurantId} onChange={(e) => setForm({ ...form, restaurantId: e.target.value })} required>
+              <option value="">Select a restaurant</option>
+              {restaurants.data?.items.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </Select>
+          </Field>
+        )}
         <Field label="Campaign name" required>
           <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
         </Field>
         <Field label="Objective">
           <Select value={form.objective} onChange={(e) => setForm({ ...form, objective: e.target.value })}>
-            {OBJECTIVES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
+            {CAMPAIGN_OBJECTIVES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
           </Select>
         </Field>
         <Field label="Status">
           <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-            {STATUSES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
+            {CAMPAIGN_STATUSES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
           </Select>
         </Field>
-        <Field label="Budget (USD)" required>
+        <Field label={t('common.budget')} required>
           <Input type="number" min={0} step={100} value={form.budget} onChange={(e) => setForm({ ...form, budget: Number(e.target.value) })} required />
         </Field>
         <Field label="KPI" hint="What does success look like?">
@@ -148,9 +150,13 @@ function CampaignForm({ open, onClose, onSaved, presetClient }: { open: boolean;
   );
 }
 
-export function CampaignsPage({ portal = false }: { portal?: boolean }) {
+/**
+ * `embedded` renders this list inside the restaurant workspace: the page header
+ * and the restaurant column are dropped, because the workspace already says
+ * which restaurant you are looking at.
+ */
+export function CampaignsPage({ restaurantId, embedded = false }: { restaurantId?: string; embedded?: boolean } = {}) {
   const { t, lang } = useI18n();
-  const { canManage } = useAuth();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const [search, setSearch] = useState('');
@@ -159,20 +165,22 @@ export function CampaignsPage({ portal = false }: { portal?: boolean }) {
   const [creating, setCreating] = useState(false);
   const debounced = useDebounced(search);
 
-  const { data, loading, error, refetch } = useQuery<Paginated<CampaignRow>>(
-    `/campaigns${qs({ page, pageSize: 12, search: debounced, status, clientId: params.get('client') ?? undefined })}`,
-    [page, debounced, status, params.get('client')],
-  );
+  const scoped = restaurantId ?? params.get('restaurant') ?? undefined;
 
-  const base = portal ? '/client' : '/app';
+  const { data, loading, error, refetch } = useQuery<Paginated<CampaignRow>>(
+    `/campaigns${qs({ page, pageSize: 12, search: debounced, status, restaurantId: scoped })}`,
+    [page, debounced, status, scoped],
+  );
 
   return (
     <>
-      <PageHeader
-        title={t('nav.campaigns')}
-        subtitle="Budget, platforms, flight dates and the content attached to each."
-        action={canManage && !portal ? <Button icon={Plus} onClick={() => setCreating(true)}>New campaign</Button> : undefined}
-      />
+      {embedded ? null : (
+        <PageHeader
+          title={t('nav.campaigns')}
+          subtitle="Budget, platforms, flight dates and the content attached to each."
+          action={<Button icon={Plus} onClick={() => setCreating(true)}>New campaign</Button>}
+        />
+      )}
 
       <div className="mb-4 flex flex-wrap gap-2">
         <div className="relative min-w-[220px] flex-1">
@@ -181,8 +189,9 @@ export function CampaignsPage({ portal = false }: { portal?: boolean }) {
         </div>
         <Select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} className="w-44">
           <option value="">{t('common.all')}</option>
-          {STATUSES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
+          {CAMPAIGN_STATUSES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
         </Select>
+        {embedded ? <Button icon={Plus} onClick={() => setCreating(true)}>New campaign</Button> : null}
       </div>
 
       {error ? (
@@ -198,11 +207,11 @@ export function CampaignsPage({ portal = false }: { portal?: boolean }) {
               const used = campaign.budget === 0 ? 0 : campaign.spend / campaign.budget;
               const tone = used > 0.95 ? 'danger' : used > 0.8 ? 'warn' : 'brand';
               return (
-                <Card key={campaign.id} hover className="cursor-pointer p-5" onClick={() => navigate(`${base}/campaigns/${campaign.id}`)}>
+                <Card key={campaign.id} hover className="cursor-pointer p-5" onClick={() => navigate(`/campaigns/${campaign.id}`)}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate font-semibold text-fg">{campaign.name}</p>
-                      <p className="truncate text-[13px] text-muted">{campaign.client.name}</p>
+                      {embedded ? null : <p className="truncate text-[13px] text-muted">{campaign.restaurant.name}</p>}
                     </div>
                     <StatusBadge status={campaign.status} kind="campaign" />
                   </div>
@@ -229,7 +238,7 @@ export function CampaignsPage({ portal = false }: { portal?: boolean }) {
                       <CalendarRange className="h-3.5 w-3.5" />
                       {date(campaign.startDate, lang)} → {date(campaign.endDate, lang)}
                     </span>
-                    <span>{num(campaign._count.contents, lang)} items</span>
+                    <span>{num(campaign._count.contents, lang)} items · {num(campaign._count.ads, lang)} ads</span>
                   </div>
                 </Card>
               );
@@ -243,12 +252,12 @@ export function CampaignsPage({ portal = false }: { portal?: boolean }) {
             icon={Megaphone}
             title={debounced || status ? t('empty.search.title') : t('empty.campaigns.title')}
             body={debounced || status ? t('empty.search.body') : t('empty.campaigns.body')}
-            action={canManage && !portal && !debounced ? <Button icon={Plus} onClick={() => setCreating(true)}>New campaign</Button> : undefined}
+            action={!debounced ? <Button icon={Plus} onClick={() => setCreating(true)}>New campaign</Button> : undefined}
           />
         </Card>
       )}
 
-      <CampaignForm open={creating} onClose={() => setCreating(false)} onSaved={refetch} presetClient={params.get('client') ?? undefined} />
+      <CampaignForm open={creating} onClose={() => setCreating(false)} onSaved={refetch} restaurantId={scoped} />
     </>
   );
 }
@@ -261,6 +270,10 @@ interface CampaignDetail extends CampaignRow {
   notes: string | null;
   locations: string[];
   contents: Array<{ id: string; name: string; status: string; platform: Platform; scheduledAt: string | null; headline: string | null }>;
+  ads: Array<{
+    id: string; name: string; platform: Platform; status: string; spend: number;
+    impressions: number; clicks: number; conversions: number; metricsAt: string | null;
+  }>;
 }
 
 interface CampaignAnalytics {
@@ -272,10 +285,10 @@ interface CampaignAnalytics {
   budget: { total: number; spent: number; remaining: number };
 }
 
-export function CampaignDetailPage({ portal = false }: { portal?: boolean }) {
+export function CampaignDetailPage() {
   const { id = '' } = useParams();
   const { t, lang } = useI18n();
-  const [tab, setTab] = useState<'overview' | 'content' | 'analytics'>('overview');
+  const [tab, setTab] = useState<'overview' | 'content' | 'ads' | 'analytics'>('overview');
 
   const { data, loading, error, refetch } = useQuery<{ campaign: CampaignDetail }>(`/campaigns/${id}`, [id]);
   const analytics = useQuery<CampaignAnalytics>(`/campaigns/${id}/analytics`, [id]);
@@ -289,13 +302,12 @@ export function CampaignDetailPage({ portal = false }: { portal?: boolean }) {
   if (error || !data) return <Card><ErrorState message={error ?? 'Campaign not found'} onRetry={refetch} /></Card>;
 
   const campaign = data.campaign;
-  const base = portal ? '/client' : '/app';
 
   return (
     <>
       <PageHeader
         title={campaign.name}
-        subtitle={`${campaign.client.name} · ${humanize(campaign.objective)} · ${date(campaign.startDate, lang)} → ${date(campaign.endDate, lang)}`}
+        subtitle={`${campaign.restaurant.name} · ${humanize(campaign.objective)} · ${date(campaign.startDate, lang)} → ${date(campaign.endDate, lang)}`}
         action={<StatusBadge status={campaign.status} kind="campaign" />}
       />
 
@@ -313,6 +325,7 @@ export function CampaignDetailPage({ portal = false }: { portal?: boolean }) {
         tabs={[
           { value: 'overview', label: t('nav.overview') },
           { value: 'content', label: t('nav.content'), count: campaign.contents.length },
+          { value: 'ads', label: t('nav.ads'), count: campaign.ads.length },
           { value: 'analytics', label: t('nav.analytics') },
         ]}
       />
@@ -380,7 +393,7 @@ export function CampaignDetailPage({ portal = false }: { portal?: boolean }) {
               <EmptyState icon={Megaphone} title={t('empty.content.title')} body={t('empty.content.body')} />
             ) : (
               campaign.contents.map((item) => (
-                <Link key={item.id} to={`${base}/content/${item.id}`} className="flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-elevated">
+                <Link key={item.id} to={`/content/${item.id}`} className="flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-elevated">
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[13px] font-medium text-fg">{item.name}</p>
                     <p className="truncate text-[12px] text-muted">{item.headline ?? '—'}</p>
@@ -388,6 +401,38 @@ export function CampaignDetailPage({ portal = false }: { portal?: boolean }) {
                   <PlatformChip platform={item.platform} size="sm" />
                   {item.scheduledAt ? <span className="text-[12px] text-muted">{date(item.scheduledAt, lang)}</span> : null}
                   <StatusBadge status={item.status} kind="content" />
+                </Link>
+              ))
+            )}
+          </div>
+        </Card>
+      ) : null}
+
+      {tab === 'ads' ? (
+        <Card>
+          <CardHeader
+            title="Ads in this campaign"
+            icon={Target}
+            subtitle={t('ads.manualNotice')}
+            action={<Link to={`/ads?campaign=${campaign.id}`} className="text-[13px] text-brand hover:underline">{t('common.viewAll')}</Link>}
+          />
+          <div className="divide-y divide-line/60">
+            {campaign.ads.length === 0 ? (
+              <EmptyState icon={Target} title={t('empty.ads.title')} body={t('empty.ads.body')} />
+            ) : (
+              campaign.ads.map((ad) => (
+                <Link key={ad.id} to={`/ads/${ad.id}`} className="flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-elevated">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-medium text-fg">{ad.name}</p>
+                    <p className="truncate text-[12px] text-muted">
+                      {/* An ad with no figures entered says so rather than showing a zero. */}
+                      {ad.metricsAt
+                        ? `${money(ad.spend, lang, true)} · ${num(ad.impressions, lang, true)} impressions`
+                        : t('ads.neverRecorded')}
+                    </p>
+                  </div>
+                  <PlatformChip platform={ad.platform} size="sm" />
+                  <StatusBadge status={ad.status} kind="campaign" />
                 </Link>
               ))
             )}
