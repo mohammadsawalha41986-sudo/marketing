@@ -185,6 +185,20 @@ enum MediaType {
   LOGO
 }
 
+/// Output format of a rendered creative. Deliberately not WebP: these files are
+/// handed to a person to upload into an ad manager, and PNG/JPG are what every
+/// platform's uploader accepts without argument.
+enum CreativeFormat {
+  PNG
+  JPG
+}
+
+enum CreativeStatus {
+  DRAFT
+  SAVED
+  APPROVED
+}
+
 enum BrandAssetKind {
   LOGO
   LOGO_DARK
@@ -353,6 +367,7 @@ model Client {
   subscription  Subscription?
   snapshots     AnalyticsSnapshot[]
   aiUsages      AiUsage[]
+  creatives     Creative[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -440,11 +455,59 @@ model Media {
   client       Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
   campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   contentLinks ContentMedia[]
+  creatives    Creative[]
 
   @@index([organizationId])
   @@index([clientId])
   @@index([campaignId])
   @@index([type])
+}
+
+/// A rendered post creative: the finished artwork, not the photograph it was
+/// built from.
+///
+/// The source image stays in `Media` and is never modified — one photograph
+/// backs an Instagram portrait, a TikTok vertical and an X landscape, each a
+/// separate row here. Collapsing the two would mean re-rendering destroys the
+/// original, and "download" would hand back a source file that carries none of
+/// the headline, brand treatment or CTA the operator is actually looking at.
+model Creative {
+  id             String         @id @default(cuid())
+  organizationId String
+  clientId       String
+  contentId      String?
+  campaignId     String?
+  /// The untouched asset this was rendered from.
+  sourceMediaId  String
+  platform       Platform
+  /// Named preset, e.g. `INSTAGRAM_PORTRAIT` — the aspect the platform wants.
+  preset         String
+  width          Int
+  height         Int
+  format         CreativeFormat @default(PNG)
+  /// Key within the StorageProvider, not a filesystem path.
+  storageKey     String
+  url            String
+  sizeBytes      Int
+  /// Copy burned into the artwork, kept so a re-render is reproducible.
+  headline       String?
+  ctaLabel       String?
+  /// The match result as scored at render time. Frozen deliberately: a creative
+  /// approved at 95 must still show 95 later, even if the brand is edited after.
+  match          Json           @default("{}")
+  status         CreativeStatus @default(DRAFT)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  content     Content?  @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  campaign    Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  sourceMedia Media     @relation(fields: [sourceMediaId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([contentId])
+  @@index([sourceMediaId])
 }
 
 // ---------------------------------------------------------------- campaigns
@@ -504,6 +567,7 @@ model Campaign {
   snapshots    AnalyticsSnapshot[]
   reports      Report[]
   costs        CampaignCost[]
+  creatives    Creative[]
 
   @@index([organizationId])
   @@index([clientId])
@@ -594,6 +658,7 @@ model Content {
   approvals    Approval[]
   comments     Comment[]
   calendarEvent CalendarEvent?
+  creatives    Creative[]
 
   @@index([organizationId])
   @@index([clientId])

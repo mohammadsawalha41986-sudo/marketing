@@ -12,6 +12,7 @@ import { validateBody, validateParams, validateQuery } from '../middleware/valid
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
 import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
 import { IMAGE_MIME, VIDEO_MIME, uploadAny, sniffImage } from '../middleware/upload.js';
+import { env } from '../env.js';
 import { storage } from '../services/storage/index.js';
 import { recordAudit } from '../services/audit.js';
 
@@ -140,6 +141,124 @@ mediaRouter.post(
 
     await recordAudit({ actor, action: 'media.upload', entity: 'Media', meta: { count: created.length }, ip: req.ip });
     res.status(201).json({ items: created });
+  }),
+);
+
+/**
+ * Ingest an image from a URL into the library.
+ *
+ * The bytes are fetched and stored rather than the URL being kept as a
+ * reference. Hotlinking would leave every creative dependent on somebody else's
+ * server staying up and serving the same picture, and a rendered ad that breaks
+ * three months later is worse than the storage cost.
+ *
+ * The fetch is deliberately constrained: https only, no redirects followed to
+ * another host, a size ceiling, and the bytes are magic-number checked before
+ * anything is written — a URL supplied by a user is an untrusted input, and
+ * this endpoint would otherwise be a way to make the server fetch arbitrary
+ * addresses.
+ */
+mediaRouter.post(
+  '/from-url',
+  requireAgency,
+  validateBody(
+    z.object({
+      url: z.string().url().max(2000),
+      clientId: z.string().max(40).optional(),
+      campaignId: z.string().max(40).optional(),
+      category: z.string().trim().max(80).optional(),
+      tags: z.array(z.string().trim().min(1).max(40)).max(20).default([]),
+    }),
+  ),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+    const body = req.body as {
+      url: string; clientId?: string; campaignId?: string; category?: string; tags: string[];
+    };
+
+    const target = new URL(body.url);
+    if (target.protocol !== 'https:') throw badRequest('Only https image URLs can be imported');
+
+    const clientId = resolveClientId(actor, body.clientId);
+    if (clientId) {
+      const client = await prisma.client.findFirst({ where: { id: clientId, organizationId: orgId(actor) }, select: { id: true } });
+      if (!client) throw notFound('Client');
+    }
+    if (body.campaignId) {
+      const campaign = await prisma.campaign.findFirst({ where: { id: body.campaignId, organizationId: orgId(actor) }, select: { id: true } });
+      if (!campaign) throw notFound('Campaign');
+    }
+
+    const limitBytes = env.MAX_UPLOAD_MB * 1024 * 1024;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+
+    let buffer: Buffer;
+    let contentType: string;
+    try {
+      const response = await fetch(target, { redirect: 'follow', signal: controller.signal });
+      if (!response.ok) throw badRequest(`The image URL responded with ${response.status}`);
+
+      // Refuse a redirect that landed on a different host than the one asked for.
+      if (new URL(response.url).host !== target.host) {
+        throw badRequest('The image URL redirected to a different host');
+      }
+
+      const declared = Number(response.headers.get('content-length') ?? '0');
+      if (declared > limitBytes) throw badRequest(`That image is larger than the ${env.MAX_UPLOAD_MB}MB limit`);
+
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.byteLength > limitBytes) throw badRequest(`That image is larger than the ${env.MAX_UPLOAD_MB}MB limit`);
+
+      buffer = bytes;
+      contentType = (response.headers.get('content-type') ?? '').split(';')[0]?.trim() ?? '';
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw badRequest('The image URL took too long to respond');
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    // The bytes decide, not the header — a content-type can claim anything.
+    const sniffed = sniffImage(buffer);
+    if (!sniffed) throw badRequest('That URL did not return a readable image');
+    const mimeType = sniffed === 'jpeg' ? 'image/jpeg' : `image/${sniffed}`;
+    if (contentType && !IMAGE_MIME.has(contentType)) {
+      // Not fatal — the magic number already proved it is an image — but the
+      // real type is what gets stored.
+    }
+
+    const meta = await sharp(buffer).metadata();
+    const name = decodeURIComponent(target.pathname.split('/').pop() || 'image').slice(0, 200);
+
+    const stored = await storage.save(buffer, {
+      filename: name,
+      mimeType,
+      prefix: clientId ? `clients/${clientId}` : 'shared',
+    });
+
+    const media = await prisma.media.create({
+      data: {
+        organizationId: orgId(actor),
+        clientId: clientId ?? null,
+        campaignId: body.campaignId ?? null,
+        type: MediaType.IMAGE,
+        filename: stored.key,
+        originalName: name,
+        mimeType,
+        sizeBytes: stored.sizeBytes,
+        width: meta.width ?? null,
+        height: meta.height ?? null,
+        url: stored.url,
+        thumbnailUrl: stored.url,
+        category: body.category ?? null,
+        tags: body.tags,
+      },
+    });
+
+    await recordAudit({ actor, action: 'media.import', entity: 'Media', entityId: media.id, meta: { host: target.host }, ip: req.ip });
+    res.status(201).json({ media });
   }),
 );
 

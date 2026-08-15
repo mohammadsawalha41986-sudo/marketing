@@ -18,7 +18,8 @@ export async function resetDatabase(): Promise<void> {
     TRUNCATE TABLE
       "AiUsage", "AuditLog", "Notification", "Report", "AnalyticsSnapshot",
       "Comment", "Approval", "CalendarEvent", "ContentMedia", "Hashtag",
-      "ContentVariant", "Content", "CampaignPlatform", "Campaign", "Media",
+      "ContentVariant", "Creative", "Content", "CampaignCost",
+      "CampaignPlatform", "Campaign", "Media",
       "BrandAsset", "Brand", "Integration", "Subscription", "Plan",
       "PasswordResetToken", "Session", "User", "Client", "Organization"
     RESTART IDENTITY CASCADE;
