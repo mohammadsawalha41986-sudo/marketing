@@ -4,7 +4,7 @@
  */
 
 import { Router } from 'express';
-import { IntegrationStatus, Language, Platform, Prisma, Role, SubscriptionStatus } from '@prisma/client';
+import { IntegrationStatus, Language, Platform, Prisma, Role } from '@prisma/client';
 import { z } from 'zod';
 
 import { prisma } from '../lib/prisma.js';

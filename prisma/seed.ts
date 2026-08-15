@@ -12,7 +12,7 @@
 
 import {
   ApprovalStatus, CampaignObjective, CampaignStatus, ClientStatus, ContentStatus, ContentType,
-  IntegrationStatus, Language, MediaType, NotificationType, Platform, PrismaClient, Prisma,
+  IntegrationStatus, Language, NotificationType, Platform, PrismaClient, Prisma,
   ReportType, Role, SubscriptionStatus,
 } from '@prisma/client';
 import argon2 from 'argon2';
