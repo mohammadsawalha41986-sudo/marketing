@@ -3,14 +3,13 @@
 import { Router } from 'express';
 import { BrandAssetKind, Language, MediaType, Prisma } from '@prisma/client';
 import { z } from 'zod';
-import sharp from 'sharp';
 
 import { prisma } from '../lib/prisma.js';
 import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
 import { actorOf, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { hexColor } from '../lib/http.js';
-import { assertRealImage, uploadImage } from '../middleware/upload.js';
+import { readImageMetadata, uploadImage } from '../middleware/upload.js';
 import { storage } from '../services/storage/index.js';
 import { contrastRatio, extractPalette, readableTextOn } from '../services/palette.js';
 import { recordAudit } from '../services/audit.js';
@@ -98,9 +97,11 @@ brandsRouter.post(
 
     const file = req.file;
     if (!file) throw badRequest('No file uploaded. Send it as multipart field "file".');
-    assertRealImage(file.buffer);
 
-    const meta = await sharp(file.buffer).metadata();
+    // Validates and reads dimensions together, so a corrupt file is refused
+    // before anything is written to storage.
+    const meta = await readImageMetadata(file.buffer);
+
     const stored = await storage.save(file.buffer, {
       filename: file.originalname,
       mimeType: file.mimetype,
@@ -124,7 +125,7 @@ brandsRouter.post(
           brandId: brand.id,
           kind: BrandAssetKind.LOGO,
           url: stored.url,
-          meta: { width: meta.width ?? null, height: meta.height ?? null, format: meta.format ?? null } as Prisma.InputJsonValue,
+          meta: { width: meta.width, height: meta.height } as Prisma.InputJsonValue,
         },
       }),
       prisma.restaurant.update({ where: { id: brand.restaurantId }, data: { logoUrl: stored.url } }),
@@ -136,8 +137,8 @@ brandsRouter.post(
           originalName: file.originalname.slice(0, 200),
           mimeType: file.mimetype,
           sizeBytes: stored.sizeBytes,
-          width: meta.width ?? null,
-          height: meta.height ?? null,
+          width: meta.width,
+          height: meta.height,
           url: stored.url,
           category: 'brand',
           tags: ['logo'],

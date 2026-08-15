@@ -27,7 +27,15 @@ const schema = z.object({
   SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
   SESSION_TTL_HOURS: z.coerce.number().int().positive().default(24 * 7),
 
-  APP_URL: z.string().url().default('http://localhost:3000'),
+  /*
+   * Public URL of the deployment. Optional because Railway injects
+   * RAILWAY_PUBLIC_DOMAIN once a domain is generated, and deriving it from
+   * there means a fresh deploy has a correct APP_URL with nothing configured —
+   * a wrong one silently breaks login, because the cookie is then treated as
+   * cross-origin and dropped.
+   */
+  APP_URL: z.string().url().optional(),
+  RAILWAY_PUBLIC_DOMAIN: z.string().optional(),
   // Optional: front end and API are same-origin in production, so this is only
   // needed for a split-origin dev setup. It defaults from APP_URL below.
   CORS_ORIGIN: z.string().optional(),
@@ -91,7 +99,17 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const env = parsed.data;
+const raw = parsed.data;
+
+/**
+ * The public URL, resolved once: an explicit APP_URL wins, then Railway's
+ * injected domain, then localhost for development.
+ */
+const appUrl =
+  raw.APP_URL ??
+  (raw.RAILWAY_PUBLIC_DOMAIN ? `https://${raw.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${raw.PORT}`);
+
+export const env = { ...raw, APP_URL: appUrl };
 
 export const isProd = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';

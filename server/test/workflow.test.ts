@@ -580,6 +580,40 @@ describe('uploads and brand identity', () => {
     expect(response.status).toBe(400);
   });
 
+  /*
+   * A file can pass the magic-number check and still fail to decode — a
+   * truncated PNG is the common case. Before this was handled, the decoder's
+   * exception escaped as a 500 "Something went wrong", which tells the operator
+   * nothing about the file they just chose.
+   */
+  it('rejects a corrupt image with a useful message, not a 500', async () => {
+    // Valid PNG header and IHDR, deliberately broken pixel data.
+    const corrupt = Buffer.concat([tinyPng().subarray(0, 33), Buffer.from('not pixel data')]);
+
+    const response = await admin
+      .post(`/api/brands/${fixture.restaurantId}/logo`)
+      .attach('file', corrupt, { filename: 'broken.png', contentType: 'image/png' });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.message).toMatch(/corrupt|could not be read/i);
+
+    // And nothing was stored on the way to failing.
+    const brand = await prisma.brand.findUnique({ where: { restaurantId: fixture.restaurantId } });
+    expect(brand?.logoUrl).toBeNull();
+    expect(await prisma.media.count()).toBe(0);
+  });
+
+  it('rejects a corrupt image in the media library too', async () => {
+    const corrupt = Buffer.concat([tinyPng().subarray(0, 33), Buffer.from('not pixel data')]);
+
+    const response = await admin
+      .post('/api/media')
+      .attach('files', corrupt, { filename: 'broken.png', contentType: 'image/png' });
+
+    expect(response.status).toBe(400);
+    expect(await prisma.media.count()).toBe(0);
+  });
+
   it('rejects a file whose bytes are not an image', async () => {
     const response = await admin
       .post(`/api/brands/${fixture.restaurantId}/logo`)

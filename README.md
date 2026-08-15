@@ -1,12 +1,12 @@
-# Marketing OS
+# Restaurant Marketing OS
 
-An AI-powered, multi-tenant marketing management platform. One agency workspace,
-many clients, each with its own Brand DNA, campaigns, content, approvals,
-analytics and a branded client portal.
+A private marketing management system for **one operator** running marketing for
+**many restaurants**. Not a SaaS product: the restaurants are service clients,
+not application users. They have no accounts, no logins and no portal.
 
 ```
-CLIENT → BRAND DNA → MEDIA → AI CONTENT → CAMPAIGN → APPROVAL
-      → SCHEDULING → PUBLISHING → MONITORING → ANALYTICS → AI ANALYSIS → REPORT
+OPERATOR → RESTAURANT → BRAND → MEDIA → AI CONTENT → CAMPAIGN → AD
+        → CALENDAR → PUBLISHING → ANALYTICS → AI ANALYSIS → REPORT
 ```
 
 ## Stack
@@ -22,8 +22,7 @@ CLIENT → BRAND DNA → MEDIA → AI CONTENT → CAMPAIGN → APPROVAL
 | Storage | Provider interface with a local-disk driver |
 
 No Docker required. In production a **single Node process** serves both the API
-and the built SPA, which is what makes this deployable to a Hostinger Node.js
-app without a reverse proxy in front of two services.
+and the built SPA, which is what makes this deployable as one Railway service.
 
 ## Quick start
 
@@ -31,13 +30,10 @@ app without a reverse proxy in front of two services.
 npm install                   # also generates the Prisma Client
 cp .env.example .env          # local development only; fill in DATABASE_URL and SESSION_SECRET
 npx prisma migrate deploy
-npm run db:seed               # optional: demo agency with four clients
+npm run owner:create -- --email you@example.com --name "Your Name"
 npm run build
 npm start                     # http://localhost:3000
 ```
-
-In production there is no `.env` step — the host injects the environment. See
-[Deploying to Hostinger](#deploying-to-hostinger).
 
 For development with hot reload on both sides:
 
@@ -45,23 +41,33 @@ For development with hot reload on both sides:
 npm run dev                   # API on :3000, Vite on :5173
 ```
 
-### Demo accounts
+`npm run db:seed` loads a demo workspace — one operator and four restaurants in
+Riyadh, Jeddah, Dubai and Amman, with campaigns, ads, content, tasks and 90 days
+of analytics. It creates a demo login (`owner@marketing.example.com` /
+`Passw0rd!demo`), so **do not run it on a real deployment**.
 
-`npm run db:seed` creates one agency ("Northwind Collective") with four clients
-across different verticals — a restaurant, a hotel, a retail store and a
-D2C e-commerce brand — with 90 days of analytics. Password for all:
-`Passw0rd!demo`
+## There is no sign-up
 
-| Role | Email |
-| --- | --- |
-| Super Admin | `root@marketingos.example.com` |
-| Agency Admin | `admin@northwind.example.com` |
-| Agency Staff | `staff@northwind.example.com` |
-| Client Admin | `owner@zaytoun.example.com` |
-| Client User | `team@zaytoun.example.com` |
+This is the one thing to understand before deploying it.
 
-Other client portals: `owner@cedar-shore.example.com`,
-`owner@atlas-outfitters.example.com`, `owner@lumen-skincare.example.com`.
+There is no registration route, no invitation flow and no password-reset email.
+The application has exactly one account, and it is created out of band by
+someone who already holds the database credentials:
+
+```bash
+npm run owner:create -- --email you@example.com --name "Your Name"
+```
+
+The password comes from `OWNER_PASSWORD` or a prompt with echo off — never from
+a command-line argument, because argv is readable by every other process on the
+machine and lands in shell history. Re-running the command against an existing
+email resets that password and signs out every session, which is the recovery
+path in place of a reset link.
+
+An open registration endpoint on a system like this would hand full access to
+every restaurant's data to anyone who found the URL. The test suite asserts that
+`/api/auth/register`, `/api/auth/forgot-password` and `/api/auth/reset-password`
+all return 404, so they cannot quietly come back.
 
 ## What is real, and what is not
 
@@ -69,33 +75,32 @@ Stated plainly, because "looks finished" and "is finished" are different things.
 
 ### Fully working against the database
 
-Authentication and sessions · role-based access · tenant isolation · client CRUD
-· Brand DNA · logo upload with colour extraction · palette approval · media
-library · campaign CRUD · content CRUD · AI content generation · hashtag
-generation · Arabic and English · content calendar with rescheduling · approval
-workflow · notifications · analytics · report generation and export · client
-portal · subscription plans and usage limits · Super Admin · audit log.
+Owner authentication and sessions · restaurant CRUD and archiving · brand
+identity · logo upload with colour extraction · palette approval · media library
+· campaign CRUD · ad CRUD with manual performance entry · content CRUD · AI
+content generation · hashtag generation · Arabic and English · unified content
+calendar with filtering and rescheduling · tasks · notifications · analytics ·
+report generation and export · workspace settings · audit log.
 
 ### Deliberately not pretending
 
 - **Ad-platform integrations are architecture only.** Meta, TikTok, Snapchat,
   Google Ads, Google Business, LinkedIn and X each have an adapter behind a
-  shared interface, with real routes, credential storage, connection status and
-  UI. Every adapter currently returns **HTTP 501** naming the environment
-  variables it needs. Nothing reports a connection that does not exist, and no
-  metric is ever invented from a platform we are not connected to.
-- **Publishing is not wired up.** Scheduling writes a calendar entry and sets
-  status; it does not post to any network.
-- **No payment provider.** Plans, subscriptions and limits are enforced by the
-  application, but nothing has been charged and no card details are stored. The
-  `Subscription` model carries a `providerRef` field for a provider to populate.
+  shared interface, with real routes, credential storage and connection status.
+  Every adapter returns **HTTP 501** naming the environment variables it needs.
+  Nothing reports a connection that does not exist.
+- **Ad performance figures are entered by hand.** Because no integration exists,
+  the Ads section makes manual entry a first-class workflow rather than
+  inventing a fetch. An ad whose figures have never been entered shows
+  "not recorded", never a row of zeroes — `metricsAt` is null until the operator
+  records something, and the dashboard raises it as a gap to close.
+- **Publishing is not wired up.** Scheduling writes a calendar entry and sets a
+  status; "mark published" records that *the operator* published it. Neither
+  posts to any network.
 - **Analytics data is seeded, not fetched.** `AnalyticsSnapshot` rows come from
   the seed script. Every number in the UI is computed from those rows — none is
-  hard-coded — but they describe a fictional company until a real integration
+  hard-coded — but they describe fictional restaurants until a real integration
   fills the table.
-- **Password reset issues a token but sends no email.** Outside production the
-  token is returned in the response so the flow is testable; in production it is
-  created and logged for the operator. Wire up a mail transport before relying on it.
 - **AI falls back when no key is set.** Without `OPENAI_API_KEY` the built-in
   template engine writes the copy, and the UI labels it "Built-in engine" on
   every result. Set the key and the same endpoints call the model instead.
@@ -103,11 +108,11 @@ portal · subscription plans and usage limits · Super Admin · audit log.
 ## Architecture
 
 ```
-prisma/schema.prisma     25 models, the tenancy boundary is Organization → Client
+prisma/schema.prisma     23 models, everything hangs off Restaurant
 server/src/
   env.ts                 Zod-validated config; refuses to boot on a bad one
   app.ts                 Express assembly (helmet, CORS, CSRF, rate limits, SPA)
-  lib/scope.ts           ← the single place tenant access is decided
+  lib/workspace.ts       the settings singleton
   middleware/            auth, validation, uploads, error handling
   services/
     ai/                  bounded context → provider → schema validation
@@ -119,21 +124,26 @@ server/src/
 web/src/
   lib/                   api client, auth, theme, i18n, formatting
   components/            design system, charts, domain components, app shell
-  routes/                pages for the agency, client portal and admin
+  routes/                one surface, no portal and no admin area
 ```
 
-### Tenant isolation
+### No tenancy layer
 
-`Organization` is the tenant. Every tenant-owned row carries `organizationId`;
-rows a client may see also carry `clientId`.
+Earlier versions of this application were multi-tenant, with `Organization` as
+the boundary and a `scope.ts` that derived row access from the session. Both are
+gone. One operator owns every row, so there is no scope to derive and no tenant
+to isolate — authentication alone decides whether a request may proceed.
 
-`server/src/lib/scope.ts` derives the access scope **only from the authenticated
-session** — never from a body field, query parameter or header. A client user is
-pinned to their own `clientId`, so naming another client's id returns 404 rather
-than 403: the API does not confirm that the other record exists.
+Restaurants are still kept strictly apart from one another, but as ordinary
+foreign-key correctness rather than access control:
 
-`SUPER_ADMIN` is scoped like an agency admin on the normal API. Cross-tenant
-reach is granted only by `crossTenant()`, which only `/api/admin/*` calls.
+- an ad takes its restaurant **from its campaign**, never from the request body
+- content can only be attached to a campaign belonging to its own restaurant
+- an ad can be moved between campaigns only within the same restaurant
+- the restaurant on a campaign or a content item is fixed at creation
+
+Those rules are what stop one restaurant's spend appearing on another's report,
+and each has a test.
 
 ### AI architecture
 
@@ -143,52 +153,55 @@ request → brand context assembled by the caller → AI service → provider
 ```
 
 The AI service has no database access and no Prisma client. It receives a plain
-`BrandContext` object and returns validated structure. It cannot write records:
-generation is a pure read, and the user saves the result through the normal
-content endpoints after editing it.
+`BrandContext` for **one** restaurant and returns validated structure. It cannot
+write records: generation is a pure read, and the operator saves the result
+through the normal content endpoints after editing it.
 
 For campaign analysis the model receives only figures already computed from
 `AnalyticsSnapshot` rows, and the system prompt forbids stating any number not
 present in that object. The fallback analyst is rule-based and quotes only the
-figures it was handed. Output is labelled as recommendations everywhere it appears.
+figures it was handed.
+
+### Derived metrics are never stored
+
+CTR, CPC, CPM, cost per lead and ROAS are computed on every read, for both
+snapshots and individual ads. They are deliberately not columns: a stored rate
+is a second copy of what its inputs already say, and the two only ever disagree
+— the moment a figure is corrected, every rate saved beside it is wrong until
+someone recomputes it.
 
 ## API
 
 | Prefix | Purpose |
 | --- | --- |
-| `/api/auth` | register, login, logout, me, change password, forgot/reset |
-| `/api/users` | agency user management |
-| `/api/clients` | client CRUD and per-client overview |
-| `/api/brands` | Brand DNA, logo upload, palette suggest/approve |
+| `/api/auth` | login, logout, me, change password |
+| `/api/restaurants` | restaurant CRUD, per-restaurant overview, archive |
+| `/api/brands` | brand identity, logo upload, palette suggest/approve |
 | `/api/media` | upload, browse, retag, delete, storage usage |
 | `/api/campaigns` | campaign CRUD, platform mix, per-campaign analytics |
-| `/api/content` | content CRUD, AI generation, hashtags, submit, schedule |
+| `/api/ads` | ad CRUD and recording measured performance |
+| `/api/content` | content CRUD, AI generation, hashtags, schedule, publish |
 | `/api/calendar` | month/week/day views, drag-to-reschedule |
-| `/api/approvals` | review queue, decisions, comments |
 | `/api/analytics` | dashboard, series, AI marketing analyst |
 | `/api/reports` | generate, read, export as HTML or Markdown |
+| `/api/tasks` | marketing tasks and follow-ups |
 | `/api/notifications` | list, mark read |
 | `/api/integrations` | adapter catalogue, connect, disconnect, sync |
-| `/api/subscriptions` | plans, subscriptions, usage against limits |
-| `/api/admin` | Super Admin only, the only cross-tenant surface |
+| `/api/settings` | workspace settings, storage and AI status |
 
 ## Routes
 
-**Agency** `/app/dashboard` `/app/clients` `/app/clients/:id` `/app/brand`
-`/app/media` `/app/content` `/app/content/:id` `/app/studio` `/app/campaigns`
-`/app/campaigns/:id` `/app/calendar` `/app/analytics` `/app/reports`
-`/app/reports/:id` `/app/approvals` `/app/notifications` `/app/integrations`
-`/app/settings`
+`/dashboard` `/restaurants` `/restaurants/:id/:tab` `/content` `/content/:id`
+`/campaigns` `/campaigns/:id` `/ads` `/ads/:id` `/calendar` `/media`
+`/analytics` `/reports` `/reports/:id` `/ai` `/tasks` `/brand` `/notifications`
+`/settings`
 
-**Client portal** `/client/dashboard` `/client/campaigns` `/client/content`
-`/client/approvals` `/client/calendar` `/client/analytics` `/client/reports`
-`/client/brand`
+Public: `/login` — and nothing else.
 
-**Super Admin** `/admin/dashboard` `/admin/clients` `/admin/users`
-`/admin/plans` `/admin/subscriptions` `/admin/reports` `/admin/audit`
-`/admin/settings`
-
-**Public** `/login` `/register` `/forgot-password`
+Opening a restaurant gives a workspace with tabs for overview, brand, content,
+campaigns, ads, calendar, media, analytics, reports and tasks. Those tabs do not
+reimplement anything: each renders the same page the sidebar does, scoped to one
+restaurant, so a fix in one place is a fix in both.
 
 ## Security
 
@@ -198,115 +211,110 @@ figures it was handed. Output is labelled as recommendations everywhere it appea
 - HTTP-only, SameSite=Lax cookies; `Secure` in production.
 - Double-submit CSRF on every authenticated mutation.
 - Rate limiting globally and tighter on credential endpoints.
-- Zod validation on every input; tenant ids never taken from the client.
+- Zod validation on every input.
+- **No public account creation or recovery surface at all.**
 - Upload validation by MIME **and** magic number. SVG is rejected outright — it
   is an executable document and would be stored XSS.
 - Uploads served with `nosniff` and a restrictive CSP.
 - Helmet security headers, with a full CSP in production.
 - Integration credentials are never included in any API projection.
-- Deactivating a user or suspending a client deletes their sessions immediately.
-- No secrets in the repository; `.env` is git-ignored and `.env.example` documents
-  every variable.
+- Deactivating the account deletes its sessions immediately.
+- No secrets in the repository; `.env` is git-ignored and `.env.example`
+  documents every variable.
 
 ## Internationalization
 
 Arabic and English, with full RTL. The language switcher flips `dir` on `<html>`
 immediately — no reload — and the choice is persisted. Layout uses logical
-properties (`ms-`, `me-`, `start-`, `end-`) so it mirrors correctly. Numeric spans
-are marked `dir="ltr"` so signs and currency symbols stay on the correct side.
+properties (`ms-`, `me-`, `start-`, `end-`) so it mirrors correctly. Numeric
+spans are marked `dir="ltr"` so signs and currency symbols stay on the correct
+side.
 
 Content is generated independently in either language: the AI writes native
 Arabic marketing copy, not a translation of the English.
 
 **Known gap:** notification and alert text generated server-side is English only.
 
-## Theming
+## Currency
 
-Dark, light and system, defaulting to premium dark. All colour is CSS custom
-properties, so an approved client palette re-skins the entire application at
-runtime — a client signing into their portal sees it in their own brand colours.
+The workspace currency defaults to **SAR** and is set in Settings. It is not
+hard-coded anywhere: money formatting reads it at runtime, new campaigns inherit
+it, and a generated report freezes the currency it was produced in so an old
+report does not silently re-denominate when the setting changes.
 
 ## Testing
 
 ```bash
 npm run typecheck    # server + web
-npm test             # 86 server tests against a real PostgreSQL database
+npm run lint         # eslint across both workspaces
+npm test             # 112 server tests against a real PostgreSQL database
 npm run build        # production build of both
-npm run verify       # all three
+npm run verify       # typecheck, test, build
 ```
 
 The tests run against real PostgreSQL, not a mock — a mocked Prisma client would
-prove nothing about whether the queries are actually scoped. Coverage includes
-authentication and sessions, CSRF, password reset single-use, role authorization,
-**tenant isolation** (including cross-tenant access attempts by id), client and
-campaign CRUD, the approval workflow, scheduling rules, calendar rescheduling,
+prove nothing about whether the queries are actually correct. Coverage includes
+authentication and sessions, CSRF, **the absence of every account-creation
+route**, restaurant data integrity (including cross-restaurant attempts by id),
+restaurant and campaign CRUD, the content pipeline and scheduling rules, ad
+metric entry and rate derivation, tasks, calendar filtering and rescheduling,
 report generation and export, analytics maths at the boundaries, AI generation
-including forbidden-word scrubbing and Arabic output, upload validation
-including a file that lies about its MIME type, and the integration adapters'
-refusal to fake a connection.
+including forbidden-word scrubbing and Arabic output, brand-context isolation
+between restaurants, upload validation including a file that lies about its MIME
+type, workspace settings, and the integration adapters' refusal to fake a
+connection.
 
 Set `TEST_DATABASE_URL` to point the suite at a different database; it defaults
 to `marketing_os_test`.
 
-## Deploying to Hostinger
+## Deploying to Railway
 
-Target architecture — one Node process, no separate frontend host:
-
-```
-Browser → Hostinger Node.js App → single Node process ┬─ Express API
-                                                      └─ React build (web/dist)
-                                                             ↓
-                                                       PostgreSQL
-```
-
-### Exact settings
-
-| Hostinger field | Value |
-| --- | --- |
-| Application root | the repository root (the directory holding `package.json`) |
-| Node.js version | **22.x** (verified). Minimum supported is 20.9.0 |
-| Package manager | npm |
-| Build command | `npm install && npm run build` |
-| Start command | `npm start` |
-| Application startup file | `server/dist/index.js` |
-| Application mode | production |
-
-`npm start` runs `node server/dist/index.js`. If the panel asks for a startup
-file rather than a command, give it `server/dist/index.js` — they are the same
-thing.
-
-**Do not set `PORT`.** Hostinger injects it and the app binds `0.0.0.0` on
-whatever it is given. Setting it yourself is a common cause of a process that
-starts but never receives traffic.
-
-**Build needs devDependencies.** TypeScript and Vite are devDependencies, so the
-build command must be plain `npm install` — not `npm ci --omit=dev` or
-`npm install --production`. If you prefer `npm ci`, use `npm ci && npm run build`.
-
-**Node 22, not 20.** Both work — `engines` allows anything from 20.9.0 up, and
-nothing in the code needs 22. Choose 22 because it is the version the build and
-the full test suite are actually run against here, and because Node 20 leaves
-maintenance support in 2026; picking it now only schedules another migration.
-Pick 20 only if the hosting plan does not offer 22.
-
-### 1. Prepare the database
-
-hPanel → Databases → PostgreSQL. Create a database and note host, port, name,
-user and password. Any hosted PostgreSQL works — Hostinger's own, Supabase,
-Neon, or an external server.
-
-### 2. Create the Node.js app
-
-hPanel → Advanced → Node.js → Create application, using the table above.
-
-### 3. Set environment variables
-
-In the app's Environment variables panel. Only two are required:
+Target architecture — one service plus a database:
 
 ```
-DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME?schema=public
+Browser → Railway service ┬─ Express API
+                          └─ React build (web/dist)
+                                 ↓
+                          Railway PostgreSQL
+```
+
+### 1. Create the project
+
+Create a Railway project, add your repository as a service, and add a
+**PostgreSQL** database to the same project.
+
+`railway.json` in the repository root already configures the build, the
+migration step, the start command and the health check, so there is nothing to
+fill in on the Build/Deploy settings pages:
+
+```json
+{
+  "build":  { "builder": "RAILPACK", "buildCommand": "npm run build" },
+  "deploy": {
+    "preDeployCommand": ["npx prisma migrate deploy"],
+    "startCommand": "npm start",
+    "healthcheckPath": "/api/health"
+  }
+}
+```
+
+`preDeployCommand` runs the migrations against the live database before the new
+version starts taking traffic, and a failure there stops the deploy rather than
+releasing code against a schema that does not match it.
+
+### 2. Set the variables
+
+On the app service:
+
+```
+DATABASE_URL=${{Postgres.DATABASE_URL}}
 SESSION_SECRET=<48 random characters>
+NODE_ENV=production
 ```
+
+`DATABASE_URL` must be the **reference**, not a pasted string — that is what
+makes it resolve over Railway's private network and follow the database if its
+credentials rotate.
 
 Generate the secret locally and paste the result:
 
@@ -314,76 +322,48 @@ Generate the secret locally and paste the result:
 node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 ```
 
-Strongly recommended as well:
+Everything else has a working default. **Do not set `PORT`** — Railway injects
+it, and setting it yourself is a common cause of a process that starts but never
+receives traffic. **Do not set `APP_URL`** unless you are using a custom domain:
+it is derived from Railway's `RAILWAY_PUBLIC_DOMAIN`.
 
-```
-NODE_ENV=production
-APP_URL=https://your-domain.com
-TRUST_PROXY=1
-STORAGE_LOCAL_DIR=./storage/uploads
-```
+### 3. Add a volume for uploads
 
-Everything else has a working default — see `.env.example`. **The application
-never reads a `.env` file in production;** it reads `process.env` directly, so
-there is nothing to upload and no `cp .env.example .env` step.
+Attach a volume to the app service with mount path **`/app/storage`**.
 
-Two more matter on constrained shared hosting, where the query engine panics if
-it cannot spawn a thread. Both are recommended on Hostinger:
+Without one, uploaded logos and media are written to the container filesystem,
+which is replaced on every deploy — the database rows survive and point at files
+that no longer exist. If you would rather not run a volume, add a remote driver
+in `server/src/services/storage/` and switch `STORAGE_DRIVER`.
 
-```
-DATABASE_CONNECTION_LIMIT=2   # default 5; Prisma's own default is CPUs * 2 + 1
-UV_THREADPOOL_SIZE=2          # 9 threads down to 7
-```
+### 4. Generate a domain, then create the owner account
 
-`PRISMA_CLIENT_ENGINE_TYPE` is **not** needed — the schema already pins the
-binary engine. Set it only to override that choice, and only before a redeploy.
-
-See [the process/thread
-ceiling](#panic-timer-has-gone-away--the-processthread-ceiling) for what these
-actually do and when to reach for them.
-
-### 4. Deploy from GitHub
-
-Connect the repository and deploy the branch. Hostinger runs the build command,
-then the start command.
-
-### 5. Apply migrations
-
-Once, from the panel's terminal, and again after any deployment that changes the
-schema:
+Generate a domain from the service's Settings → Networking. Then open the
+service shell and create the single account:
 
 ```bash
-npx prisma migrate deploy
+npm run owner:create -- --email you@example.com --name "Your Name"
 ```
 
-Use `migrate deploy` — never `migrate dev` and never `migrate reset` — on a live
-database. To load the demo agency (skip for a real deployment):
+Set `OWNER_PASSWORD` in the shell first, or let it prompt. Do **not** run
+`npm run db:seed` on a real deployment — it creates a demo login with a
+published password.
 
-```bash
-npm run db:seed
-```
-
-### 6. Domain and SSL
-
-Point the domain at the app and enable SSL in hPanel. Once HTTPS is live, leave
-`COOKIE_SECURE` unset — it defaults to on in production. Only set it to `false`
-if the site is genuinely served over plain HTTP, and the startup log will warn
-you that it is off.
-
-### 7. Verify
+### 5. Verify
 
 ```
-https://your-domain.com/api/health   →  {"status":"healthy","database":"ok","engine":"ok","engineRecoveries":0,"uptime":N}
-https://your-domain.com/login        →  the sign-in page
+https://your-app.up.railway.app/api/health   →  {"status":"healthy","database":"ok",…}
+https://your-app.up.railway.app/login        →  the sign-in page
 ```
 
-Then check the runtime log. A healthy boot prints:
+Then check the deploy log. A healthy boot prints:
 
 ```
 [marketing-os] started
   environment    production
   node           v22.x.x
   listening      0.0.0.0:<port>
+  app url        https://your-app.up.railway.app
   front end      served from web/dist
   secure cookies on
   database       checking in the background…
@@ -391,19 +371,15 @@ Then check the runtime log. A healthy boot prints:
 ```
 
 The last line arrives a moment after the rest, and that ordering is deliberate:
-the server binds its port first and checks the database afterwards. See
-[Startup order](#startup-order-and-the-3-second-rule) for why.
+the server binds its port first and checks the database afterwards.
 
-If any of those lines is missing or says something else, the troubleshooting
-table below names the cause.
+### Startup order, and why nothing awaits before `listen()`
 
-### Startup order, and the 3-second rule
-
-Hostinger kills a Node process that has not called `listen()` within about three
-seconds of starting. That makes any `await` in front of `listen()` a deployment
-hazard, and a database ping the worst kind: an unreachable database stops being
-a degraded feature and becomes an unrecoverable boot loop, which the browser
-only ever shows as a 504.
+A managed host kills a process that has not called `listen()` within a few
+seconds. That makes any `await` in front of `listen()` a deployment hazard, and
+a database ping the worst kind: an unreachable database stops being a degraded
+feature and becomes an unrecoverable boot loop, which the browser only ever
+shows as a 502.
 
 So the entry point does exactly three things, in this order:
 
@@ -413,207 +389,65 @@ So the entry point does exactly three things, in this order:
 
 The database is probed from inside the `listen` callback. If it is unreachable
 the app still starts and still serves pages; `/api/health` reports
-`{"status":"degraded"}` with HTTP 503, the runtime log prints the full
-diagnostic, and a background watcher re-checks every 60 seconds so the app
-recovers on its own once the database comes back. Nothing is hidden — routes
-that need the database still fail loudly and individually.
+`{"status":"degraded"}` with HTTP 503, the log prints the full diagnostic, and a
+background watcher re-checks every 60 seconds so the app recovers on its own
+once the database comes back.
 
-There is deliberately no `if (require.main === module)` guard around `listen()`:
-the server starts as soon as `server/dist/index.js` is loaded, however the host
-chooses to load it.
+### The Prisma query engine
 
-### Notes for production
-
-- `STORAGE_LOCAL_DIR` must be on persistent storage and outside the web root.
-  Uploads are served through the app, never directly by the web server. If the
-  plan's filesystem is ephemeral, uploaded media will not survive a redeploy —
-  add a remote driver in `server/src/services/storage/` before relying on it.
-- `TRUST_PROXY=1` is required behind Hostinger's proxy. It is what makes client
-  IPs, rate limiting and HTTPS detection correct. Do not raise it above the real
-  number of proxy hops.
-- Back up the database before any deployment carrying a migration.
-
-### Hosted PostgreSQL (Supabase, Neon, and similar)
-
-Most hosted providers require TLS. Append `sslmode=require`:
-
-```
-DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME?schema=public&sslmode=require
-```
-
-Supabase specifically:
-
-- **Session pooler / direct (port 5432)** — use this. Works with Prisma as-is.
-- **Transaction pooler (port 6543)** — add `&pgbouncer=true&connection_limit=1`,
-  and run `prisma migrate deploy` against the port-5432 URL, because migrations
-  need a session-mode connection.
-- If the host has no IPv6 route, use Supabase's IPv4 add-on or the session
-  pooler hostname.
-
-No Supabase SDK is involved — it is simply the PostgreSQL provider.
-
-### The Prisma query engine on Hostinger
-
-Prisma ships a native query engine, and it must match the OpenSSL version of the
-machine that *runs* the app — not the one that built it. Hostinger's Node
-runtime reports:
-
-```
-Distro is "undefined" ... Found libssl.so file using "ldconfig": libssl.so.1.1
-The parsed libssl version is: 1.1.x
-```
-
-so it needs an engine built for `debian-openssl-1.1.x`. Left at the default
-(`native`), `prisma generate` emits only the engine for the build machine —
-commonly openssl **3.0.x** on a current image — and the 1.1.x engine is simply
-absent.
-
-The engine also runs in one of two modes, and on this host the mode matters more
-than the file:
-
-- **library** (Prisma's default) loads the Rust engine *into the Node process*
-  and starts a tokio runtime there.
-- **binary** runs the engine as a *separate child process*.
-
-Shared hosting caps how many threads an account may hold, and the library engine
-has to win that race inside a Node process that is already holding V8's and
-libuv's pools. When it loses, it panics with `PANIC: timer has gone away`.
-Threads held by the Node process once a query has run, measured on 4 CPUs with
-`--v8-pool-size=2`:
-
-| Engine | Node process | Engine child |
-| --- | --- | --- |
-| library | 15 | — |
-| library + `UV_THREADPOOL_SIZE=2` | 13 | — |
-| **binary** | 9 | 7 (own process) |
-| **binary + `UV_THREADPOOL_SIZE=2`** | **7** | 7 (own process) |
-
-`prisma/schema.prisma` therefore pins both the mode and the platforms:
+Prisma ships a native query engine that must match the OpenSSL version of the
+machine that *runs* the app, and the engine type is baked into the client when
+it is generated. `prisma/schema.prisma` pins both:
 
 ```prisma
 generator client {
   provider      = "prisma-client-js"
   engineType    = "binary"
-  binaryTargets = ["native", "debian-openssl-1.1.x"]
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 ```
 
-`engineType` is pinned in the schema rather than left to
-`PRISMA_CLIENT_ENGINE_TYPE` for a specific reason: Prisma bakes the engine type
-into the client **when the client is generated**. Relying on the variable would
-mean relying on the host exporting it during `npm install` — and if it does not,
-generation silently produces the wrong engine and nothing complains until
-production panics. Pinned in the schema, a plain `npm install` produces the
-right engine with no host configuration at all.
+`binary` runs the engine as a separate child process rather than loading it into
+Node. On a constrained host the library engine loses the race to spawn its timer
+thread and panics with `PANIC: timer has gone away`; measured here, the Node
+process holds 15 threads with the library engine and 7 with the binary one.
 
-The variable still overrides the schema, so `PRISMA_CLIENT_ENGINE_TYPE=library`
-reverts to the library engine without a code change (set it before redeploying,
-so `prisma generate` runs with it). Locally that is
-`npm run prisma:generate:library`.
-
-`npm run build` verifies what was actually produced and **fails the build** on a
-mismatch, so the wrong engine can never ship silently:
+`npm run build` verifies what was actually generated and **fails the build** on
+a mismatch, so the wrong engine can never ship silently:
 
 ```
-[prisma] engine "binary" verified; 2 engine file(s): query-engine-debian-openssl-1.1.x, query-engine-debian-openssl-3.0.x
+[prisma] engine "binary" verified; 1 engine file(s): query-engine-debian-openssl-3.0.x
 ```
 
-### `PANIC: timer has gone away` — the process/thread ceiling
-
-The binary engine above is the main defence. If a panic still appears, the cause
-is the host's process allowance and the remaining levers are below.
-
-The panic comes from `futures-timer`, in the engine's attempt to spawn its timer
-thread. When that spawn fails the engine panics — so the real message is "this
-account has no thread budget left". Shared hosting counts threads towards the
-process limit, and three pools all size themselves from the **CPU count the host
-reports**, which is the whole machine's, not your slice:
-
-| Pool | Default size | Lever |
-| --- | --- | --- |
-| V8 workers | CPUs − 1 | `--v8-pool-size`, already set to 2 in `npm start` |
-| Prisma connection pool | CPUs × 2 + 1 | `DATABASE_CONNECTION_LIMIT`, default 5 |
-| libuv | 4 | `UV_THREADPOOL_SIZE` (also used by password hashing) |
-
-The startup log prints the numbers that decide it, so this is checkable rather
-than guesswork:
-
-```
-  cpus visible   4  (v8 pool, prisma workers and its default pool all scale from this)
-  threads now    7
-  max processes  soft 64262 / hard 64262  (counts threads too)
-[marketing-os] database connected (process threads: 7)
-```
-
-**In order:**
-
-1. **Restart the app from hPanel.** Old deployment versions left running are the
-   usual cause — each one holds its own threads, and they accumulate across
-   deploys until the ceiling is hit.
-2. **Add `UV_THREADPOOL_SIZE=2`** to the Environment variables panel: 9 threads
-   down to 7. Password hashing shares this pool, so do not go below 2.
-3. **Lower `DATABASE_CONNECTION_LIMIT`** to 2. The default of 5 is already far
-   below Prisma's own `CPUs × 2 + 1`.
-
-A panic poisons the client instance permanently, so the app **replaces the
-client** and keeps serving — a transient exhaustion recovers without a manual
-restart. That replacement is deliberately bounded: at most once every 30
-seconds, and after 5 consecutive replacements it stops and says so, because a
-fresh engine panicking five times running is not transient and spinning on it
-would only consume the headroom that is left. A successful query clears the
-budget.
-
-`/api/health` reports `engineRecoveries`. `0` is healthy; a number that keeps
-climbing means the ceiling is genuinely too low and steps 1–3 have not gone far
-enough.
+If a panic ever does appear, the app replaces the poisoned client and keeps
+serving — at most once every 30 seconds, and it stops after 5 consecutive
+replacements, because a fresh engine panicking five times running is not
+transient. `/api/health` reports `engineRecoveries`; `0` is healthy.
 
 ## Troubleshooting
 
-### 503 Service Unavailable
+### The deploy fails during the pre-deploy step
 
-The process is not running. A build that succeeded says nothing about this —
-**read the runtime log**, which will contain one of these:
-
-| Log says | Cause | Fix |
-| --- | --- | --- |
-| `FAILED TO START — invalid environment configuration` | `DATABASE_URL` or `SESSION_SECRET` is not set | Add it in the Environment variables panel and restart |
-| `FAILED TO START — port already in use` | `PORT` was set manually | Remove it and let Hostinger inject it |
-| `App did not call listen() within 3 seconds` | Something is blocking startup before the port is bound | Nothing in this app awaits before `listen()` — see [Startup order](#startup-order-and-the-3-second-rule). If you added a check to `server/src/index.ts`, move it into the `listen` callback |
-| `FAILED TO START — upload directory is not writable` | `STORAGE_LOCAL_DIR` points somewhere read-only | Point it at a writable persistent path |
-| `Cannot find module '/…/server/dist/index.js'` | The build did not run | Build command must be `npm install && npm run build` |
-| `@prisma/client did not initialize yet` | Prisma Client was not generated | `npm install` runs `prisma generate` via postinstall; re-run the build |
-| `PANIC: timer has gone away`, `PrismaClientRustPanicError` | The query engine could not spawn a thread — the account's process/thread ceiling is exhausted | See [the process/thread ceiling](#panic-timer-has-gone-away--the-processthread-ceiling) |
-| Nothing at all | Wrong startup file | It is `server/dist/index.js`, not `server.js` or `index.js` |
-
-Note that a database fault no longer produces a 503 from the *host*: the app
-starts regardless, serves pages, and reports the fault itself.
+Migrations could not be applied. The log names the Prisma error. Usually
+`DATABASE_URL` is a pasted string rather than the `${{Postgres.DATABASE_URL}}`
+reference, or the database service is not in the same project. This failing
+stops the deploy on purpose — the alternative is a running app whose code does
+not match its schema.
 
 ### `/api/health` returns `{"status":"degraded"}` with HTTP 503
 
-The process is healthy; the database is not. This is the honest answer rather
-than a failure to boot, and pages still render. The runtime log carries the full
-diagnostic and names which of the two cases applies:
-
-- **`DATABASE UNREACHABLE`** with a driver error such as *Can't reach database
-  server at …* — credentials, host, firewall or missing SSL. Add
-  `?sslmode=require` for a hosted provider.
-- **The same banner naming an engine panic** — the query engine never got as far
-  as connecting. See [the process/thread
-  ceiling](#panic-timer-has-gone-away--the-processthread-ceiling);
-  `"engine":"panicked"` in the health response says the same thing, and
-  `engineRecoveries` counts how often the client has had to be replaced.
+The process is healthy; the database is not. Pages still render. The log carries
+the diagnostic and names which of two cases applies: a driver error such as
+*Can't reach database server at …* (credentials, host, firewall, or missing
+SSL — add `?sslmode=require` for an external provider), or an engine panic,
+which `"engine":"panicked"` in the response says too.
 
 The connection string is never written to the log — it contains a password.
 
 ### Pages 404 but `/api/health` works
 
 The front end was not built. The startup log says `front end NOT BUILT`. The
-build command must include `npm run build`, which builds `web/dist` first.
-
-### Assets 404, or "unexpected token '<'" in the browser console
-
-`web/dist/assets` is missing or stale. Rebuild. A missing asset correctly
-returns a 404 rather than `index.html`, which is why the error names the asset.
+build command must be `npm run build`, which builds `web/dist` first.
 
 ### API returns HTML instead of JSON
 
@@ -625,12 +459,12 @@ must do the same.
 
 The session cookie is being dropped. Almost always one of:
 
-- **Site is on HTTP while `COOKIE_SECURE` is on.** Enable SSL, or set
-  `COOKIE_SECURE=false` temporarily — the startup log warns when it is off.
-- **`TRUST_PROXY` unset behind the proxy**, so the app thinks the request is
-  insecure. Set `TRUST_PROXY=1`.
-- **`APP_URL` does not match the browsed domain**, so the request is
-  cross-origin. Make them the same.
+- **`APP_URL` does not match the browsed domain**, so the request is treated as
+  cross-origin. On a custom domain, set `APP_URL` to it.
+- **Site is on HTTP while `COOKIE_SECURE` is on.** Railway domains are HTTPS, so
+  this is only reachable with an unusual proxy in front.
+- **`TRUST_PROXY` unset**, so the app thinks the request is insecure. It
+  defaults to 1, which is right for Railway.
 
 ### 403 "CSRF token missing or invalid"
 
@@ -642,9 +476,13 @@ the exact page origin.
 ### 429 Too Many Requests
 
 Rate limiting is working. Defaults are 300 requests per 15 minutes per IP, and
-tighter on login. If every visitor shares one apparent IP, `TRUST_PROXY` is
-probably wrong. Tune with `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW_MIN` rather
+tighter on login. Tune with `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW_MIN` rather
 than removing the limiter.
+
+### Uploaded images disappear after a deploy
+
+No volume is attached. See step 3 — the container filesystem is replaced on
+every deploy.
 
 ### AI writes generic copy
 
@@ -654,9 +492,10 @@ the key to switch to a model.
 
 ### Migrations
 
-`prisma migrate deploy` applies committed migrations and never destroys data.
-If it reports drift, the database was changed outside Prisma — resolve it
-deliberately; do not run `migrate reset` on production.
+`prisma migrate deploy` applies committed migrations and never destroys data. If
+it reports drift, the database was changed outside Prisma — resolve it
+deliberately. **Never run `prisma migrate reset` on a live database**; there is
+deliberately no npm script for it.
 
 ## Internal tooling
 

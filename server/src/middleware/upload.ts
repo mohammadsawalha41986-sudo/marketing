@@ -4,6 +4,7 @@
  */
 
 import multer from 'multer';
+import sharp from 'sharp';
 import { env } from '../env.js';
 import { badRequest } from '../lib/errors.js';
 
@@ -66,5 +67,27 @@ export function sniffImage(buffer: Buffer): 'png' | 'jpeg' | 'gif' | 'webp' | 'a
 export function assertRealImage(buffer: Buffer): void {
   if (!sniffImage(buffer)) {
     throw badRequest('That file is not a readable image');
+  }
+}
+
+/**
+ * Validate an image and read its dimensions in one step.
+ *
+ * The magic-number check above only proves the first few bytes look like an
+ * image; a truncated or corrupt file passes it and then fails inside the
+ * decoder. Left unhandled that surfaces as a 500 "Something went wrong", which
+ * tells the operator nothing about the file they just picked — so the decode
+ * happens here, and a failure becomes the same 400 as any other bad upload.
+ */
+export async function readImageMetadata(buffer: Buffer): Promise<{ width: number | null; height: number | null }> {
+  assertRealImage(buffer);
+
+  try {
+    const meta = await sharp(buffer).metadata();
+    return { width: meta.width ?? null, height: meta.height ?? null };
+  } catch {
+    // The decoder's own message names libvips internals, which is noise to the
+    // person who just chose a file.
+    throw badRequest('That image could not be read. It may be corrupt or incomplete.');
   }
 }

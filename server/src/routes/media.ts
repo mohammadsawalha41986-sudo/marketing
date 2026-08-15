@@ -3,14 +3,13 @@
 import { Router } from 'express';
 import { MediaType, Prisma } from '@prisma/client';
 import { z } from 'zod';
-import sharp from 'sharp';
 
 import { prisma } from '../lib/prisma.js';
 import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
 import { actorOf, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
-import { IMAGE_MIME, VIDEO_MIME, uploadAny, sniffImage } from '../middleware/upload.js';
+import { IMAGE_MIME, VIDEO_MIME, uploadAny, readImageMetadata } from '../middleware/upload.js';
 import { storage } from '../services/storage/index.js';
 import { recordAudit } from '../services/audit.js';
 
@@ -93,15 +92,17 @@ mediaRouter.post(
     const created = [];
     for (const file of files) {
       const isImage = IMAGE_MIME.has(file.mimetype);
-      // Claimed image types must actually be images.
-      if (isImage && !sniffImage(file.buffer)) throw badRequest(`${file.originalname} is not a readable image`);
 
+      // A claimed image must actually decode, not merely start with the right
+      // magic number — otherwise a corrupt file is stored and breaks on display.
       let width: number | null = null;
       let height: number | null = null;
       if (isImage) {
-        const meta = await sharp(file.buffer).metadata();
-        width = meta.width ?? null;
-        height = meta.height ?? null;
+        try {
+          ({ width, height } = await readImageMetadata(file.buffer));
+        } catch {
+          throw badRequest(`${file.originalname} is not a readable image`);
+        }
       }
 
       const stored = await storage.save(file.buffer, {
