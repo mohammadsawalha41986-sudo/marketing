@@ -79,6 +79,14 @@ enum Platform {
   LINKEDIN
 }
 
+/// Campaign objectives.
+///
+/// The first block is the original generic set and is never reordered or
+/// removed — existing rows hold those values and PostgreSQL enum values cannot
+/// be dropped without rewriting every column that references them.
+///
+/// The second block adds the outcomes a restaurant actually buys. They are
+/// additive: `ALTER TYPE ... ADD VALUE` only, so no existing campaign changes.
 enum CampaignObjective {
   AWARENESS
   TRAFFIC
@@ -87,15 +95,58 @@ enum CampaignObjective {
   SALES
   APP_INSTALLS
   VIDEO_VIEWS
+
+  REACH
+  RESERVATIONS
+  DELIVERY_ORDERS
+  STORE_VISITS
+  REVENUE
+  PROFITABILITY
+  NEW_CUSTOMERS
+  REPEAT_CUSTOMERS
+  PROMOTION
+  PRODUCT_LAUNCH
+  SEASONAL
 }
 
+/// Campaign lifecycle.
+///
+/// PLANNING, READY and ARCHIVED are added; SCHEDULED, RUNNING and CANCELLED are
+/// kept because live rows use them. RUNNING *is* the active state — a separate
+/// ACTIVE value would leave two names for one thing and silently split every
+/// "which campaigns are live" query in the codebase.
 enum CampaignStatus {
   DRAFT
+  PLANNING
+  READY
   SCHEDULED
   RUNNING
   PAUSED
   COMPLETED
   CANCELLED
+  ARCHIVED
+}
+
+/// What a campaign cost was spent on. Advertising is deliberately one category
+/// among many: media spend is not the campaign's cost, only part of it.
+enum CostCategory {
+  ADVERTISING
+  CREATIVE
+  PHOTOGRAPHY
+  VIDEO
+  INFLUENCER
+  MANAGEMENT
+  PLATFORM_FEES
+  DISCOUNT
+  PRINTING
+  OTHER
+}
+
+/// Planned cost and actual cost are separate rows, never one field overwritten,
+/// so the plan survives contact with reality and the two can be compared.
+enum CostKind {
+  PLANNED
+  ACTUAL
 }
 
 enum ContentType {
@@ -414,6 +465,34 @@ model Campaign {
   locations      String[]          @default([])
   kpi            String?
   notes          String?
+
+  // --- brief -----------------------------------------------------------
+  secondaryObjective CampaignObjective?
+  strategy           String?
+  description        String?
+  language           Language?
+  offer              String?
+  products           String[]          @default([])
+  landingPageUrl     String?
+  ctaLabel           String?
+
+  // --- targets ---------------------------------------------------------
+  // Nullable on purpose: null means "no target set", which is a different
+  // thing from a target of zero. Performance-vs-target reports NO_DATA for
+  // null and compares honestly against zero.
+  targetCpa         Decimal? @db.Decimal(12, 2)
+  targetRoas        Decimal? @db.Decimal(8, 2)
+  targetRevenue     Decimal? @db.Decimal(14, 2)
+  targetConversions Int?
+
+  // --- financial actuals -----------------------------------------------
+  // No ad platform can report these; they come from the POS, the ordering
+  // system or the operator. Null means not recorded, and the figures that
+  // depend on them report "cannot calculate" rather than assuming a value.
+  grossRevenue Decimal? @db.Decimal(14, 2)
+  discounts    Decimal? @db.Decimal(14, 2)
+  cogs         Decimal? @db.Decimal(14, 2)
+
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
@@ -424,11 +503,38 @@ model Campaign {
   media        Media[]
   snapshots    AnalyticsSnapshot[]
   reports      Report[]
+  costs        CampaignCost[]
 
   @@index([organizationId])
   @@index([clientId])
   @@index([status])
   @@index([startDate, endDate])
+}
+
+/// One line of campaign cost.
+///
+/// Planned and actual are separate rows of the same shape rather than two
+/// columns, which is what lets a campaign carry several real invoices in one
+/// category and still compare the total against what was budgeted for it.
+model CampaignCost {
+  id             String       @id @default(cuid())
+  organizationId String
+  campaignId     String
+  kind           CostKind
+  category       CostCategory
+  amount         Decimal      @db.Decimal(14, 2)
+  currency       String       @default("USD")
+  description    String?
+  /// When the cost was actually incurred. Null for planned lines, which have
+  /// no date until they turn into real spending.
+  incurredOn     DateTime?    @db.Date
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, kind])
+  @@index([organizationId])
 }
 
 model CampaignPlatform {

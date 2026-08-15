@@ -12,6 +12,7 @@ const en = {
   'app.tagline': 'The command centre for every brand you run',
 
   'nav.dashboard': 'Dashboard',
+  'nav.ceo': 'Executive',
   'nav.clients': 'Clients',
   'nav.brand': 'Brand',
   'nav.media': 'Media',
@@ -190,6 +191,7 @@ const ar: Record<keyof typeof en, string> = {
   'app.tagline': 'مركز القيادة لكل علامة تجارية تديرها',
 
   'nav.dashboard': 'لوحة التحكم',
+  'nav.ceo': 'الإدارة التنفيذية',
   'nav.clients': 'العملاء',
   'nav.brand': 'الهوية',
   'nav.media': 'الوسائط',

@@ -9,6 +9,7 @@ import { Spinner } from './components/ui';
 
 import { ForgotPasswordPage, LoginPage, RegisterPage } from './routes/auth';
 import { DashboardPage } from './routes/dashboard';
+import { CeoPage } from './routes/ceo';
 import { ClientDetailPage, ClientsPage } from './routes/clients';
 import { CampaignDetailPage, CampaignsPage } from './routes/campaigns';
 import { ContentDetailPage, ContentPage, StudioPage } from './routes/content';
@@ -81,6 +82,7 @@ export default function App() {
               <Routes>
                 <Route index element={<Navigate to="dashboard" replace />} />
                 <Route path="dashboard" element={<DashboardPage />} />
+                <Route path="ceo" element={<CeoPage />} />
                 <Route path="clients" element={<ClientsPage />} />
                 <Route path="clients/:id" element={<ClientDetailPage />} />
                 <Route path="brand" element={<BrandPage />} />
@@ -114,6 +116,7 @@ export default function App() {
               <Routes>
                 <Route index element={<Navigate to="dashboard" replace />} />
                 <Route path="dashboard" element={<DashboardPage portal />} />
+                <Route path="ceo" element={<CeoPage portal />} />
                 <Route path="campaigns" element={<CampaignsPage portal />} />
                 <Route path="campaigns/:id" element={<CampaignDetailPage portal />} />
                 <Route path="content" element={<ContentPage portal />} />
