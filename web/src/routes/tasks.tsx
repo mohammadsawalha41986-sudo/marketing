@@ -161,7 +161,7 @@ export function TasksPage({ restaurantId, embedded = false }: { restaurantId?: s
     }
   };
 
-  const newButton = <Button icon={Plus} onClick={() => setCreating(true)}>New task</Button>;
+  const newButton = <Button icon={Plus} onClick={() => setCreating(true)}>{t('action.newTask')}</Button>;
   const now = Date.now();
 
   return (

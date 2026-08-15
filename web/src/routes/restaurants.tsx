@@ -51,6 +51,7 @@ interface RestaurantRow {
 }
 
 function RestaurantForm({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
+  const { t } = useI18n();
   const { push } = useToast();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,7 +92,7 @@ function RestaurantForm({ open, onClose, onSaved }: { open: boolean; onClose: ()
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button form="restaurant-form" type="submit" loading={busy}>Add restaurant</Button>
+          <Button form="restaurant-form" type="submit" loading={busy}>{t('action.addRestaurant')}</Button>
         </>
       }
     >
@@ -156,7 +157,7 @@ export function RestaurantsPage() {
       <PageHeader
         title={t('nav.restaurants')}
         subtitle="Every restaurant you market for, with its own brand, content and reporting."
-        action={<Button icon={Plus} onClick={() => setCreating(true)}>Add restaurant</Button>}
+        action={<Button icon={Plus} onClick={() => setCreating(true)}>{t('action.addRestaurant')}</Button>}
       />
 
       <div className="mb-4 flex flex-wrap gap-2">
@@ -242,7 +243,7 @@ export function RestaurantsPage() {
             icon={Store}
             title={debounced || status ? t('empty.search.title') : t('empty.restaurants.title')}
             body={debounced || status ? t('empty.search.body') : t('empty.restaurants.body')}
-            action={!debounced ? <Button icon={Plus} onClick={() => setCreating(true)}>Add restaurant</Button> : undefined}
+            action={!debounced ? <Button icon={Plus} onClick={() => setCreating(true)}>{t('action.addRestaurant')}</Button> : undefined}
           />
         </Card>
       )}

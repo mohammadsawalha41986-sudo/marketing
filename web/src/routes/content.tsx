@@ -174,7 +174,7 @@ export function ContentPage({ restaurantId, embedded = false }: { restaurantId?:
     [page, debounced, status, type, platform, scoped],
   );
 
-  const newButton = <Button icon={Plus} onClick={() => setCreating(true)}>New content</Button>;
+  const newButton = <Button icon={Plus} onClick={() => setCreating(true)}>{t('action.newContent')}</Button>;
 
   return (
     <>

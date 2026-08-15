@@ -338,7 +338,7 @@ export function ReportsPage({ restaurantId, embedded = false }: { restaurantId?:
     }
   };
 
-  const generateButton = <Button icon={Plus} onClick={() => setCreating(true)}>Generate report</Button>;
+  const generateButton = <Button icon={Plus} onClick={() => setCreating(true)}>{t('action.generateReport')}</Button>;
 
   return (
     <>

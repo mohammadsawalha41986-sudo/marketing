@@ -283,7 +283,7 @@ export function AdsPage({ restaurantId, embedded = false }: { restaurantId?: str
         <PageHeader
           title={t('nav.ads')}
           subtitle={t('ads.manualNotice')}
-          action={<Button icon={Plus} onClick={() => setCreating(true)}>New ad</Button>}
+          action={<Button icon={Plus} onClick={() => setCreating(true)}>{t('action.newAd')}</Button>}
         />
       )}
 
@@ -300,7 +300,7 @@ export function AdsPage({ restaurantId, embedded = false }: { restaurantId?: str
           <option value="">{t('common.platform')}</option>
           {PLATFORMS.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
         </Select>
-        {embedded ? <Button icon={Plus} onClick={() => setCreating(true)}>New ad</Button> : null}
+        {embedded ? <Button icon={Plus} onClick={() => setCreating(true)}>{t('action.newAd')}</Button> : null}
       </div>
 
       {error ? (
@@ -358,7 +358,7 @@ export function AdsPage({ restaurantId, embedded = false }: { restaurantId?: str
             icon={Target}
             title={debounced || status ? t('empty.search.title') : t('empty.ads.title')}
             body={debounced || status ? t('empty.search.body') : t('empty.ads.body')}
-            action={!debounced ? <Button icon={Plus} onClick={() => setCreating(true)}>New ad</Button> : undefined}
+            action={!debounced ? <Button icon={Plus} onClick={() => setCreating(true)}>{t('action.newAd')}</Button> : undefined}
           />
         </Card>
       )}

@@ -131,7 +131,7 @@ export function DashboardPage() {
           Array.from({ length: 5 }).map((_, index) => <CardSkeleton key={index} rows={1} />)
         ) : (
           <>
-            <KpiCard label={t('kpi.restaurants')} value={kpis.activeRestaurants} icon={Store} footer={`${kpis.restaurants} total`} />
+            <KpiCard label={t('kpi.restaurants')} value={kpis.activeRestaurants} icon={Store} footer={t('kpi.ofTotal').replace('{n}', num(kpis.restaurants, lang))} />
             <KpiCard label={t('kpi.campaigns')} value={kpis.activeCampaigns} icon={Megaphone} />
             <KpiCard label={t('kpi.ads')} value={kpis.activeAds} icon={Target} />
             <KpiCard label={t('kpi.scheduled')} value={kpis.scheduled} icon={CalendarClock} />
@@ -336,7 +336,7 @@ export function DashboardPage() {
             icon={Store}
             title={t('empty.restaurants.title')}
             body={t('empty.restaurants.body')}
-            action={<Button onClick={() => navigate('/restaurants')}>Add your first restaurant</Button>}
+            action={<Button onClick={() => navigate('/restaurants')}>{t('action.firstRestaurant')}</Button>}
           />
         </Card>
       ) : null}

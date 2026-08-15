@@ -40,6 +40,7 @@ const en = {
   'auth.privateNotice': 'Private system. Accounts are created by the owner, not by signing up.',
 
   'kpi.restaurants': 'Restaurants',
+  'kpi.ofTotal': 'of {n} total',
   'kpi.activeRestaurants': 'Active restaurants',
   'kpi.campaigns': 'Active campaigns',
   'kpi.ads': 'Active ads',
@@ -63,6 +64,14 @@ const en = {
   'kpi.convRate': 'Conversion rate',
   'kpi.engagement': 'Engagement',
   'kpi.engagementRate': 'Engagement rate',
+
+  'action.addRestaurant': 'Add restaurant',
+  'action.newCampaign': 'New campaign',
+  'action.newAd': 'New ad',
+  'action.newContent': 'New content',
+  'action.newTask': 'New task',
+  'action.generateReport': 'Generate report',
+  'action.firstRestaurant': 'Add your first restaurant',
 
   'common.search': 'Search',
   'common.filter': 'Filter',
@@ -228,6 +237,7 @@ const ar: Record<keyof typeof en, string> = {
   'auth.privateNotice': 'نظام خاص. تُنشأ الحسابات من قبل المالك، وليس بالتسجيل الذاتي.',
 
   'kpi.restaurants': 'المطاعم',
+  'kpi.ofTotal': 'من {n} إجمالاً',
   'kpi.activeRestaurants': 'المطاعم النشطة',
   'kpi.campaigns': 'الحملات النشطة',
   'kpi.ads': 'الإعلانات النشطة',
@@ -251,6 +261,14 @@ const ar: Record<keyof typeof en, string> = {
   'kpi.convRate': 'معدل التحويل',
   'kpi.engagement': 'التفاعل',
   'kpi.engagementRate': 'معدل التفاعل',
+
+  'action.addRestaurant': 'إضافة مطعم',
+  'action.newCampaign': 'حملة جديدة',
+  'action.newAd': 'إعلان جديد',
+  'action.newContent': 'محتوى جديد',
+  'action.newTask': 'مهمة جديدة',
+  'action.generateReport': 'إنشاء تقرير',
+  'action.firstRestaurant': 'أضف أول مطعم',
 
   'common.search': 'بحث',
   'common.filter': 'تصفية',

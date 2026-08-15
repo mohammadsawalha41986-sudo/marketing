@@ -178,7 +178,7 @@ export function CampaignsPage({ restaurantId, embedded = false }: { restaurantId
         <PageHeader
           title={t('nav.campaigns')}
           subtitle="Budget, platforms, flight dates and the content attached to each."
-          action={<Button icon={Plus} onClick={() => setCreating(true)}>New campaign</Button>}
+          action={<Button icon={Plus} onClick={() => setCreating(true)}>{t('action.newCampaign')}</Button>}
         />
       )}
 
@@ -191,7 +191,7 @@ export function CampaignsPage({ restaurantId, embedded = false }: { restaurantId
           <option value="">{t('common.all')}</option>
           {CAMPAIGN_STATUSES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
         </Select>
-        {embedded ? <Button icon={Plus} onClick={() => setCreating(true)}>New campaign</Button> : null}
+        {embedded ? <Button icon={Plus} onClick={() => setCreating(true)}>{t('action.newCampaign')}</Button> : null}
       </div>
 
       {error ? (
@@ -252,7 +252,7 @@ export function CampaignsPage({ restaurantId, embedded = false }: { restaurantId
             icon={Megaphone}
             title={debounced || status ? t('empty.search.title') : t('empty.campaigns.title')}
             body={debounced || status ? t('empty.search.body') : t('empty.campaigns.body')}
-            action={!debounced ? <Button icon={Plus} onClick={() => setCreating(true)}>New campaign</Button> : undefined}
+            action={!debounced ? <Button icon={Plus} onClick={() => setCreating(true)}>{t('action.newCampaign')}</Button> : undefined}
           />
         </Card>
       )}
