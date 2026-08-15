@@ -1,9 +1,10 @@
-// Marketing OS — data model.
+// Restaurant Marketing OS — data model.
 //
-// Tenancy: `Organization` is the agency tenant. Every tenant-owned row carries
-// `organizationId`. Rows a client can see additionally carry `clientId`, which is
-// what scopes CLIENT_ADMIN / CLIENT_USER access. Both are enforced in the API
-// scope layer (server/src/lib/scope.ts), never from client-supplied ids.
+// One owner (the marketing operator) runs one workspace containing many
+// restaurants. Restaurants are SERVICE CLIENTS, not application users: they have
+// no accounts, no logins and no portal. Every row below therefore hangs off a
+// `restaurantId` and nothing else — there is no tenancy column, because there is
+// no second tenant.
 
 generator client {
   provider = "prisma-client-js"
@@ -25,20 +26,11 @@ generator client {
   // code change. `npm run build` verifies what was actually generated.
   engineType = "binary"
 
-  // Engines to emit at generate time.
-  //
-  // `native` covers whichever machine runs `prisma generate`. It is not enough
-  // on its own here: Hostinger's Node runtime reports
-  //   Distro is "undefined" ... Found libssl.so.1.1 ... parsed libssl version 1.1.x
-  // and therefore looks for `libquery_engine-debian-openssl-1.1.x.so.node`. If
-  // the build container resolves `native` to anything else (openssl 3.0.x is
-  // the common case on newer images), that file is absent at runtime and the
-  // client cannot start.
-  //
-  // Only these two are listed, both evidence-based: `native` for the build box,
-  // `debian-openssl-1.1.x` for the observed production runtime. Extra targets
-  // would only add download weight without being justified by a real runtime.
-  binaryTargets = ["native", "debian-openssl-1.1.x"]
+  // Engines to emit at generate time. `native` covers the machine that runs
+  // `prisma generate`; `debian-openssl-3.0.x` covers the Railway runtime image,
+  // whose builder and runner can differ. Both are evidence-based — extra
+  // targets would only add download weight.
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
@@ -48,18 +40,15 @@ datasource db {
 
 // ---------------------------------------------------------------- enums
 
+/// One human uses this application. The enum exists so the column keeps a
+/// meaningful type rather than becoming a bare boolean.
 enum Role {
-  SUPER_ADMIN
-  AGENCY_ADMIN
-  AGENCY_STAFF
-  CLIENT_ADMIN
-  CLIENT_USER
+  OWNER
 }
 
-enum ClientStatus {
+enum RestaurantStatus {
   ACTIVE
   PAUSED
-  SUSPENDED
   ARCHIVED
 }
 
@@ -90,41 +79,41 @@ enum CampaignObjective {
 }
 
 enum CampaignStatus {
-  DRAFT
-  SCHEDULED
-  RUNNING
+  PLANNING
+  ACTIVE
   PAUSED
   COMPLETED
-  CANCELLED
+  ARCHIVED
 }
 
 enum ContentType {
   POST
   STORY
   REEL
-  VIDEO
   CAROUSEL
-  AD
+  AD_CREATIVE
+  VIDEO
   ARTICLE
   EMAIL
 }
 
+/// The operator's own production pipeline. There is no approval state: the
+/// operator both makes and ships the work.
 enum ContentStatus {
+  IDEA
   DRAFT
-  SUBMITTED
-  APPROVED
-  REJECTED
-  CHANGES_REQUESTED
+  READY
   SCHEDULED
   PUBLISHED
-  FAILED
+  ARCHIVED
 }
 
-enum ApprovalStatus {
-  PENDING
-  APPROVED
-  REJECTED
-  CHANGES_REQUESTED
+enum AdStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
 }
 
 enum MediaType {
@@ -149,30 +138,35 @@ enum IntegrationStatus {
   EXPIRED
 }
 
-enum SubscriptionStatus {
-  TRIALING
-  ACTIVE
-  PAST_DUE
-  CANCELLED
-  EXPIRED
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
 }
 
 enum NotificationType {
   CAMPAIGN_CREATED
-  APPROVAL_REQUESTED
-  CONTENT_APPROVED
-  CONTENT_REJECTED
-  CHANGES_REQUESTED
   CAMPAIGN_ENDING
   BUDGET_WARNING
+  CONTENT_SCHEDULED
+  CONTENT_PUBLISHED
   PUBLISH_FAILED
+  TASK_DUE
   INTEGRATION_DISCONNECTED
   REPORT_READY
   AI_ALERT
 }
 
 enum ReportType {
-  CLIENT
+  RESTAURANT
   CAMPAIGN
   MONTHLY
   PLATFORM
@@ -185,61 +179,45 @@ enum AiKind {
   BRAND
 }
 
-// ---------------------------------------------------------------- tenancy
+// ---------------------------------------------------------------- workspace & owner
 
-model Organization {
-  id        String   @id @default(cuid())
-  name      String
-  slug      String   @unique
-  logoUrl   String?
-  locale    Language @default(EN)
-  timezone  String   @default("UTC")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  users         User[]
-  clients       Client[]
-  campaigns     Campaign[]
-  contents      Content[]
-  media         Media[]
-  reports       Report[]
-  notifications Notification[]
-  integrations  Integration[]
-  subscriptions Subscription[]
-  auditLogs     AuditLog[]
-  aiUsages      AiUsage[]
-}
-
-model User {
-  id             String   @id @default(cuid())
-  email          String   @unique
-  name           String
-  passwordHash   String
-  role           Role     @default(AGENCY_STAFF)
+/// Application settings, as a single row. `id` is pinned to a constant by the
+/// application so a second workspace cannot be created by accident.
+model Workspace {
+  id             String   @id @default("workspace")
+  name           String   @default("Restaurant Marketing OS")
+  /// Default currency for budgets, spend and reports. SAR for the Gulf market.
+  currency       String   @default("SAR")
+  timezone       String   @default("Asia/Riyadh")
   locale         Language @default(EN)
-  themePref      String   @default("dark")
-  avatarUrl      String?
-  isActive       Boolean  @default(true)
-  lastLoginAt    DateTime?
-  organizationId String?
-  // Set for CLIENT_ADMIN / CLIENT_USER: pins the user to a single client.
-  clientId       String?
+  logoUrl        String?
+  /// Operator-facing preferences that do not deserve their own column yet.
+  preferences    Json     @default("{}")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+}
 
-  organization  Organization?  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client        Client?        @relation(fields: [clientId], references: [id], onDelete: SetNull)
-  sessions      Session[]
-  resetTokens   PasswordResetToken[]
-  comments      Comment[]
-  approvals     Approval[]
-  notifications Notification[]
-  auditLogs     AuditLog[]
-  createdContents Content[]  @relation("ContentAuthor")
+/// The marketing operator. In practice exactly one row; the application refuses
+/// to create a second through the API and there is no public registration.
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  role         Role      @default(OWNER)
+  locale       Language  @default(EN)
+  themePref    String    @default("dark")
+  avatarUrl    String?
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  @@index([organizationId])
-  @@index([clientId])
-  @@index([role])
+  sessions        Session[]
+  notifications   Notification[]
+  auditLogs       AuditLog[]
+  createdContents Content[]      @relation("ContentAuthor")
+  tasks           Task[]
 }
 
 model Session {
@@ -257,98 +235,89 @@ model Session {
   @@index([expiresAt])
 }
 
-model PasswordResetToken {
-  id        String   @id @default(cuid())
-  tokenHash String   @unique
-  userId    String
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime @default(now())
+// ---------------------------------------------------------------- restaurants & brand
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+/// A restaurant the operator markets for. Not an application user.
+model Restaurant {
+  id                   String           @id @default(cuid())
+  name                 String           @unique
+  businessName         String
+  email                String?
+  phone                String?
+  cuisine              String?
+  description          String?
+  website              String?
+  location             String?
+  address              String?
+  /// Branch names or addresses. A restaurant chain markets as one client.
+  branches             String[]         @default([])
+  /// Free-text marketing objectives agreed with the restaurant.
+  marketingObjectives  String[]         @default([])
+  notes                String?
+  logoUrl              String?
+  coverUrl             String?
+  /// Google Business profile details, when the operator manages one.
+  googleBusiness       Json             @default("{}")
+  status               RestaurantStatus @default(ACTIVE)
+  socialLinks          Json             @default("{}")
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
-  @@index([userId])
-}
-
-// ---------------------------------------------------------------- clients & brand
-
-model Client {
-  id             String       @id @default(cuid())
-  organizationId String
-  name           String
-  businessName   String
-  email          String?
-  phone          String?
-  businessType   String?
-  industry       String?
-  website        String?
-  location       String?
-  notes          String?
-  logoUrl        String?
-  status         ClientStatus @default(ACTIVE)
-  socialLinks    Json         @default("{}")
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-
-  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   brand         Brand?
-  users         User[]
   campaigns     Campaign[]
   contents      Content[]
+  ads           Ad[]
   media         Media[]
   reports       Report[]
+  tasks         Task[]
   notifications Notification[]
   integrations  Integration[]
-  subscription  Subscription?
   snapshots     AnalyticsSnapshot[]
   aiUsages      AiUsage[]
 
-  @@unique([organizationId, name])
-  @@index([organizationId])
   @@index([status])
 }
 
 /// Brand DNA — the bounded context handed to the AI service on every generation.
 model Brand {
-  id               String   @id @default(cuid())
-  clientId         String   @unique
-  organizationId   String
-  businessName     String
-  businessType     String?
-  industry         String?
-  description      String?
-  targetAudience   String?
-  location         String?
-  personality      String[] @default([])
-  toneOfVoice      String?
-  values           String[] @default([])
-  products         String[] @default([])
-  services         String[] @default([])
-  usps             String[] @default([])
-  offers           String[] @default([])
-  keywords         String[] @default([])
-  forbiddenWords   String[] @default([])
-  ctaStyle         String?
+  id                String   @id @default(cuid())
+  restaurantId      String   @unique
+  businessName      String
+  cuisine           String?
+  description       String?
+  targetAudience    String?
+  location          String?
+  personality       String[] @default([])
+  toneOfVoice       String?
+  values            String[] @default([])
+  products          String[] @default([])
+  services          String[] @default([])
+  usps              String[] @default([])
+  offers            String[] @default([])
+  keywords          String[] @default([])
+  forbiddenWords    String[] @default([])
+  ctaStyle          String?
+  visualStyle       String?
   preferredLanguage Language @default(EN)
   // Approved identity. Colors are hex strings; the extractor only ever suggests.
-  primaryColor     String   @default("#6366F1")
-  secondaryColor   String   @default("#8B5CF6")
-  accentColor      String   @default("#22D3EE")
-  backgroundColor  String   @default("#0B0F1A")
-  textColor        String   @default("#E8EBF2")
-  fontFamily       String   @default("Inter")
-  logoUrl          String?
-  logoDarkUrl      String?
+  primaryColor      String   @default("#6366F1")
+  secondaryColor    String   @default("#8B5CF6")
+  accentColor       String   @default("#22D3EE")
+  backgroundColor   String   @default("#0B0F1A")
+  textColor         String   @default("#E8EBF2")
+  fontFamily        String   @default("Inter")
+  headingFont       String?
+  bodyFont          String?
+  logoUrl           String?
+  logoDarkUrl       String?
   /// Unapproved palette suggested from the uploaded logo, pending review.
-  suggestedPalette Json?
-  paletteApproved  Boolean  @default(false)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  suggestedPalette  Json?
+  paletteApproved   Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
-  client Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  assets BrandAsset[]
-
-  @@index([organizationId])
+  restaurant Restaurant   @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  assets     BrandAsset[]
 }
 
 model BrandAsset {
@@ -367,31 +336,29 @@ model BrandAsset {
 // ---------------------------------------------------------------- media
 
 model Media {
-  id             String    @id @default(cuid())
-  organizationId String
-  clientId       String?
-  campaignId     String?
-  type           MediaType
-  filename       String
-  originalName   String
-  mimeType       String
-  sizeBytes      Int
-  width          Int?
-  height         Int?
-  url            String
-  thumbnailUrl   String?
-  category       String?
-  tags           String[]  @default([])
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id           String    @id @default(cuid())
+  restaurantId String?
+  campaignId   String?
+  type         MediaType
+  filename     String
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  width        Int?
+  height       Int?
+  url          String
+  thumbnailUrl String?
+  category     String?
+  tags         String[]  @default([])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
-  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  restaurant   Restaurant?    @relation(fields: [restaurantId], references: [id], onDelete: SetNull)
+  campaign     Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   contentLinks ContentMedia[]
+  adCreatives  Ad[]           @relation("AdCreative")
 
-  @@index([organizationId])
-  @@index([clientId])
+  @@index([restaurantId])
   @@index([campaignId])
   @@index([type])
 }
@@ -400,14 +367,13 @@ model Media {
 
 model Campaign {
   id             String            @id @default(cuid())
-  organizationId String
-  clientId       String
+  restaurantId   String
   name           String
   objective      CampaignObjective @default(AWARENESS)
-  status         CampaignStatus    @default(DRAFT)
+  status         CampaignStatus    @default(PLANNING)
   budget         Decimal           @db.Decimal(12, 2)
   spend          Decimal           @default(0) @db.Decimal(12, 2)
-  currency       String            @default("USD")
+  currency       String            @default("SAR")
   startDate      DateTime
   endDate        DateTime
   targetAudience String?
@@ -417,16 +383,16 @@ model Campaign {
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
-  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  platforms    CampaignPlatform[]
-  contents     Content[]
-  media        Media[]
-  snapshots    AnalyticsSnapshot[]
-  reports      Report[]
+  restaurant Restaurant          @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  platforms  CampaignPlatform[]
+  contents   Content[]
+  ads        Ad[]
+  media      Media[]
+  snapshots  AnalyticsSnapshot[]
+  reports    Report[]
+  tasks      Task[]
 
-  @@index([organizationId])
-  @@index([clientId])
+  @@index([restaurantId])
   @@index([status])
   @@index([startDate, endDate])
 }
@@ -445,23 +411,74 @@ model CampaignPlatform {
   @@index([campaignId])
 }
 
+// ---------------------------------------------------------------- ads
+
+/// A single ad inside a campaign.
+///
+/// Metrics are entered by the operator from the ad platform's own reporting.
+/// Nothing here is fetched automatically — the ad-platform adapters are
+/// architecture only (see services/integrations) and would report 501. Ratios
+/// (CTR, CPC, CPM, ROAS) are never stored: they are derived on read from these
+/// figures, so a stored rate can never disagree with its own inputs.
+model Ad {
+  id           String    @id @default(cuid())
+  restaurantId String
+  campaignId   String
+  name         String
+  platform     Platform
+  objective    CampaignObjective @default(AWARENESS)
+  status       AdStatus  @default(DRAFT)
+  headline     String?
+  primaryText  String?
+  cta          String?
+  audience     String?
+  creativeId   String?
+  budget       Decimal   @default(0) @db.Decimal(12, 2)
+  spend        Decimal   @default(0) @db.Decimal(12, 2)
+  impressions  Int       @default(0)
+  reach        Int       @default(0)
+  clicks       Int       @default(0)
+  leads        Int       @default(0)
+  conversions  Int       @default(0)
+  revenue      Decimal   @default(0) @db.Decimal(12, 2)
+  /// Null until the operator first records figures, which is what lets the UI
+  /// distinguish "no spend" from "not entered yet" instead of showing zeroes.
+  metricsAt    DateTime?
+  startDate    DateTime?
+  endDate      DateTime?
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  campaign   Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  creative   Media?     @relation("AdCreative", fields: [creativeId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId])
+  @@index([campaignId])
+  @@index([status])
+  @@index([platform])
+}
+
 // ---------------------------------------------------------------- content
 
 model Content {
   id             String        @id @default(cuid())
-  organizationId String
-  clientId       String
+  restaurantId   String
   campaignId     String?
   authorId       String?
   name           String
   type           ContentType   @default(POST)
-  status         ContentStatus @default(DRAFT)
+  status         ContentStatus @default(IDEA)
   platform       Platform
   language       Language      @default(EN)
   tone           String?
   productService String?
   offer          String?
   audience       String?
+  /// Creative brief the operator writes before generating or drafting copy.
+  brief          String?
+  notes          String?
   // Generated or hand-written copy. Every field is editable by the user.
   headline       String?
   caption        String?
@@ -471,29 +488,26 @@ model Content {
   slogan         String?
   cta            String?
   scheduledAt    DateTime?
-  timezone       String        @default("UTC")
+  timezone       String        @default("Asia/Riyadh")
   publishedAt    DateTime?
   failureReason  String?
   aiGenerated    Boolean       @default(false)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  campaign     Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  author       User?          @relation("ContentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
-  variants     ContentVariant[]
-  hashtags     Hashtag[]
-  mediaLinks   ContentMedia[]
-  approvals    Approval[]
-  comments     Comment[]
+  restaurant    Restaurant       @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  campaign      Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  author        User?            @relation("ContentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  variants      ContentVariant[]
+  hashtags      Hashtag[]
+  mediaLinks    ContentMedia[]
   calendarEvent CalendarEvent?
 
-  @@index([organizationId])
-  @@index([clientId])
+  @@index([restaurantId])
   @@index([campaignId])
   @@index([status])
   @@index([scheduledAt])
+  @@index([type])
 }
 
 model ContentVariant {
@@ -539,245 +553,173 @@ model ContentMedia {
 }
 
 model CalendarEvent {
-  id             String   @id @default(cuid())
-  organizationId String
-  clientId       String
-  contentId      String   @unique
-  title          String
-  platform       Platform
-  startAt        DateTime
-  timezone       String   @default("UTC")
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id           String   @id @default(cuid())
+  restaurantId String
+  contentId    String   @unique
+  title        String
+  platform     Platform
+  startAt      DateTime
+  timezone     String   @default("Asia/Riyadh")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
 
-  @@index([organizationId])
-  @@index([clientId])
+  @@index([restaurantId])
   @@index([startAt])
 }
 
-// ---------------------------------------------------------------- approvals
+// ---------------------------------------------------------------- tasks
 
-model Approval {
-  id             String         @id @default(cuid())
-  organizationId String
-  clientId       String
-  contentId      String
-  status         ApprovalStatus @default(PENDING)
-  decidedById    String?
-  decidedAt      DateTime?
-  note           String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+/// Operator to-do items. A task may hang off a restaurant and a campaign, or
+/// stand alone as general workspace work.
+model Task {
+  id           String       @id @default(cuid())
+  restaurantId String?
+  campaignId   String?
+  assigneeId   String?
+  title        String
+  details      String?
+  status       TaskStatus   @default(TODO)
+  priority     TaskPriority @default(MEDIUM)
+  dueAt        DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
 
-  content   Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
-  decidedBy User?   @relation(fields: [decidedById], references: [id], onDelete: SetNull)
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  campaign   Campaign?   @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  assignee   User?       @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
 
-  @@index([organizationId])
-  @@index([clientId])
-  @@index([contentId])
+  @@index([restaurantId])
   @@index([status])
-}
-
-model Comment {
-  id        String   @id @default(cuid())
-  contentId String
-  authorId  String?
-  body      String
-  createdAt DateTime @default(now())
-
-  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
-  author  User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
-
-  @@index([contentId])
+  @@index([dueAt])
 }
 
 // ---------------------------------------------------------------- analytics
 
-/// One row per client/campaign/platform/day. All dashboard numbers read from here.
+/// One row per restaurant/campaign/platform/day. All dashboard numbers read
+/// from here plus the Ad table.
 model AnalyticsSnapshot {
-  id             String   @id @default(cuid())
-  organizationId String
-  clientId       String
-  campaignId     String?
-  platform       Platform
-  date           DateTime @db.Date
-  spend          Decimal  @default(0) @db.Decimal(12, 2)
-  reach          Int      @default(0)
-  impressions    Int      @default(0)
-  clicks         Int      @default(0)
-  conversions    Int      @default(0)
-  revenue        Decimal  @default(0) @db.Decimal(12, 2)
-  engagements    Int      @default(0)
-  createdAt      DateTime @default(now())
+  id           String   @id @default(cuid())
+  restaurantId String
+  campaignId   String?
+  platform     Platform
+  date         DateTime @db.Date
+  spend        Decimal  @default(0) @db.Decimal(12, 2)
+  reach        Int      @default(0)
+  impressions  Int      @default(0)
+  clicks       Int      @default(0)
+  leads        Int      @default(0)
+  conversions  Int      @default(0)
+  revenue      Decimal  @default(0) @db.Decimal(12, 2)
+  engagements  Int      @default(0)
+  createdAt    DateTime @default(now())
 
-  client   Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  campaign   Campaign?  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
   @@unique([campaignId, platform, date])
-  @@index([organizationId])
-  @@index([clientId, date])
+  @@index([restaurantId, date])
   @@index([date])
 }
 
 // ---------------------------------------------------------------- reports
 
 model Report {
-  id             String     @id @default(cuid())
-  organizationId String
-  clientId       String
-  campaignId     String?
-  type           ReportType @default(CLIENT)
-  title          String
-  periodStart    DateTime
-  periodEnd      DateTime
+  id           String     @id @default(cuid())
+  restaurantId String
+  campaignId   String?
+  type         ReportType @default(RESTAURANT)
+  title        String
+  periodStart  DateTime
+  periodEnd    DateTime
   /// Rendered figures and AI insights, frozen at generation time.
-  payload        Json
-  createdAt      DateTime   @default(now())
+  payload      Json
+  createdAt    DateTime   @default(now())
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  campaign   Campaign?  @relation(fields: [campaignId], references: [id], onDelete: SetNull)
 
-  @@index([organizationId])
-  @@index([clientId])
+  @@index([restaurantId])
   @@index([type])
 }
 
 // ---------------------------------------------------------------- notifications
 
 model Notification {
-  id             String           @id @default(cuid())
-  organizationId String
-  clientId       String?
-  userId         String?
-  type           NotificationType
-  title          String
-  body           String?
-  link           String?
-  readAt         DateTime?
-  createdAt      DateTime         @default(now())
+  id           String           @id @default(cuid())
+  restaurantId String?
+  userId       String?
+  type         NotificationType
+  title        String
+  body         String?
+  link         String?
+  readAt       DateTime?
+  createdAt    DateTime         @default(now())
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client?      @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  user       User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([organizationId])
   @@index([userId, readAt])
-  @@index([clientId])
+  @@index([restaurantId])
 }
 
 // ---------------------------------------------------------------- integrations
 
 model Integration {
-  id             String            @id @default(cuid())
-  organizationId String
-  clientId       String
-  platform       Platform
-  status         IntegrationStatus @default(DISCONNECTED)
-  accountName    String?
-  accountId      String?
-  scopes         String[]          @default([])
-  lastSyncAt     DateTime?
-  lastError      String?
+  id           String            @id @default(cuid())
+  restaurantId String
+  platform     Platform
+  status       IntegrationStatus @default(DISCONNECTED)
+  accountName  String?
+  accountId    String?
+  scopes       String[]          @default([])
+  lastSyncAt   DateTime?
+  lastError    String?
   /// Provider credentials. Never returned by the API.
-  credentials    Json?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  credentials  Json?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
 
-  @@unique([clientId, platform])
-  @@index([organizationId])
-}
-
-// ---------------------------------------------------------------- billing
-
-model Plan {
-  id             String   @id @default(cuid())
-  key            String   @unique
-  name           String
-  description    String?
-  priceMonthly   Decimal  @db.Decimal(10, 2)
-  priceYearly    Decimal  @db.Decimal(10, 2)
-  currency       String   @default("USD")
-  maxClients     Int
-  maxUsers       Int
-  maxCampaigns   Int
-  maxAiPerMonth  Int
-  maxStorageMb   Int
-  maxIntegrations Int
-  features       String[] @default([])
-  isActive       Boolean  @default(true)
-  sortOrder      Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  subscriptions Subscription[]
-}
-
-model Subscription {
-  id             String             @id @default(cuid())
-  organizationId String
-  clientId       String?            @unique
-  planId         String
-  status         SubscriptionStatus @default(TRIALING)
-  startDate      DateTime           @default(now())
-  renewalDate    DateTime
-  cancelledAt    DateTime?
-  /// Set once a payment provider is wired up. Null means no billing has occurred.
-  providerRef    String?
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client?      @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  plan         Plan         @relation(fields: [planId], references: [id])
-
-  @@index([organizationId])
-  @@index([status])
+  @@unique([restaurantId, platform])
 }
 
 // ---------------------------------------------------------------- observability
 
 model AuditLog {
-  id             String   @id @default(cuid())
-  organizationId String?
-  userId         String?
-  action         String
-  entity         String
-  entityId       String?
-  meta           Json     @default("{}")
-  ip             String?
-  createdAt      DateTime @default(now())
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  meta      Json     @default("{}")
+  ip        String?
+  createdAt DateTime @default(now())
 
-  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
-  @@index([organizationId, createdAt])
+  @@index([createdAt])
   @@index([userId])
   @@index([entity, entityId])
 }
 
 model AiUsage {
-  id             String   @id @default(cuid())
-  organizationId String
-  clientId       String?
-  userId         String?
-  kind           AiKind
-  model          String
-  provider       String   @default("template")
-  promptTokens   Int      @default(0)
-  outputTokens   Int      @default(0)
-  latencyMs      Int      @default(0)
-  success        Boolean  @default(true)
-  createdAt      DateTime @default(now())
+  id           String   @id @default(cuid())
+  restaurantId String?
+  kind         AiKind
+  model        String
+  provider     String   @default("template")
+  promptTokens Int      @default(0)
+  outputTokens Int      @default(0)
+  latencyMs    Int      @default(0)
+  success      Boolean  @default(true)
+  createdAt    DateTime @default(now())
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: SetNull)
 
-  @@index([organizationId, createdAt])
-  @@index([clientId])
+  @@index([createdAt])
+  @@index([restaurantId])
 }
