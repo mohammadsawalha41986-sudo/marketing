@@ -233,7 +233,15 @@ side.
 Content is generated independently in either language: the AI writes native
 Arabic marketing copy, not a translation of the English.
 
-**Known gap:** notification and alert text generated server-side is English only.
+**Known gaps**, verified in a browser rather than assumed:
+
+- Navigation, KPI labels, the primary action buttons, empty states and all
+  formatting are translated, and the layout mirrors correctly at every viewport.
+- Page subtitles, form field labels and modal titles are still English. They are
+  descriptive rather than navigational, so the app is usable in Arabic, but it is
+  not fully localized.
+- Alert and notification text generated server-side is English only, because it
+  is composed from live figures on the server where no locale is in scope.
 
 ## Currency
 
@@ -247,7 +255,7 @@ report does not silently re-denominate when the setting changes.
 ```bash
 npm run typecheck    # server + web
 npm run lint         # eslint across both workspaces
-npm test             # 112 server tests against a real PostgreSQL database
+npm test             # 114 server tests against a real PostgreSQL database
 npm run build        # production build of both
 npm run verify       # typecheck, test, build
 ```
