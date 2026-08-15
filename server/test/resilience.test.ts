@@ -41,8 +41,8 @@ describe('prisma client handle', () => {
 
     // A bound method and a delegate object take different paths through the
     // proxy, so both are worth asserting.
-    await expect(prisma.organization.count()).resolves.toBeTypeOf('number');
-    await expect(prisma.$transaction(async (tx) => tx.organization.count())).resolves.toBeTypeOf('number');
+    await expect(prisma.restaurant.count()).resolves.toBeTypeOf('number');
+    await expect(prisma.$transaction(async (tx) => tx.restaurant.count())).resolves.toBeTypeOf('number');
   });
 });
 

@@ -7,7 +7,8 @@ import {
   contrastRatio, hexToRgb, hslToHex, luminance, readableTextOn, rgbToHex, rgbToHsl, isValidHex,
 } from '../src/services/palette.js';
 import {
-  byDay, byPlatform, changeRatio, derive, emptyTotals, previousWindow, sumSnapshots, type RawSnapshot,
+  byDay, byPlatform, changeRatio, derive, deriveAd, emptyTotals, previousWindow, sumSnapshots,
+  type RawSnapshot,
 } from '../src/services/analytics.js';
 import { buildFacts } from '../src/services/ai/facts.js';
 import { templateAnalysis, templateCopy, templateHashtags } from '../src/services/ai/template.js';
@@ -79,6 +80,7 @@ const snapshot = (over: Partial<RawSnapshot> = {}): RawSnapshot => ({
   reach: 5000,
   impressions: 10000,
   clicks: 200,
+  leads: 20,
   conversions: 10,
   revenue: 800,
   engagements: 300,
@@ -87,9 +89,10 @@ const snapshot = (over: Partial<RawSnapshot> = {}): RawSnapshot => ({
 
 describe('analytics maths', () => {
   it('sums every measure', () => {
-    const totals = sumSnapshots([snapshot(), snapshot({ spend: 50, clicks: 100 })]);
+    const totals = sumSnapshots([snapshot(), snapshot({ spend: 50, clicks: 100, leads: 5 })]);
     expect(totals.spend).toBe(150);
     expect(totals.clicks).toBe(300);
+    expect(totals.leads).toBe(25);
     expect(totals.impressions).toBe(20000);
   });
 
@@ -105,6 +108,7 @@ describe('analytics maths', () => {
     expect(derived.cpc).toBeCloseTo(0.5, 5);
     expect(derived.cpm).toBeCloseTo(10, 5);
     expect(derived.conversionRate).toBeCloseTo(0.05, 5);
+    expect(derived.costPerLead).toBeCloseTo(5, 5);
     expect(derived.roas).toBeCloseTo(8, 5);
 
     const empty = derive(emptyTotals());
@@ -158,12 +162,44 @@ describe('analytics maths', () => {
   });
 });
 
+describe('ad ratios', () => {
+  const ad = {
+    spend: 500, revenue: 2000, impressions: 100000,
+    reach: 60000, clicks: 2500, leads: 100, conversions: 50,
+  };
+
+  it('derives every rate from the stored figures', () => {
+    const metrics = deriveAd(ad);
+    expect(metrics.ctr).toBeCloseTo(0.025, 5);
+    expect(metrics.cpc).toBeCloseTo(0.2, 5);
+    expect(metrics.cpm).toBeCloseTo(5, 5);
+    expect(metrics.cpa).toBeCloseTo(10, 5);
+    expect(metrics.costPerLead).toBeCloseTo(5, 5);
+    expect(metrics.conversionRate).toBeCloseTo(0.02, 5);
+    expect(metrics.roas).toBeCloseTo(4, 5);
+  });
+
+  it('returns zeroes rather than NaN for an ad that has not run', () => {
+    const metrics = deriveAd({ spend: 0, revenue: 0, impressions: 0, reach: 0, clicks: 0, leads: 0, conversions: 0 });
+    for (const value of Object.values(metrics)) expect(Number.isFinite(value)).toBe(true);
+    expect(metrics.roas).toBe(0);
+  });
+
+  it('accepts Prisma decimals for the money columns', () => {
+    const metrics = deriveAd({
+      ...ad,
+      spend: { toString: () => '250.50' } as never,
+      revenue: { toString: () => '1002.00' } as never,
+    });
+    expect(metrics.roas).toBeCloseTo(4, 2);
+  });
+});
+
 // ---------------------------------------------------------------- AI
 
 const brand: BrandContext = {
   businessName: 'Zaytoun Kitchen',
-  businessType: 'Restaurant',
-  industry: 'Food',
+  cuisine: 'Levantine',
   description: 'Levantine home cooking.',
   targetAudience: 'Families in Amman',
   location: 'Amman',
@@ -232,7 +268,7 @@ describe('AI template engine', () => {
 describe('AI marketing analyst', () => {
   const facts = (over: Partial<Parameters<typeof buildFacts>[0]> = {}) =>
     buildFacts({
-      clientName: 'Zaytoun Kitchen',
+      restaurantName: 'Zaytoun Kitchen',
       campaignNames: ['Ramadan platters'],
       current: [
         snapshot({ platform: 'INSTAGRAM' as Platform, spend: 400, revenue: 2000, conversions: 40, clicks: 800 }),

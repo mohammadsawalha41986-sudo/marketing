@@ -17,10 +17,10 @@ export async function resetDatabase(): Promise<void> {
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE
       "AiUsage", "AuditLog", "Notification", "Report", "AnalyticsSnapshot",
-      "Comment", "Approval", "CalendarEvent", "ContentMedia", "Hashtag",
+      "Task", "Ad", "CalendarEvent", "ContentMedia", "Hashtag",
       "ContentVariant", "Content", "CampaignPlatform", "Campaign", "Media",
-      "BrandAsset", "Brand", "Integration", "Subscription", "Plan",
-      "PasswordResetToken", "Session", "User", "Client", "Organization"
+      "BrandAsset", "Brand", "Integration", "Session", "User", "Restaurant",
+      "Workspace"
     RESTART IDENTITY CASCADE;
   `);
 }
@@ -79,50 +79,38 @@ export class Agent {
 
 export const agent = () => new Agent(app);
 
-export interface Tenant {
-  organizationId: string;
-  adminId: string;
-  adminEmail: string;
-  staffEmail: string;
-  clientId: string;
-  clientAdminEmail: string;
-  clientUserEmail: string;
-  campaignId: string;
-  contentId: string;
+/** The single operator account. */
+export async function createOwner(email = 'owner@marketing.test', name = 'Operator') {
+  return prisma.user.create({
+    data: { name, email, passwordHash: await hashPassword(PASSWORD), role: Role.OWNER },
+  });
 }
 
-/** Builds a complete tenant: org, users, client with brand, campaign, content. */
-export async function createTenant(slug: string): Promise<Tenant> {
-  const passwordHash = await hashPassword(PASSWORD);
+export interface RestaurantFixture {
+  restaurantId: string;
+  campaignId: string;
+  contentId: string;
+  adId: string;
+}
 
-  const organization = await prisma.organization.create({
-    data: { name: `${slug} agency`, slug },
-  });
-
-  const admin = await prisma.user.create({
+/**
+ * A restaurant with everything hanging off it: brand, campaign, content, an ad
+ * and a few days of analytics, so dashboards and reports have real rows to sum.
+ *
+ * `slug` keeps names unique between fixtures, which matters because Restaurant
+ * names are now globally unique rather than unique per tenant.
+ */
+export async function createRestaurant(slug: string): Promise<RestaurantFixture> {
+  const restaurant = await prisma.restaurant.create({
     data: {
-      name: `${slug} admin`, email: `admin@${slug}.test`, passwordHash,
-      role: Role.AGENCY_ADMIN, organizationId: organization.id,
-    },
-  });
-  await prisma.user.create({
-    data: {
-      name: `${slug} staff`, email: `staff@${slug}.test`, passwordHash,
-      role: Role.AGENCY_STAFF, organizationId: organization.id,
-    },
-  });
-
-  const client = await prisma.client.create({
-    data: {
-      organizationId: organization.id,
-      name: `${slug} client`,
+      name: `${slug} restaurant`,
       businessName: `${slug} business`,
+      cuisine: 'Levantine',
       brand: {
         create: {
-          organizationId: organization.id,
           businessName: `${slug} business`,
-          businessType: 'Restaurant',
-          description: 'A test business used by the suite.',
+          cuisine: 'Levantine',
+          description: 'A test restaurant used by the suite.',
           products: ['Mezze platter'],
           usps: ['Made fresh daily'],
           keywords: ['test food'],
@@ -133,48 +121,44 @@ export async function createTenant(slug: string): Promise<Tenant> {
     },
   });
 
-  await prisma.user.createMany({
-    data: [
-      {
-        name: `${slug} client admin`, email: `owner@${slug}.test`, passwordHash,
-        role: Role.CLIENT_ADMIN, organizationId: organization.id, clientId: client.id,
-      },
-      {
-        name: `${slug} client user`, email: `viewer@${slug}.test`, passwordHash,
-        role: Role.CLIENT_USER, organizationId: organization.id, clientId: client.id,
-      },
-    ],
-  });
-
   const campaign = await prisma.campaign.create({
     data: {
-      organizationId: organization.id,
-      clientId: client.id,
+      restaurantId: restaurant.id,
       name: `${slug} campaign`,
       budget: 10000,
       startDate: new Date(Date.now() - 10 * 86400000),
       endDate: new Date(Date.now() + 20 * 86400000),
-      status: 'RUNNING',
+      status: 'ACTIVE',
       platforms: { create: [{ platform: Platform.INSTAGRAM, budget: 10000 }] },
     },
   });
 
   const content = await prisma.content.create({
     data: {
-      organizationId: organization.id,
-      clientId: client.id,
+      restaurantId: restaurant.id,
       campaignId: campaign.id,
       name: `${slug} post`,
       platform: Platform.INSTAGRAM,
+      status: 'DRAFT',
       headline: 'A headline',
       caption: 'A caption',
     },
   });
 
-  // A few days of analytics so the dashboard and reports have something to sum.
+  // Deliberately left with metricsAt null: "nothing recorded yet" is a state
+  // the API and the report renderer both have to handle.
+  const ad = await prisma.ad.create({
+    data: {
+      restaurantId: restaurant.id,
+      campaignId: campaign.id,
+      name: `${slug} ad`,
+      platform: Platform.INSTAGRAM,
+      budget: 2000,
+    },
+  });
+
   const snapshots = Array.from({ length: 5 }, (_, index) => ({
-    organizationId: organization.id,
-    clientId: client.id,
+    restaurantId: restaurant.id,
     campaignId: campaign.id,
     platform: Platform.INSTAGRAM,
     date: new Date(Date.UTC(
@@ -186,6 +170,7 @@ export async function createTenant(slug: string): Promise<Tenant> {
     reach: 5000 + index * 10,
     impressions: 10000 + index * 100,
     clicks: 200 + index,
+    leads: 20 + index,
     conversions: 10 + index,
     revenue: 800 + index * 10,
     engagements: 300 + index,
@@ -193,35 +178,11 @@ export async function createTenant(slug: string): Promise<Tenant> {
   await prisma.analyticsSnapshot.createMany({ data: snapshots });
 
   return {
-    organizationId: organization.id,
-    adminId: admin.id,
-    adminEmail: admin.email,
-    staffEmail: `staff@${slug}.test`,
-    clientId: client.id,
-    clientAdminEmail: `owner@${slug}.test`,
-    clientUserEmail: `viewer@${slug}.test`,
+    restaurantId: restaurant.id,
     campaignId: campaign.id,
     contentId: content.id,
+    adId: ad.id,
   };
-}
-
-export async function createSuperAdmin(organizationId: string, email = 'root@platform.test') {
-  return prisma.user.create({
-    data: {
-      name: 'Root', email, passwordHash: await hashPassword(PASSWORD),
-      role: Role.SUPER_ADMIN, organizationId,
-    },
-  });
-}
-
-export async function seedPlan() {
-  return prisma.plan.create({
-    data: {
-      key: 'test-plan', name: 'Test plan', priceMonthly: 10, priceYearly: 100,
-      maxClients: 5, maxUsers: 5, maxCampaigns: 5, maxAiPerMonth: 50,
-      maxStorageMb: 100, maxIntegrations: 2,
-    },
-  });
 }
 
 export { prisma };

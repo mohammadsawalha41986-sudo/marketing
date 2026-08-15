@@ -1,19 +1,22 @@
 /**
  * Demo data.
  *
- * Creates one agency with four clients across different verticals, each with a
- * full Brand DNA, campaigns, content at every stage of the approval flow, and 90
- * days of analytics. The businesses are fictional; the numbers are generated
- * with plausible per-platform rates so the dashboards and the AI analyst have
- * something real to compute against.
+ * One operator with four restaurant clients across the Gulf and Levant, each
+ * with a full brand profile, campaigns, ads, content at every stage of the
+ * pipeline, tasks and 90 days of analytics. The restaurants are fictional; the
+ * numbers are generated with plausible per-platform rates so the dashboards and
+ * the AI analyst have something real to compute against.
  *
- * Safe to re-run: it clears the demo organization first.
+ * Safe to re-run: it clears everything it created first.
+ *
+ * This is DEMO data and creates a demo login. Do not run it on a real
+ * deployment — use `npm run owner:create` to make the real account instead.
  */
 
 import {
-  ApprovalStatus, CampaignObjective, CampaignStatus, ClientStatus, ContentStatus, ContentType,
-  IntegrationStatus, Language, MediaType, NotificationType, Platform, PrismaClient, Prisma,
-  ReportType, Role, SubscriptionStatus,
+  AdStatus, CampaignObjective, CampaignStatus, ContentStatus, ContentType, IntegrationStatus,
+  Language, NotificationType, Platform, PrismaClient, Prisma, ReportType, RestaurantStatus,
+  Role, TaskPriority, TaskStatus,
 } from '@prisma/client';
 import argon2 from 'argon2';
 import { config as loadEnv } from 'dotenv';
@@ -25,7 +28,8 @@ loadEnv({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env') });
 const prisma = new PrismaClient();
 
 const DEMO_PASSWORD = 'Passw0rd!demo';
-const ORG_SLUG = 'northwind-collective';
+const OWNER_EMAIL = 'owner@marketing.example.com';
+const CURRENCY = 'SAR';
 
 /** Deterministic PRNG so re-seeding produces the same dashboards. */
 function rng(seed: number) {
@@ -49,52 +53,21 @@ async function hash(password: string) {
   return argon2.hash(password, { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 });
 }
 
-// ---------------------------------------------------------------- plans
+// ---------------------------------------------------------------- restaurants
 
-const PLANS = [
-  {
-    key: 'starter', name: 'Starter', sortOrder: 1,
-    description: 'One brand, one marketer, everything you need to run it properly.',
-    priceMonthly: 49, priceYearly: 490,
-    maxClients: 1, maxUsers: 3, maxCampaigns: 10, maxAiPerMonth: 200, maxStorageMb: 2048, maxIntegrations: 2,
-    features: ['1 client', 'AI content studio', 'Content calendar', 'Client portal', 'Monthly reports'],
-  },
-  {
-    key: 'professional', name: 'Professional', sortOrder: 2,
-    description: 'For small agencies running a handful of accounts.',
-    priceMonthly: 149, priceYearly: 1490,
-    maxClients: 10, maxUsers: 10, maxCampaigns: 100, maxAiPerMonth: 2000, maxStorageMb: 20480, maxIntegrations: 8,
-    features: ['10 clients', 'Approval workflow', 'AI marketing analyst', 'All integrations', 'White-label reports'],
-  },
-  {
-    key: 'agency', name: 'Agency', sortOrder: 3,
-    description: 'Multi-team agencies with a full client roster.',
-    priceMonthly: 399, priceYearly: 3990,
-    maxClients: 50, maxUsers: 40, maxCampaigns: 1000, maxAiPerMonth: 10000, maxStorageMb: 102400, maxIntegrations: 40,
-    features: ['50 clients', 'Role-based access', 'Audit log', 'Priority support', 'Custom branding'],
-  },
-  {
-    key: 'enterprise', name: 'Enterprise', sortOrder: 4,
-    description: 'Unlimited scale with the controls a procurement team asks for.',
-    priceMonthly: 1200, priceYearly: 12000,
-    maxClients: -1, maxUsers: -1, maxCampaigns: -1, maxAiPerMonth: -1, maxStorageMb: -1, maxIntegrations: -1,
-    features: ['Unlimited clients', 'SSO', 'Data residency', 'Dedicated support', 'SLA'],
-  },
-];
-
-// ---------------------------------------------------------------- clients
-
-interface ClientSeed {
+interface RestaurantSeed {
   key: string;
   name: string;
   businessName: string;
-  businessType: string;
-  industry: string;
+  cuisine: string;
   location: string;
+  address: string;
+  branches: string[];
   website: string;
   email: string;
   phone: string;
   language: Language;
+  objectives: string[];
   colors: { primary: string; secondary: string; accent: string; background: string; text: string };
   font: string;
   brand: {
@@ -102,6 +75,7 @@ interface ClientSeed {
     targetAudience: string;
     personality: string[];
     toneOfVoice: string;
+    visualStyle: string;
     values: string[];
     products: string[];
     services: string[];
@@ -113,117 +87,129 @@ interface ClientSeed {
   };
 }
 
-const CLIENTS: ClientSeed[] = [
+const RESTAURANTS: RestaurantSeed[] = [
   {
-    key: 'zaytoun',
-    name: 'Zaytoun Kitchen',
-    businessName: 'Zaytoun Kitchen',
-    businessType: 'Restaurant',
-    industry: 'Food and beverage',
-    location: 'Amman, Jordan',
-    website: 'https://zaytoun.example.com',
-    email: 'hello@zaytoun.example.com',
-    phone: '+962 6 000 0000',
+    key: 'sabah-al-leil',
+    name: 'Sabah Al Leil',
+    businessName: 'Sabah Al Leil Restaurant',
+    cuisine: 'Levantine grill',
+    location: 'Riyadh, Saudi Arabia',
+    address: 'Al Olaya, Tahlia Street, Riyadh',
+    branches: ['Tahlia', 'Al Malqa'],
+    website: 'https://sabah-al-leil.example.com',
+    email: 'hello@sabah-al-leil.example.com',
+    phone: '+966 11 000 0000',
     language: Language.AR,
+    objectives: ['Fill weekday dinner covers', 'Grow delivery orders 30%', 'Launch the Al Malqa branch'],
     colors: { primary: '#1F7A5A', secondary: '#C9A227', accent: '#E8613C', background: '#0C1512', text: '#EDF3EF' },
-    font: 'Plus Jakarta Sans',
+    font: 'Cairo',
     brand: {
-      description: 'Levantine home cooking served in a modern dining room, with everything made from scratch each morning.',
-      targetAudience: 'Families and professionals aged 25-50 in west Amman who eat out twice a week and care about ingredients.',
+      description: 'Charcoal grill and Levantine mezze served late, with everything prepared fresh each afternoon.',
+      targetAudience: 'Families and groups of friends aged 25-45 in north Riyadh who eat out twice a week and book late tables.',
       personality: ['Warm', 'Generous', 'Rooted', 'Unpretentious'],
       toneOfVoice: 'Warm and direct, like a host who is pleased you came',
-      values: ['Hospitality', 'Seasonal produce', 'Family recipes'],
-      products: ['Mezze platter', 'Charcoal grill', 'Weekend brunch', 'Knafeh'],
+      visualStyle: 'Warm charcoal tones, close-up food photography, steam and fire',
+      values: ['Hospitality', 'Charcoal over gas', 'Family recipes'],
+      products: ['Mixed grill platter', 'Mezze selection', 'Charcoal lamb chops', 'Knafeh'],
       services: ['Dine-in', 'Delivery', 'Private events', 'Catering'],
-      usps: ['Everything made fresh each morning', 'Recipes from three generations', 'Produce from Jordan Valley farms'],
+      usps: ['Grilled over real charcoal', 'Recipes from three generations', 'Open until 2am'],
       offers: ['Family platter for four', 'Weekday lunch set'],
-      keywords: ['Levantine food', 'Amman restaurant', 'mezze', 'family dining'],
+      keywords: ['Riyadh restaurant', 'Levantine grill', 'mezze', 'family dining'],
       forbiddenWords: ['cheap', 'fast food'],
       ctaStyle: 'احجز طاولتك',
     },
   },
   {
-    key: 'cedar-shore',
-    name: 'Cedar Shore Hotel',
-    businessName: 'Cedar Shore Hotel & Spa',
-    businessType: 'Hotel',
-    industry: 'Hospitality',
-    location: 'Aqaba, Jordan',
-    website: 'https://cedarshore.example.com',
-    email: 'reservations@cedarshore.example.com',
-    phone: '+962 3 000 0000',
-    language: Language.EN,
+    key: 'bahr-seafood',
+    name: 'Bahr Seafood',
+    businessName: 'Bahr Seafood House',
+    cuisine: 'Seafood',
+    location: 'Jeddah, Saudi Arabia',
+    address: 'Al Hamra Corniche, Jeddah',
+    branches: ['Corniche'],
+    website: 'https://bahr.example.com',
+    email: 'reservations@bahr.example.com',
+    phone: '+966 12 000 0000',
+    language: Language.AR,
+    objectives: ['Own the Friday lunch occasion', 'Build a waiting list for the terrace'],
     colors: { primary: '#1C4E80', secondary: '#4FB3BF', accent: '#E4B363', background: '#0A1220', text: '#E9EEF6' },
-    font: 'Manrope',
+    font: 'Tajawal',
     brand: {
-      description: 'A 90-room Red Sea hotel with a dive centre, three restaurants and a spa built around the original 1970s pool.',
-      targetAudience: 'Couples and small families booking 3-5 night Red Sea breaks, plus regional business travellers midweek.',
-      personality: ['Calm', 'Considered', 'Coastal', 'Quietly luxurious'],
+      description: 'Red Sea catch landed the same morning, cooked simply, eaten on a terrace over the water.',
+      targetAudience: 'Couples and families in Jeddah booking weekend lunches, plus business diners midweek.',
+      personality: ['Calm', 'Coastal', 'Considered', 'Fresh'],
       toneOfVoice: 'Composed and evocative, never breathless',
-      values: ['Reef conservation', 'Local sourcing', 'Genuine service'],
-      products: ['Sea view rooms', 'Spa day passes', 'Dive packages'],
-      services: ['Diving', 'Spa', 'Conferences', 'Airport transfer'],
-      usps: ['Private reef access', 'PADI centre on site', 'Half the rooms face the water'],
-      offers: ['Stay 3 nights, third night half price', 'Spa and lunch day pass'],
-      keywords: ['Aqaba hotel', 'Red Sea diving', 'spa resort'],
-      forbiddenWords: ['budget', 'basic'],
-      ctaStyle: 'Check availability',
+      visualStyle: 'Cool blues and daylight, whole fish on ice, sea horizon',
+      values: ['Same-day catch', 'Sustainable species', 'Simple cooking'],
+      products: ['Whole grilled hamour', 'Sayadieh', 'Shrimp machboos', 'Mixed grill of the day'],
+      services: ['Dine-in', 'Terrace booking', 'Private dining'],
+      usps: ['Landed and cooked the same day', 'Terrace over the water', 'Fish chosen at the counter'],
+      offers: ['Catch of the day set menu', 'Family seafood platter'],
+      keywords: ['Jeddah seafood', 'Red Sea fish', 'corniche restaurant'],
+      forbiddenWords: ['frozen', 'budget'],
+      ctaStyle: 'احجز الآن',
     },
   },
   {
-    key: 'atlas-outfitters',
-    name: 'Atlas Outfitters',
-    businessName: 'Atlas Outfitters',
-    businessType: 'Retail store',
-    industry: 'Outdoor and apparel',
+    key: 'chicken-bar',
+    name: 'Chicken Bar',
+    businessName: 'Chicken Bar Co.',
+    cuisine: 'Fast casual',
     location: 'Dubai, UAE',
-    website: 'https://atlasoutfitters.example.com',
-    email: 'team@atlasoutfitters.example.com',
+    address: 'JLT Cluster D, Dubai',
+    branches: ['JLT', 'Business Bay', 'Dubai Marina'],
+    website: 'https://chickenbar.example.com',
+    email: 'team@chickenbar.example.com',
     phone: '+971 4 000 0000',
     language: Language.EN,
-    colors: { primary: '#B4532A', secondary: '#2F4F4F', accent: '#E9C46A', background: '#12100E', text: '#F2EDE7' },
+    objectives: ['Drive app downloads', 'Grow weekend delivery volume', 'Launch the loaded fries range'],
+    colors: { primary: '#E8613C', secondary: '#F4C430', accent: '#2F4F4F', background: '#12100E', text: '#F2EDE7' },
     font: 'Poppins',
     brand: {
-      description: 'Two stores and a workshop selling desert and mountain kit, with free repairs for the lifetime of anything bought there.',
-      targetAudience: 'Weekend hikers and overlanders aged 28-45 across the GCC who buy once and expect it to last.',
-      personality: ['Practical', 'Durable', 'Knowledgeable', 'Honest'],
-      toneOfVoice: 'Plain and expert, the way good staff talk on the shop floor',
-      values: ['Repair over replace', 'Field-tested only', 'No exaggerated specs'],
-      products: ['Trail packs', 'Desert tents', 'Insulated layers', 'Boots'],
-      services: ['Free lifetime repairs', 'Kit fitting', 'Guided weekends'],
-      usps: ['Free repairs forever', 'Everything tested in the Hajar mountains', 'Staff who use the kit'],
-      offers: ['Trade in old gear for store credit', 'Free fitting appointment'],
-      keywords: ['hiking gear Dubai', 'overlanding', 'desert camping'],
-      forbiddenWords: ['revolutionary', 'game-changing', 'ultimate'],
-      ctaStyle: 'Shop the range',
+      description: 'Buttermilk-brined fried chicken, three sauces, no fuss — built for delivery as much as the counter.',
+      targetAudience: 'Young professionals aged 20-35 across Dubai who order in three nights a week.',
+      personality: ['Bold', 'Fast', 'Playful', 'Direct'],
+      toneOfVoice: 'Short, punchy and confident, never corporate',
+      visualStyle: 'High-contrast, saturated, close crops, motion',
+      values: ['Brined 12 hours', 'Made to order', 'No hidden charges'],
+      products: ['Signature chicken burger', 'Loaded fries', 'Wings bucket', 'Chicken tenders'],
+      services: ['Delivery', 'Collection', 'Catering trays'],
+      usps: ['Brined for 12 hours', 'Fried to order, never held', 'Free delivery over AED 50'],
+      offers: ['Weekend wings bucket', 'Two burgers and fries'],
+      keywords: ['Dubai fried chicken', 'chicken delivery', 'JLT food'],
+      forbiddenWords: ['gourmet', 'artisanal'],
+      ctaStyle: 'Order now',
     },
   },
   {
-    key: 'lumen-skincare',
-    name: 'Lumen Skincare',
-    businessName: 'Lumen Skincare',
-    businessType: 'E-commerce',
-    industry: 'Beauty and personal care',
-    location: 'Riyadh, Saudi Arabia',
-    website: 'https://lumenskin.example.com',
-    email: 'care@lumenskin.example.com',
-    phone: '+966 11 000 0000',
-    language: Language.AR,
-    colors: { primary: '#8E6BB5', secondary: '#F2B5D4', accent: '#5BC0BE', background: '#120E18', text: '#F0EAF5' },
+    key: 'noor-cafe',
+    name: 'Noor Café',
+    businessName: 'Noor Speciality Coffee',
+    cuisine: 'Speciality café',
+    location: 'Amman, Jordan',
+    address: 'Jabal Al Weibdeh, Amman',
+    branches: ['Weibdeh', 'Abdoun'],
+    website: 'https://noorcafe.example.com',
+    email: 'hi@noorcafe.example.com',
+    phone: '+962 6 000 0000',
+    language: Language.EN,
+    objectives: ['Grow morning footfall', 'Sell more retail beans', 'Build the brunch reputation'],
+    colors: { primary: '#8E6BB5', secondary: '#D9A566', accent: '#5BC0BE', background: '#120E18', text: '#F0EAF5' },
     font: 'Inter',
     brand: {
-      description: 'A direct-to-consumer skincare line formulated for hot, dry climates, sold in refillable glass.',
-      targetAudience: 'Women aged 22-40 in the Gulf who read ingredient lists and buy online.',
-      personality: ['Clear', 'Evidence-led', 'Modern', 'Calm'],
-      toneOfVoice: 'Straightforward and scientific without being cold',
-      values: ['Ingredient transparency', 'Refillable packaging', 'No unverifiable claims'],
-      products: ['Barrier serum', 'SPF 50 fluid', 'Ceramide cream', 'Refill pouches'],
-      services: ['Subscription refills', 'Skin consultation'],
-      usps: ['Formulated for 45°C summers', 'Full concentrations printed on every box', 'Refills cost 40% less'],
-      offers: ['First refill free', 'Bundle of three'],
-      keywords: ['skincare Saudi', 'barrier repair', 'SPF for hot climate'],
-      forbiddenWords: ['miracle', 'anti-aging', 'cure'],
-      ctaStyle: 'تسوقي الآن',
+      description: 'A speciality roaster and all-day brunch kitchen in a 1930s house, roasting on site every Tuesday.',
+      targetAudience: 'Remote workers and weekend brunchers aged 22-40 in west Amman who care where the beans came from.',
+      personality: ['Considered', 'Warm', 'Curious', 'Unhurried'],
+      toneOfVoice: 'Straightforward and knowledgeable without being precious',
+      visualStyle: 'Natural light, muted warm neutrals, hands and texture',
+      values: ['Direct trade beans', 'Roasted on site', 'No seat time limits'],
+      products: ['Filter of the week', 'Shakshuka', 'Cardamom latte', 'Retail bean bags'],
+      services: ['Dine-in', 'Retail beans', 'Subscriptions', 'Barista classes'],
+      usps: ['Roasted on site every Tuesday', 'Origin printed on every bag', 'Work as long as you like'],
+      offers: ['Bean subscription first bag free', 'Weekday brunch set'],
+      keywords: ['Amman coffee', 'speciality coffee', 'brunch Amman'],
+      forbiddenWords: ['instant', 'generic'],
+      ctaStyle: 'Find us',
     },
   },
 ];
@@ -239,109 +225,73 @@ const PLATFORM_PROFILE: Record<string, { cpm: number; ctr: number; cvr: number; 
 };
 
 async function main() {
-  console.log('Seeding Marketing OS demo data…');
+  console.log('Seeding Restaurant Marketing OS demo data…');
 
   // ------------------------------------------------------------ reset
-  const existing = await prisma.organization.findUnique({ where: { slug: ORG_SLUG }, select: { id: true } });
-  if (existing) {
-    // Cascades clear clients, campaigns, content, media, analytics and the rest.
-    await prisma.organization.delete({ where: { id: existing.id } });
-    console.log('  cleared previous demo organization');
+  // Restaurants cascade to campaigns, content, ads, media, analytics and the
+  // rest, so removing them clears almost everything the seed created.
+  const seeded = await prisma.restaurant.findMany({
+    where: { name: { in: RESTAURANTS.map((seed) => seed.name) } },
+    select: { id: true },
+  });
+  if (seeded.length > 0) {
+    await prisma.restaurant.deleteMany({ where: { id: { in: seeded.map((row) => row.id) } } });
+    console.log(`  cleared ${seeded.length} previously seeded restaurants`);
   }
-  await prisma.user.deleteMany({ where: { email: 'root@marketingos.example.com' } });
+  await prisma.task.deleteMany({ where: { restaurantId: null } });
+  await prisma.user.deleteMany({ where: { email: OWNER_EMAIL } });
 
-  // ------------------------------------------------------------ plans
-  const plans = new Map<string, { id: string }>();
-  for (const plan of PLANS) {
-    const record = await prisma.plan.upsert({
-      where: { key: plan.key },
-      create: {
-        ...plan,
-        priceMonthly: new Prisma.Decimal(plan.priceMonthly),
-        priceYearly: new Prisma.Decimal(plan.priceYearly),
-      },
-      update: {
-        ...plan,
-        priceMonthly: new Prisma.Decimal(plan.priceMonthly),
-        priceYearly: new Prisma.Decimal(plan.priceYearly),
-      },
-      select: { id: true, key: true },
-    });
-    plans.set(plan.key, record);
-  }
-  console.log(`  ${PLANS.length} plans`);
-
-  // ------------------------------------------------------------ organization
-  const organization = await prisma.organization.create({
-    data: { name: 'Northwind Collective', slug: ORG_SLUG, locale: Language.EN, timezone: 'Asia/Amman' },
+  // ------------------------------------------------------------ workspace and owner
+  const workspace = await prisma.workspace.upsert({
+    where: { id: 'workspace' },
+    create: { id: 'workspace', name: 'Nakhla Marketing', currency: CURRENCY, timezone: 'Asia/Riyadh' },
+    update: { name: 'Nakhla Marketing', currency: CURRENCY, timezone: 'Asia/Riyadh' },
   });
 
-  const passwordHash = await hash(DEMO_PASSWORD);
-
-  const [superAdmin, agencyAdmin, agencyStaff] = await Promise.all([
-    prisma.user.create({
-      data: {
-        name: 'Platform Root', email: 'root@marketingos.example.com', passwordHash,
-        role: Role.SUPER_ADMIN, organizationId: organization.id, themePref: 'dark',
-      },
-    }),
-    prisma.user.create({
-      data: {
-        name: 'Rana Haddad', email: 'admin@northwind.example.com', passwordHash,
-        role: Role.AGENCY_ADMIN, organizationId: organization.id, themePref: 'dark',
-      },
-    }),
-    prisma.user.create({
-      data: {
-        name: 'Omar Nassar', email: 'staff@northwind.example.com', passwordHash,
-        role: Role.AGENCY_STAFF, organizationId: organization.id, themePref: 'dark',
-      },
-    }),
-  ]);
-
-  await prisma.subscription.create({
+  const owner = await prisma.user.create({
     data: {
-      organizationId: organization.id,
-      planId: plans.get('agency')!.id,
-      status: SubscriptionStatus.ACTIVE,
-      startDate: daysAgo(210),
-      renewalDate: daysAhead(155),
+      name: 'Rana Haddad',
+      email: OWNER_EMAIL,
+      passwordHash: await hash(DEMO_PASSWORD),
+      role: Role.OWNER,
+      themePref: 'dark',
     },
   });
 
-  console.log('  organization, 3 agency users, 1 subscription');
+  console.log(`  workspace "${workspace.name}" and one owner account`);
 
-  // ------------------------------------------------------------ clients
+  // ------------------------------------------------------------ restaurants
   let totalSnapshots = 0;
   let totalContent = 0;
+  let totalAds = 0;
 
-  for (const [index, seed] of CLIENTS.entries()) {
+  for (const [index, seed] of RESTAURANTS.entries()) {
     const random = rng(1000 + index * 97);
 
-    const client = await prisma.client.create({
+    const restaurant = await prisma.restaurant.create({
       data: {
-        organizationId: organization.id,
         name: seed.name,
         businessName: seed.businessName,
         email: seed.email,
         phone: seed.phone,
-        businessType: seed.businessType,
-        industry: seed.industry,
+        cuisine: seed.cuisine,
+        description: seed.brand.description,
         website: seed.website,
         location: seed.location,
-        status: ClientStatus.ACTIVE,
+        address: seed.address,
+        branches: seed.branches,
+        marketingObjectives: seed.objectives,
+        status: RestaurantStatus.ACTIVE,
         socialLinks: {
           instagram: `https://instagram.com/${seed.key}`,
-          facebook: `https://facebook.com/${seed.key}`,
           tiktok: `https://tiktok.com/@${seed.key}`,
         },
-        notes: `Demo account. ${seed.brand.description}`,
+        googleBusiness: { profile: `https://business.google.com/${seed.key}`, rating: '4.6' },
+        notes: `Demo restaurant. ${seed.brand.description}`,
         brand: {
           create: {
-            organizationId: organization.id,
             businessName: seed.businessName,
-            businessType: seed.businessType,
-            industry: seed.industry,
+            cuisine: seed.cuisine,
             location: seed.location,
             preferredLanguage: seed.language,
             primaryColor: seed.colors.primary,
@@ -357,46 +307,10 @@ async function main() {
       },
     });
 
-    // Client portal users.
-    await prisma.user.createMany({
-      data: [
-        {
-          name: `${seed.name} Owner`,
-          email: `owner@${seed.key}.example.com`,
-          passwordHash,
-          role: Role.CLIENT_ADMIN,
-          organizationId: organization.id,
-          clientId: client.id,
-          locale: seed.language,
-        },
-        {
-          name: `${seed.name} Team`,
-          email: `team@${seed.key}.example.com`,
-          passwordHash,
-          role: Role.CLIENT_USER,
-          organizationId: organization.id,
-          clientId: client.id,
-          locale: seed.language,
-        },
-      ],
-    });
-
-    await prisma.subscription.create({
-      data: {
-        organizationId: organization.id,
-        clientId: client.id,
-        planId: plans.get(index === 0 ? 'professional' : index === 3 ? 'agency' : 'starter')!.id,
-        status: index === 2 ? SubscriptionStatus.TRIALING : SubscriptionStatus.ACTIVE,
-        startDate: daysAgo(120 - index * 10),
-        renewalDate: daysAhead(245 + index * 10),
-      },
-    });
-
     // Integrations: created and visibly disconnected, because no adapter exists.
     await prisma.integration.createMany({
-      data: [Platform.INSTAGRAM, Platform.FACEBOOK, Platform.TIKTOK, Platform.GOOGLE_ADS].map((platform) => ({
-        organizationId: organization.id,
-        clientId: client.id,
+      data: [Platform.INSTAGRAM, Platform.TIKTOK, Platform.GOOGLE_BUSINESS, Platform.SNAPCHAT].map((platform) => ({
+        restaurantId: restaurant.id,
         platform,
         status: IntegrationStatus.DISCONNECTED,
       })),
@@ -405,36 +319,36 @@ async function main() {
     // -------------------------------------------------- campaigns
     const campaignPlan = [
       {
-        name: seed.key === 'zaytoun' ? 'Ramadan family platters' : seed.key === 'cedar-shore' ? 'Red Sea autumn escapes' : seed.key === 'atlas-outfitters' ? 'Winter trail season' : 'Barrier repair launch',
+        name: `${seed.name} — signature dish push`,
         objective: CampaignObjective.SALES,
-        status: CampaignStatus.RUNNING,
+        status: CampaignStatus.ACTIVE,
         budget: 12000 + index * 3500,
         start: daysAgo(45),
         end: daysAhead(15),
-        platforms: [Platform.INSTAGRAM, Platform.FACEBOOK, Platform.GOOGLE_ADS],
+        platforms: [Platform.INSTAGRAM, Platform.TIKTOK, Platform.SNAPCHAT],
       },
       {
-        name: seed.key === 'zaytoun' ? 'Weekday lunch set' : seed.key === 'cedar-shore' ? 'Midweek business rate' : seed.key === 'atlas-outfitters' ? 'Repair workshop awareness' : 'Refill subscription push',
+        name: `${seed.name} — weekday offer`,
         objective: CampaignObjective.TRAFFIC,
-        status: CampaignStatus.RUNNING,
+        status: CampaignStatus.ACTIVE,
         budget: 6000 + index * 1200,
         start: daysAgo(30),
         end: daysAhead(30),
-        platforms: [Platform.INSTAGRAM, Platform.TIKTOK],
+        platforms: [Platform.INSTAGRAM, Platform.GOOGLE_ADS],
       },
       {
-        name: seed.key === 'zaytoun' ? 'Brand film — the morning prep' : seed.key === 'cedar-shore' ? 'Reef conservation story' : seed.key === 'atlas-outfitters' ? 'Field-tested series' : 'Ingredient transparency series',
+        name: `${seed.name} — brand film`,
         objective: CampaignObjective.AWARENESS,
         status: CampaignStatus.COMPLETED,
         budget: 8000,
         start: daysAgo(120),
         end: daysAgo(60),
-        platforms: [Platform.INSTAGRAM, Platform.TIKTOK, Platform.SNAPCHAT],
+        platforms: [Platform.INSTAGRAM, Platform.TIKTOK],
       },
       {
-        name: seed.key === 'zaytoun' ? 'New branch opening' : seed.key === 'cedar-shore' ? 'Spring dive packages' : seed.key === 'atlas-outfitters' ? 'Summer overlanding' : 'SPF season',
+        name: `${seed.name} — ${seed.objectives[0]?.toLowerCase() ?? 'next quarter'}`,
         objective: CampaignObjective.LEADS,
-        status: CampaignStatus.DRAFT,
+        status: CampaignStatus.PLANNING,
         budget: 9500,
         start: daysAhead(20),
         end: daysAhead(80),
@@ -445,18 +359,21 @@ async function main() {
     for (const [campaignIndex, plan] of campaignPlan.entries()) {
       const campaign = await prisma.campaign.create({
         data: {
-          organizationId: organization.id,
-          clientId: client.id,
+          restaurantId: restaurant.id,
           name: plan.name,
           objective: plan.objective,
           status: plan.status,
           budget: new Prisma.Decimal(plan.budget),
-          currency: 'USD',
+          currency: CURRENCY,
           startDate: plan.start,
           endDate: plan.end,
           targetAudience: seed.brand.targetAudience,
           locations: [seed.location],
-          kpi: plan.objective === CampaignObjective.SALES ? 'ROAS above 3.0x' : plan.objective === CampaignObjective.TRAFFIC ? 'Cost per click under $0.60' : 'Reach 250k unique people',
+          kpi: plan.objective === CampaignObjective.SALES
+            ? 'ROAS above 3.0x'
+            : plan.objective === CampaignObjective.TRAFFIC
+              ? `Cost per click under ${CURRENCY} 2.00`
+              : 'Reach 250k unique people',
           platforms: {
             create: plan.platforms.map((platform) => ({
               platform,
@@ -466,9 +383,54 @@ async function main() {
         },
       });
 
+      // ------------------------------------------ ads
+      /*
+       * Ads on live campaigns carry recorded figures; the planned campaign's ads
+       * deliberately do not. `metricsAt: null` is the state the UI shows as
+       * "not recorded", and leaving one example of it here means that path is
+       * visible in the demo rather than only reachable in theory.
+       */
+      const hasRun = plan.status !== CampaignStatus.PLANNING;
+      for (const [adIndex, platform] of plan.platforms.slice(0, 2).entries()) {
+        const product = seed.brand.products[adIndex % seed.brand.products.length]!;
+        const spend = hasRun ? Math.round((plan.budget / 4) * (0.7 + random() * 0.5)) : 0;
+        const impressions = hasRun ? Math.round((spend / PLATFORM_PROFILE[platform]!.cpm) * 1000) : 0;
+        const clicks = hasRun ? Math.round(impressions * PLATFORM_PROFILE[platform]!.ctr) : 0;
+        const conversions = hasRun ? Math.round(clicks * PLATFORM_PROFILE[platform]!.cvr) : 0;
+
+        await prisma.ad.create({
+          data: {
+            restaurantId: restaurant.id,
+            campaignId: campaign.id,
+            name: `${product} — ${platform.toLowerCase()}`,
+            platform,
+            objective: plan.objective,
+            status: hasRun
+              ? plan.status === CampaignStatus.COMPLETED ? AdStatus.COMPLETED : AdStatus.ACTIVE
+              : AdStatus.DRAFT,
+            headline: `${seed.brand.offers[0]} — ${product}`,
+            primaryText: seed.brand.description,
+            cta: seed.brand.ctaStyle,
+            audience: seed.brand.targetAudience,
+            budget: new Prisma.Decimal(Math.round(plan.budget / plan.platforms.length)),
+            spend: new Prisma.Decimal(spend),
+            impressions,
+            reach: Math.round(impressions * 0.62),
+            clicks,
+            leads: Math.round(conversions * 1.8),
+            conversions,
+            revenue: new Prisma.Decimal(Math.round(conversions * PLATFORM_PROFILE[platform]!.aov)),
+            metricsAt: hasRun ? daysAgo(1) : null,
+            startDate: plan.start,
+            endDate: plan.end,
+          },
+        });
+        totalAds += 1;
+      }
+
       // ------------------------------------------ analytics
       // Only campaigns that have actually run get snapshots.
-      if (plan.status === CampaignStatus.DRAFT) continue;
+      if (plan.status === CampaignStatus.PLANNING) continue;
 
       const firstDay = Math.min(90, Math.round((Date.now() - plan.start.getTime()) / 86400000));
       const lastDay = Math.max(0, Math.round((Date.now() - Math.min(plan.end.getTime(), Date.now())) / 86400000));
@@ -478,8 +440,8 @@ async function main() {
 
       for (let day = firstDay; day >= lastDay; day -= 1) {
         const date = daysAgo(day);
-        // Weekends run hotter for these verticals; the trend drifts slowly.
-        const weekend = [5, 6].includes(date.getUTCDay()) ? 1.22 : 1;
+        // Thursday and Friday run hotter for restaurants in the Gulf.
+        const weekend = [4, 5].includes(date.getUTCDay()) ? 1.28 : 1;
         const drift = 1 + Math.sin((firstDay - day) / 9) * 0.14 + (random() - 0.5) * 0.12;
         const dailyBudget = (plan.budget / Math.max(1, firstDay - lastDay + 1)) * weekend * drift;
 
@@ -492,13 +454,15 @@ async function main() {
           const reach = Math.round(impressions * (0.55 + random() * 0.2));
           const clicks = Math.round(impressions * profile.ctr * (0.8 + random() * 0.45));
           const conversions = Math.round(clicks * profile.cvr * (0.7 + random() * 0.6));
+          // Leads run ahead of conversions: an enquiry or a booking request is
+          // cheaper to earn than a completed order.
+          const leads = Math.round(conversions * (1.4 + random() * 0.9));
           const revenue = conversions * profile.aov * (0.85 + random() * 0.4);
           const engagements = Math.round(impressions * (0.012 + random() * 0.02));
 
           spent += spend;
           rows.push({
-            organizationId: organization.id,
-            clientId: client.id,
+            restaurantId: restaurant.id,
             campaignId: campaign.id,
             platform,
             date,
@@ -506,6 +470,7 @@ async function main() {
             reach,
             impressions,
             clicks,
+            leads,
             conversions,
             revenue: new Prisma.Decimal(revenue.toFixed(2)),
             engagements,
@@ -516,8 +481,8 @@ async function main() {
       if (rows.length > 0) {
         // The daily generator drifts above plan, which would leave every campaign
         // looking overspent. Normalise to a believable share of budget instead —
-        // and leave the first campaign of each client hot, so the budget alert
-        // has something real to fire on.
+        // and leave the first campaign of each restaurant hot, so the budget
+        // alert has something real to fire on.
         const targetFraction = campaignIndex === 0 ? 0.97 + random() * 0.12 : 0.62 + random() * 0.26;
         const scale = spent === 0 ? 1 : (plan.budget * targetFraction) / spent;
 
@@ -541,8 +506,9 @@ async function main() {
         { status: ContentStatus.PUBLISHED, type: ContentType.POST, platform: Platform.INSTAGRAM, offsetDays: -12 },
         { status: ContentStatus.PUBLISHED, type: ContentType.REEL, platform: Platform.TIKTOK, offsetDays: -6 },
         { status: ContentStatus.SCHEDULED, type: ContentType.CAROUSEL, platform: Platform.INSTAGRAM, offsetDays: 3 },
-        { status: ContentStatus.SUBMITTED, type: ContentType.AD, platform: Platform.FACEBOOK, offsetDays: 5 },
-        { status: ContentStatus.DRAFT, type: ContentType.STORY, platform: Platform.INSTAGRAM, offsetDays: 8 },
+        { status: ContentStatus.READY, type: ContentType.STORY, platform: Platform.SNAPCHAT, offsetDays: 5 },
+        { status: ContentStatus.DRAFT, type: ContentType.AD_CREATIVE, platform: Platform.INSTAGRAM, offsetDays: 8 },
+        { status: ContentStatus.IDEA, type: ContentType.REEL, platform: Platform.TIKTOK, offsetDays: 12 },
       ];
 
       // Only the two live campaigns carry a full content set.
@@ -554,17 +520,21 @@ async function main() {
         const offer = seed.brand.offers[contentIndex % seed.brand.offers.length]!;
         const product = seed.brand.products[contentIndex % seed.brand.products.length]!;
 
-        const headline = isArabic ? `${offer} على ${product} من ${seed.businessName}` : `${offer} on ${product} at ${seed.businessName}`;
-        const caption = isArabic
-          ? `${headline}\n${seed.brand.description}\n${seed.brand.ctaStyle} 👇`
-          : `${headline}\n${seed.brand.description}\n${seed.brand.ctaStyle} 👇`;
+        const headline = isArabic
+          ? `${offer} على ${product} من ${seed.businessName}`
+          : `${offer} on ${product} at ${seed.businessName}`;
+        const caption = `${headline}\n${seed.brand.description}\n${seed.brand.ctaStyle} 👇`;
+
+        // Only work that has actually gone out or is booked in carries a date.
+        const scheduled = ([ContentStatus.SCHEDULED, ContentStatus.PUBLISHED] as ContentStatus[]).includes(item.status)
+          ? daysAhead(item.offsetDays)
+          : null;
 
         const content = await prisma.content.create({
           data: {
-            organizationId: organization.id,
-            clientId: client.id,
+            restaurantId: restaurant.id,
             campaignId: campaign.id,
-            authorId: contentIndex % 2 === 0 ? agencyStaff.id : agencyAdmin.id,
+            authorId: owner.id,
             name: `${plan.name} — ${item.type.toLowerCase()} ${contentIndex + 1}`,
             type: item.type,
             status: item.status,
@@ -574,6 +544,7 @@ async function main() {
             productService: product,
             offer,
             audience: seed.brand.targetAudience,
+            brief: `Push ${product} for ${seed.name}. Lead with the offer, keep it appetite-led.`,
             headline,
             caption,
             primaryText: caption,
@@ -582,9 +553,8 @@ async function main() {
             slogan: `${seed.businessName} — ${seed.brand.usps[0]}`,
             cta: seed.brand.ctaStyle,
             aiGenerated: contentIndex % 2 === 0,
-            timezone: 'Asia/Amman',
-            scheduledAt:
-              item.status === ContentStatus.DRAFT ? null : daysAhead(item.offsetDays),
+            timezone: 'Asia/Riyadh',
+            scheduledAt: scheduled,
             publishedAt: item.status === ContentStatus.PUBLISHED ? daysAhead(item.offsetDays) : null,
             hashtags: {
               create: seed.brand.keywords.slice(0, 5).map((keyword) => ({
@@ -596,122 +566,145 @@ async function main() {
         });
         totalContent += 1;
 
-        if (item.status === ContentStatus.SCHEDULED || item.status === ContentStatus.PUBLISHED) {
+        if (scheduled) {
           await prisma.calendarEvent.create({
             data: {
               contentId: content.id,
-              organizationId: organization.id,
-              clientId: client.id,
+              restaurantId: restaurant.id,
               title: content.name,
               platform: content.platform,
-              startAt: content.scheduledAt ?? daysAhead(item.offsetDays),
-              timezone: 'Asia/Amman',
-            },
-          });
-        }
-
-        if (item.status === ContentStatus.SUBMITTED) {
-          await prisma.approval.create({
-            data: {
-              organizationId: organization.id,
-              clientId: client.id,
-              contentId: content.id,
-              status: ApprovalStatus.PENDING,
-            },
-          });
-        }
-
-        if (item.status === ContentStatus.PUBLISHED) {
-          await prisma.approval.create({
-            data: {
-              organizationId: organization.id,
-              clientId: client.id,
-              contentId: content.id,
-              status: ApprovalStatus.APPROVED,
-              decidedById: agencyAdmin.id,
-              decidedAt: daysAgo(Math.abs(item.offsetDays) + 2),
-              note: 'Approved as drafted.',
+              startAt: scheduled,
+              timezone: 'Asia/Riyadh',
             },
           });
         }
       }
     }
 
-    console.log(`  client ${index + 1}/${CLIENTS.length}: ${seed.name}`);
+    // -------------------------------------------------- tasks
+    await prisma.task.createMany({
+      data: [
+        {
+          restaurantId: restaurant.id,
+          assigneeId: owner.id,
+          title: `Send the monthly report to ${seed.name}`,
+          details: 'Generate from the Reports tab, then export as PDF for the owner.',
+          status: TaskStatus.TODO,
+          priority: TaskPriority.HIGH,
+          dueAt: daysAhead(3 + index),
+        },
+        {
+          restaurantId: restaurant.id,
+          assigneeId: owner.id,
+          title: `Shoot new photography for ${seed.brand.products[0]}`,
+          status: index === 0 ? TaskStatus.IN_PROGRESS : TaskStatus.TODO,
+          priority: TaskPriority.MEDIUM,
+          dueAt: daysAhead(10 + index * 2),
+        },
+        // One overdue task per restaurant, so the dashboard alert is live.
+        {
+          restaurantId: restaurant.id,
+          assigneeId: owner.id,
+          title: `Record last week's ad figures for ${seed.name}`,
+          details: 'Copy spend, impressions and conversions from each platform into the Ads tab.',
+          status: TaskStatus.TODO,
+          priority: TaskPriority.URGENT,
+          dueAt: daysAgo(2),
+        },
+      ],
+    });
+
+    console.log(`  restaurant ${index + 1}/${RESTAURANTS.length}: ${seed.name}`);
   }
 
-  // ------------------------------------------------------------ notifications
-  const agencyUsers = [superAdmin, agencyAdmin, agencyStaff];
-  const pendingCount = await prisma.approval.count({ where: { organizationId: organization.id, status: ApprovalStatus.PENDING } });
-
-  await prisma.notification.createMany({
-    data: agencyUsers.flatMap((user) => [
+  // ------------------------------------------------------------ workspace tasks
+  await prisma.task.createMany({
+    data: [
       {
-        organizationId: organization.id,
-        userId: user.id,
-        type: NotificationType.APPROVAL_REQUESTED,
-        title: `${pendingCount} items awaiting client approval`,
-        body: 'Content cannot be scheduled until it is signed off.',
-        link: '/app/approvals',
+        assigneeId: owner.id,
+        title: 'Renew the stock photography subscription',
+        status: TaskStatus.TODO,
+        priority: TaskPriority.LOW,
+        dueAt: daysAhead(21),
       },
       {
-        organizationId: organization.id,
-        userId: user.id,
+        assigneeId: owner.id,
+        title: 'Review Q4 retainer pricing',
+        status: TaskStatus.TODO,
+        priority: TaskPriority.MEDIUM,
+        dueAt: daysAhead(14),
+      },
+    ],
+  });
+
+  // ------------------------------------------------------------ notifications
+  await prisma.notification.createMany({
+    data: [
+      {
+        userId: owner.id,
+        type: NotificationType.TASK_DUE,
+        title: 'Ad figures are overdue for every restaurant',
+        body: 'Nothing is fetched automatically — record last week\'s numbers to keep reporting accurate.',
+        link: '/tasks',
+      },
+      {
+        userId: owner.id,
         type: NotificationType.AI_ALERT,
         title: 'Run the AI analyst on this month',
-        body: 'Thirty days of data are in. Ask for an analysis before the client call.',
-        link: '/app/analytics',
+        body: 'Thirty days of data are in. Ask for an analysis before the next client call.',
+        link: '/analytics',
       },
-    ]),
+    ],
   });
 
   // ------------------------------------------------------------ one saved report
-  const firstClient = await prisma.client.findFirst({
-    where: { organizationId: organization.id },
+  const firstRestaurant = await prisma.restaurant.findFirst({
+    where: { name: RESTAURANTS[0]!.name },
     select: { id: true, name: true, businessName: true, logoUrl: true },
   });
 
-  if (firstClient) {
+  if (firstRestaurant) {
     await prisma.report.create({
       data: {
-        organizationId: organization.id,
-        clientId: firstClient.id,
+        restaurantId: firstRestaurant.id,
         type: ReportType.MONTHLY,
-        title: `${firstClient.name} — last 30 days`,
+        title: `${firstRestaurant.name} — last 30 days`,
         periodStart: daysAgo(30),
         periodEnd: new Date(),
         payload: {
           note: 'Seeded placeholder. Regenerate from the Reports page to compute figures from live data.',
-          client: { id: firstClient.id, name: firstClient.name, businessName: firstClient.businessName },
+          restaurant: {
+            id: firstRestaurant.id,
+            name: firstRestaurant.name,
+            businessName: firstRestaurant.businessName,
+          },
+          currency: CURRENCY,
           period: { from: daysAgo(30).toISOString().slice(0, 10), to: new Date().toISOString().slice(0, 10) },
-          totals: {}, changes: {}, platforms: [], campaigns: [], series: [],
+          totals: {}, changes: {}, platforms: [], campaigns: [], series: [], ads: [], topContent: [],
           analysis: null, aiMeta: null, generatedAt: new Date().toISOString(),
         } as Prisma.InputJsonValue,
       },
     });
   }
 
-  const counts = {
-    clients: await prisma.client.count({ where: { organizationId: organization.id } }),
-    users: await prisma.user.count({ where: { organizationId: organization.id } }),
-    campaigns: await prisma.campaign.count({ where: { organizationId: organization.id } }),
-    content: totalContent,
-    snapshots: totalSnapshots,
-  };
-
   console.log('\nDone.');
-  console.table(counts);
+  console.table({
+    restaurants: await prisma.restaurant.count(),
+    campaigns: await prisma.campaign.count(),
+    ads: totalAds,
+    content: totalContent,
+    tasks: await prisma.task.count(),
+    snapshots: totalSnapshots,
+  });
   console.log(`
-Sign in with any of these (password: ${DEMO_PASSWORD})
+Sign in with:
 
-  Super Admin    root@marketingos.example.com
-  Agency Admin   admin@northwind.example.com
-  Agency Staff   staff@northwind.example.com
-  Client Admin   owner@zaytoun.example.com
-  Client User    team@zaytoun.example.com
+  ${OWNER_EMAIL}
+  ${DEMO_PASSWORD}
 
-Other client logins follow the same pattern:
-  owner@cedar-shore.example.com, owner@atlas-outfitters.example.com, owner@lumen-skincare.example.com
+This is demo data. On a real deployment, create the account with:
+
+  npm run owner:create -- --email you@example.com --name "Your Name"
 `);
 }
 
@@ -720,4 +713,4 @@ main()
     console.error(error);
     process.exit(1);
   })
-  .finally(() => void prisma.$disconnect());
+  .finally(() => prisma.$disconnect());
