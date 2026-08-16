@@ -1,7 +1,7 @@
 /** Content list, the AI studio / ad creator, and the content detail view. */
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Check, Hash, Image as ImageIcon, PenLine, Plus, Save, Search, Send, Sparkles, Wand2,
 } from 'lucide-react';
@@ -10,12 +10,14 @@ import { api, qs, type ContentStatus, type Language, type Paginated, type Platfo
 import { useDebounced, useQuery } from '../lib/hooks';
 import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
+import { useRestaurant } from '../lib/restaurant';
 import { date, humanize } from '../lib/format';
 import {
   Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Field, Input, Modal,
   PageHeader, Pagination, Select, Tabs, Textarea, useToast,
 } from '../components/ui';
-import { AiBadge, AiNotice, PlatformPreview, PlatformChip, StatusBadge } from '../components/domain';
+import { AiBadge, AiNotice, PlatformChip, StatusBadge } from '../components/domain';
+import { ContentPreview } from '../components/content-preview';
 import { CreativeStudio } from '../components/creative-studio';
 
 const PLATFORMS: Platform[] = ['INSTAGRAM', 'FACEBOOK', 'TIKTOK', 'SNAPCHAT', 'GOOGLE_ADS', 'GOOGLE_BUSINESS', 'LINKEDIN', 'X'];
@@ -42,16 +44,20 @@ export function ContentPage({ portal = false }: { portal?: boolean }) {
   const { t, lang } = useI18n();
   const { isAgency } = useAuth();
   const navigate = useNavigate();
-  const [params] = useSearchParams();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [platform, setPlatform] = useState('');
   const [page, setPage] = useState(1);
   const debounced = useDebounced(search);
 
+  // The restaurant comes from the top bar, which still honours a ?client= in
+  // the URL — so a link to one restaurant's content keeps working.
+  const { currentId: clientId } = useRestaurant();
+  useEffect(() => setPage(1), [clientId]);
+
   const { data, loading, error, refetch } = useQuery<Paginated<ContentRow>>(
-    `/content${qs({ page, pageSize: 12, search: debounced, status, platform, clientId: params.get('client') ?? undefined })}`,
-    [page, debounced, status, platform, params.get('client')],
+    `/content${qs({ page, pageSize: 12, search: debounced, status, platform, clientId })}`,
+    [page, debounced, status, platform, clientId],
   );
 
   const base = portal ? '/client' : '/app';
@@ -161,14 +167,13 @@ export function StudioPage() {
   const { t } = useI18n();
   const { push } = useToast();
   const navigate = useNavigate();
-  const [params] = useSearchParams();
-
-  const clients = useQuery<Paginated<{ id: string; name: string; businessName: string; logoUrl: string | null }>>(
-    `/clients${qs({ pageSize: 100 })}`,
-  );
+  // The studio writes for one restaurant, so it starts on the one being worked
+  // on. It keeps its own picker: which restaurant a draft is for is part of the
+  // brief, not just a filter over a list.
+  const { restaurants, currentId } = useRestaurant();
 
   const [brief, setBrief] = useState({
-    clientId: params.get('client') ?? '',
+    clientId: currentId,
     campaignId: '',
     name: '',
     platform: 'INSTAGRAM' as Platform,
@@ -193,23 +198,24 @@ export function StudioPage() {
     [brief.clientId],
   );
 
-  // Default the first client so the studio is usable straight away.
+  // Fall back to the first restaurant so the studio is usable straight away.
   useEffect(() => {
-    if (!brief.clientId && clients.data?.items[0]) {
-      setBrief((current) => ({ ...current, clientId: clients.data!.items[0]!.id }));
+    const fallback = currentId || restaurants[0]?.id;
+    if (!brief.clientId && fallback) {
+      setBrief((current) => ({ ...current, clientId: fallback }));
     }
-  }, [clients.data, brief.clientId]);
+  }, [restaurants, currentId, brief.clientId]);
 
   useEffect(() => setPreviewPlatform(brief.platform), [brief.platform]);
 
   const client = useMemo(
-    () => clients.data?.items.find((row) => row.id === brief.clientId),
-    [clients.data, brief.clientId],
+    () => restaurants.find((row) => row.id === brief.clientId),
+    [restaurants, brief.clientId],
   );
 
   const generate = async () => {
     if (!brief.clientId) {
-      push({ tone: 'error', title: 'Choose a client first' });
+      push({ tone: 'error', title: 'Choose a restaurant first' });
       return;
     }
     setGenerating(true);
@@ -254,7 +260,7 @@ export function StudioPage() {
 
   const save = async () => {
     if (!brief.clientId || !brief.name.trim()) {
-      push({ tone: 'error', title: 'A client and a name are required' });
+      push({ tone: 'error', title: 'A restaurant and a name are required' });
       return;
     }
     setSaving(true);
@@ -311,8 +317,8 @@ export function StudioPage() {
             <div className="grid gap-4 p-5 sm:grid-cols-2">
               <Field label={t('common.client')} required>
                 <Select value={brief.clientId} onChange={(e) => setBrief({ ...brief, clientId: e.target.value, campaignId: '' })} required>
-                  <option value="">Select a client</option>
-                  {clients.data?.items.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+                  <option value="">Select a restaurant</option>
+                  {restaurants.map((row) => <option key={row.id} value={row.id}>{row.businessName}</option>)}
                 </Select>
               </Field>
               <Field label={t('common.campaign')}>
@@ -421,7 +427,7 @@ export function StudioPage() {
                   </button>
                 ))}
               </div>
-              <PlatformPreview
+              <ContentPreview
                 platform={previewPlatform}
                 brandName={client?.businessName ?? 'Your brand'}
                 logoUrl={client?.logoUrl}
@@ -589,15 +595,31 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
 
       {tab === 'preview' ? (
         <div className="mx-auto max-w-md">
-          <PlatformPreview
+          <ContentPreview
             platform={content.platform}
+            // The content's own type decides the surface, so a Reel is never
+            // previewed as a square feed post.
+            surface={content.type === 'STORY' ? 'STORY' : content.type === 'REEL' ? 'REEL' : 'FEED'}
             brandName={content.client.businessName}
             logoUrl={content.client.logoUrl}
             headline={content.headline}
             caption={content.caption}
             cta={content.cta}
             hashtags={content.hashtags.map((tag) => tag.tag)}
-            mediaUrl={content.mediaLinks[0]?.media.url}
+            media={
+              content.mediaLinks[0]
+                ? {
+                    url: content.mediaLinks[0].media.url,
+                    kind: content.mediaLinks[0].media.type === 'VIDEO' ? 'VIDEO' : 'IMAGE',
+                    posterUrl: content.mediaLinks[0].media.thumbnailUrl,
+                  }
+                : null
+            }
+            // Both come from the server. Nothing here decides that something is
+            // published or scheduled on its own.
+            status={content.status}
+            scheduledAt={content.scheduledAt}
+            safeZones
           />
         </div>
       ) : null}

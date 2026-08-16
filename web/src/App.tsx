@@ -14,6 +14,8 @@ import { ClientDetailPage, ClientsPage } from './routes/clients';
 import { CampaignDetailPage, CampaignsPage } from './routes/campaigns';
 import { ContentDetailPage, ContentPage, StudioPage } from './routes/content';
 import { BrandPage } from './routes/brand';
+import { ImageAdsPage, VideoAdsPage } from './routes/ads';
+import { MetaCampaignsPage } from './routes/publishing';
 import {
   ApprovalsPage, CalendarPage, IntegrationsPage, MediaPage, NotificationsPage, SettingsPage,
 } from './routes/workspace';
@@ -83,13 +85,24 @@ export default function App() {
                 <Route index element={<Navigate to="dashboard" replace />} />
                 <Route path="dashboard" element={<DashboardPage />} />
                 <Route path="ceo" element={<CeoPage />} />
+                {/*
+                  * Restaurants and clients are the same page. The nav says
+                  * restaurants because that is what they are; /app/clients stays
+                  * routed so existing links, bookmarks and the rows that link to
+                  * /app/clients/:id keep resolving.
+                  */}
+                <Route path="restaurants" element={<ClientsPage />} />
+                <Route path="restaurants/:id" element={<ClientDetailPage />} />
                 <Route path="clients" element={<ClientsPage />} />
                 <Route path="clients/:id" element={<ClientDetailPage />} />
                 <Route path="brand" element={<BrandPage />} />
                 <Route path="media" element={<MediaPage />} />
                 <Route path="content" element={<ContentPage />} />
                 <Route path="content/:id" element={<ContentDetailPage />} />
+                <Route path="image-ads" element={<ImageAdsPage />} />
+                <Route path="video-ads" element={<VideoAdsPage />} />
                 <Route path="studio" element={<StudioPage />} />
+                <Route path="meta-campaigns" element={<MetaCampaignsPage />} />
                 <Route path="campaigns" element={<CampaignsPage />} />
                 <Route path="campaigns/:id" element={<CampaignDetailPage />} />
                 <Route path="calendar" element={<CalendarPage />} />

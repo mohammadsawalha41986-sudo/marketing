@@ -11,6 +11,39 @@ const en = {
   'app.name': 'Marketing OS',
   'app.tagline': 'The command centre for every brand you run',
 
+  /*
+   * The navigation vocabulary.
+   *
+   * This is one operator's marketing system for their own restaurants, not a
+   * platform restaurants log into, so the nouns are the operator's: a client is
+   * a restaurant, an approval is a review. The database still calls them
+   * clients and approvals — renaming the schema would be a migration for a
+   * wording change — so the translation layer is where the two vocabularies
+   * meet.
+   */
+  'nav.home': 'Home',
+  'nav.restaurants': 'Restaurants',
+  'nav.brandDna': 'Brand DNA',
+  'nav.assets': 'Assets',
+  'nav.imageAds': 'Image Ads',
+  'nav.videoAds': 'Video Ads',
+  'nav.aiContent': 'AI Content',
+  'nav.metaCampaigns': 'Meta Campaigns',
+  'nav.organicContent': 'Organic Content',
+  'nav.socialPosting': 'Social Posting',
+  'nav.reviews': 'Reviews',
+
+  'group.workspace': 'Workspace',
+  'group.create': 'Create',
+  'group.marketing': 'Marketing',
+  'group.social': 'Social',
+  'group.insights': 'Insights',
+  'group.operations': 'Operations',
+  'group.settings': 'Settings',
+
+  'restaurant.all': 'All restaurants',
+  'restaurant.label': 'Restaurant',
+
   'nav.dashboard': 'Dashboard',
   'nav.ceo': 'Executive',
   'nav.clients': 'Clients',
@@ -54,6 +87,8 @@ const en = {
   'auth.backToSignIn': 'Back to sign in',
 
   'kpi.clients': 'Active clients',
+  'kpi.restaurants': 'Active restaurants',
+  'kpi.inReview': 'In review',
   'kpi.campaigns': 'Active campaigns',
   'kpi.scheduled': 'Scheduled posts',
   'kpi.pending': 'Awaiting approval',
@@ -117,8 +152,8 @@ const en = {
   'theme.system': 'System',
   'theme.label': 'Theme',
 
-  'empty.clients.title': 'No clients yet',
-  'empty.clients.body': 'Add your first client to start building campaigns and content.',
+  'empty.clients.title': 'No restaurants yet',
+  'empty.clients.body': 'Add your first restaurant to start building campaigns and content.',
   'empty.campaigns.title': 'No campaigns yet',
   'empty.campaigns.body': 'Create your first campaign to plan budget, platforms and content.',
   'empty.content.title': 'Nothing written yet',
@@ -176,6 +211,9 @@ const en = {
   'dash.range7': 'Last 7 days',
   'dash.range30': 'Last 30 days',
   'dash.range90': 'Last 90 days',
+  'dash.needsYou': 'Needs you',
+  'dash.needsYouSub': 'Work sitting in the pipeline right now',
+  'dash.allRestaurants': 'All restaurants',
   'dash.performance': 'Performance over time',
   'dash.alerts': 'AI marketing alerts',
   'dash.alertsSub': 'Derived from live campaign data',
@@ -190,6 +228,29 @@ const en = {
 const ar: Record<keyof typeof en, string> = {
   'app.name': 'ماركتنج أو إس',
   'app.tagline': 'مركز القيادة لكل علامة تجارية تديرها',
+
+  'nav.home': 'الرئيسية',
+  'nav.restaurants': 'المطاعم',
+  'nav.brandDna': 'هوية العلامة',
+  'nav.assets': 'الأصول',
+  'nav.imageAds': 'إعلانات الصور',
+  'nav.videoAds': 'إعلانات الفيديو',
+  'nav.aiContent': 'محتوى الذكاء الاصطناعي',
+  'nav.metaCampaigns': 'حملات ميتا',
+  'nav.organicContent': 'المحتوى العضوي',
+  'nav.socialPosting': 'النشر الاجتماعي',
+  'nav.reviews': 'المراجعات',
+
+  'group.workspace': 'مساحة العمل',
+  'group.create': 'الإنشاء',
+  'group.marketing': 'التسويق',
+  'group.social': 'التواصل الاجتماعي',
+  'group.insights': 'التحليلات',
+  'group.operations': 'العمليات',
+  'group.settings': 'الإعدادات',
+
+  'restaurant.all': 'كل المطاعم',
+  'restaurant.label': 'المطعم',
 
   'nav.dashboard': 'لوحة التحكم',
   'nav.ceo': 'الإدارة التنفيذية',
@@ -234,6 +295,8 @@ const ar: Record<keyof typeof en, string> = {
   'auth.backToSignIn': 'العودة لتسجيل الدخول',
 
   'kpi.clients': 'العملاء النشطون',
+  'kpi.restaurants': 'المطاعم النشطة',
+  'kpi.inReview': 'قيد المراجعة',
   'kpi.campaigns': 'الحملات النشطة',
   'kpi.scheduled': 'منشورات مجدولة',
   'kpi.pending': 'بانتظار الموافقة',
@@ -297,8 +360,8 @@ const ar: Record<keyof typeof en, string> = {
   'theme.system': 'النظام',
   'theme.label': 'المظهر',
 
-  'empty.clients.title': 'لا يوجد عملاء بعد',
-  'empty.clients.body': 'أضف أول عميل لتبدأ ببناء الحملات والمحتوى.',
+  'empty.clients.title': 'لا توجد مطاعم بعد',
+  'empty.clients.body': 'أضف أول مطعم لتبدأ ببناء الحملات والمحتوى.',
   'empty.campaigns.title': 'لا توجد حملات بعد',
   'empty.campaigns.body': 'أنشئ أول حملة لتخطيط الميزانية والمنصات والمحتوى.',
   'empty.content.title': 'لم يُكتب شيء بعد',
@@ -356,6 +419,9 @@ const ar: Record<keyof typeof en, string> = {
   'dash.range7': 'آخر 7 أيام',
   'dash.range30': 'آخر 30 يوماً',
   'dash.range90': 'آخر 90 يوماً',
+  'dash.needsYou': 'بانتظارك',
+  'dash.needsYouSub': 'العمل الموجود في المسار الآن',
+  'dash.allRestaurants': 'كل المطاعم',
   'dash.performance': 'الأداء عبر الوقت',
   'dash.alerts': 'تنبيهات التسويق الذكية',
   'dash.alertsSub': 'مستخرجة من بيانات الحملات الحية',

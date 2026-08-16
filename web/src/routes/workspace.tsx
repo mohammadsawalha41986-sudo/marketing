@@ -1,7 +1,7 @@
 /** Calendar, media library, approvals, integrations, notifications and settings. */
 
-import { useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Film, FileText, Image as ImageIcon,
@@ -12,13 +12,15 @@ import { api, qs, type ApprovalStatus, type MediaType, type Paginated, type Plat
 import { useDebounced, useQuery } from '../lib/hooks';
 import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
+import { useRestaurant } from '../lib/restaurant';
 import { bytes, cn } from '../lib/utils';
 import { date, dateTime, humanize, isoDate, relative } from '../lib/format';
 import {
-  Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Field, Input, Modal,
-  PageHeader, Pagination, Select, Tabs, Textarea, Toggle, useToast,
+  Badge, Button, Card, CardHeader, CardSkeleton, Drawer, EmptyState, ErrorState, Field, Input, Modal,
+  PageHeader, Pagination, Select, Spinner, Tabs, Textarea, Toggle, useToast,
 } from '../components/ui';
-import { PlatformChip, PlatformPreview, StatusBadge } from '../components/domain';
+import { PlatformChip, StatusBadge } from '../components/domain';
+import { ContentPreview } from '../components/content-preview';
 import { ThemeSwitch } from '../components/layout';
 
 // ---------------------------------------------------------------- calendar
@@ -35,6 +37,80 @@ interface CalendarItem {
   campaign: { id: string; name: string } | null;
 }
 
+/**
+ * Peek at a scheduled post without leaving the calendar.
+ *
+ * The calendar endpoint returns scheduling facts — a name, a time, a status —
+ * because that is what a month grid needs. It does not return the caption or
+ * the creative, so this fetches the content itself and hands it to the same
+ * ContentPreview every other screen uses. The alternative was a second,
+ * thinner preview that would drift from the real one.
+ */
+function CalendarPeek({ id, base, onClose }: { id: string | null; base: string; onClose: () => void }) {
+  const navigate = useNavigate();
+  const { data, loading, error } = useQuery<{
+    content: {
+      id: string;
+      name: string;
+      status: string;
+      type: string;
+      platform: Platform;
+      headline: string | null;
+      caption: string | null;
+      cta: string | null;
+      scheduledAt: string | null;
+      client: { businessName: string; logoUrl: string | null };
+      hashtags: Array<{ tag: string }>;
+      mediaLinks: Array<{ media: { url: string; type: string; thumbnailUrl: string | null } }>;
+    };
+  }>(id ? `/content/${id}` : null, [id]);
+
+  const content = data?.content;
+
+  return (
+    <Drawer
+      open={Boolean(id)}
+      onClose={onClose}
+      title={content?.name ?? 'Scheduled post'}
+      footer={
+        content ? (
+          <Button className="w-full" onClick={() => navigate(`${base}/content/${content.id}`)}>
+            Open
+          </Button>
+        ) : null
+      }
+    >
+      {loading ? (
+        <div className="grid place-items-center py-16"><Spinner className="h-6 w-6" /></div>
+      ) : error ? (
+        <ErrorState message={error} />
+      ) : content ? (
+        <ContentPreview
+          platform={content.platform}
+          surface={content.type === 'STORY' ? 'STORY' : content.type === 'REEL' ? 'REEL' : 'FEED'}
+          brandName={content.client.businessName}
+          logoUrl={content.client.logoUrl}
+          headline={content.headline}
+          caption={content.caption}
+          cta={content.cta}
+          hashtags={content.hashtags.map((tag) => tag.tag)}
+          media={
+            content.mediaLinks[0]
+              ? {
+                  url: content.mediaLinks[0].media.url,
+                  kind: content.mediaLinks[0].media.type === 'VIDEO' ? 'VIDEO' : 'IMAGE',
+                  posterUrl: content.mediaLinks[0].media.thumbnailUrl,
+                }
+              : null
+          }
+          status={content.status}
+          scheduledAt={content.scheduledAt}
+        />
+      ) : null}
+    </Drawer>
+  );
+}
+
 const STATUS_DOT: Record<string, string> = {
   DRAFT: 'bg-muted',
   SUBMITTED: 'bg-warn',
@@ -48,16 +124,20 @@ const STATUS_DOT: Record<string, string> = {
 
 export function CalendarPage({ portal = false }: { portal?: boolean }) {
   const { t, lang } = useI18n();
-  const navigate = useNavigate();
+
   const [view, setView] = useState<'month' | 'week' | 'day'>('month');
   const [anchor, setAnchor] = useState(new Date());
+  const [peek, setPeek] = useState<string | null>(null);
+
+  // The month grid shows the restaurant chosen in the top bar, or all of them.
+  const { currentId: clientId, current } = useRestaurant();
 
   const { data, loading, error, refetch } = useQuery<{
     view: string;
     range: { from: string; to: string };
     items: CalendarItem[];
     counts: Record<string, number>;
-  }>(`/calendar${qs({ view, anchor: isoDate(anchor) })}`, [view, isoDate(anchor)]);
+  }>(`/calendar${qs({ view, anchor: isoDate(anchor), clientId })}`, [view, isoDate(anchor), clientId]);
 
   const shift = (direction: number) => {
     const next = new Date(anchor);
@@ -101,7 +181,11 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
     <>
       <PageHeader
         title={t('nav.calendar')}
-        subtitle="Everything scheduled, colour-coded by where it is in the workflow."
+        subtitle={
+          current
+            ? `Everything scheduled for ${current.businessName}, colour-coded by where it is in the workflow.`
+            : 'Everything scheduled, colour-coded by where it is in the workflow.'
+        }
         action={
           <>
             <div className="flex items-center gap-1 rounded-xl border border-line bg-elevated p-0.5">
@@ -175,7 +259,7 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
                     {items.slice(0, 3).map((item) => (
                       <button
                         key={item.id}
-                        onClick={() => navigate(`${base}/content/${item.id}`)}
+                        onClick={() => setPeek(item.id)}
                         className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-start text-[11px] transition-colors hover:bg-elevated"
                       >
                         <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', STATUS_DOT[item.status] ?? 'bg-muted')} />
@@ -195,7 +279,11 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
         <Card>
           <div className="divide-y divide-line/60">
             {data.items.map((item) => (
-              <Link key={item.id} to={`${base}/content/${item.id}`} className="flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-elevated">
+              <button
+                key={item.id}
+                onClick={() => setPeek(item.id)}
+                className="flex w-full flex-wrap items-center gap-3 px-4 py-3 text-start transition-colors hover:bg-elevated"
+              >
                 <span className={cn('h-2 w-2 shrink-0 rounded-full', STATUS_DOT[item.status] ?? 'bg-muted')} />
                 <span className="w-32 shrink-0 text-[13px] text-muted">
                   {item.scheduledAt ? dateTime(item.scheduledAt, lang) : '—'}
@@ -206,13 +294,15 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
                 </span>
                 <PlatformChip platform={item.platform} size="sm" />
                 <StatusBadge status={item.status} kind="content" />
-              </Link>
+              </button>
             ))}
           </div>
         </Card>
       ) : (
         <Card><EmptyState icon={CalendarDays} title={t('empty.calendar.title')} body={t('empty.calendar.body')} /></Card>
       )}
+
+      <CalendarPeek id={peek} base={base} onClose={() => setPeek(null)} />
     </>
   );
 }
@@ -241,13 +331,16 @@ export function MediaPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState('');
   const [type, setType] = useState('');
-  const [clientId, setClientId] = useState('');
   const [page, setPage] = useState(1);
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<MediaRow | null>(null);
   const debounced = useDebounced(search);
 
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(`/clients${qs({ pageSize: 100 })}`);
+  // The library follows the restaurant chosen in the top bar; the picker that
+  // used to sit in this filter row was a second answer to the same question.
+  const { currentId: clientId } = useRestaurant();
+  useEffect(() => setPage(1), [clientId]);
+
   const { data, loading, error, refetch } = useQuery<Paginated<MediaRow>>(
     `/media${qs({ page, pageSize: 24, search: debounced, type, clientId })}`,
     [page, debounced, type, clientId],
@@ -309,10 +402,6 @@ export function MediaPage() {
           <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
           <Input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder={t('common.search')} className="ps-9" />
         </div>
-        <Select value={clientId} onChange={(e) => { setClientId(e.target.value); setPage(1); }} className="w-48">
-          <option value="">All clients</option>
-          {clients.data?.items.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-        </Select>
         <Select value={type} onChange={(e) => { setType(e.target.value); setPage(1); }} className="w-40">
           <option value="">{t('common.all')}</option>
           {['IMAGE', 'VIDEO', 'DOCUMENT', 'LOGO'].map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
@@ -540,7 +629,7 @@ export function ApprovalsPage({ portal = false }: { portal?: boolean }) {
       >
         {active ? (
           <div className="grid gap-5 sm:grid-cols-2">
-            <PlatformPreview
+            <ContentPreview
               platform={active.content.platform}
               brandName={active.content.client.name}
               logoUrl={active.content.client.logoUrl}
@@ -549,6 +638,8 @@ export function ApprovalsPage({ portal = false }: { portal?: boolean }) {
               cta={active.content.cta}
               hashtags={active.content.hashtags.map((tag) => tag.tag)}
               mediaUrl={active.content.mediaLinks[0]?.media.url}
+              scheduledAt={active.content.scheduledAt}
+              safeZones
             />
             <div className="space-y-4">
               <div className="space-y-2 text-[13px]">
@@ -619,9 +710,10 @@ interface IntegrationRow {
 export function IntegrationsPage() {
   const { t, lang } = useI18n();
   const { push } = useToast();
-  const [clientId, setClientId] = useState('');
+  // Connections belong to a restaurant, and which restaurant is a top-bar
+  // decision now — connecting Meta for the wrong one is not a cheap mistake.
+  const { currentId: clientId, current } = useRestaurant();
 
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(`/clients${qs({ pageSize: 100 })}`);
   const catalog = useQuery<{ ai: { provider: string; model: string; configured: boolean }; adapters: AdapterInfo[] }>('/integrations/catalog');
   const { data, loading, refetch } = useQuery<{ items: IntegrationRow[] }>(
     `/integrations${qs({ clientId })}`,
@@ -630,7 +722,7 @@ export function IntegrationsPage() {
 
   const connect = async (platform: Platform) => {
     if (!clientId) {
-      push({ tone: 'error', title: 'Pick a client first' });
+      push({ tone: 'error', title: 'Choose a restaurant in the top bar first' });
       return;
     }
     try {
@@ -660,12 +752,10 @@ export function IntegrationsPage() {
     <>
       <PageHeader
         title={t('nav.integrations')}
-        subtitle="Connection architecture for every ad platform. A provider connects once its credentials are set."
-        action={
-          <Select value={clientId} onChange={(event) => setClientId(event.target.value)} className="w-52">
-            <option value="">All clients</option>
-            {clients.data?.items.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-          </Select>
+        subtitle={
+          current
+            ? `Connections for ${current.businessName}. A provider connects once its credentials are set.`
+            : 'Connection architecture for every ad platform. Choose a restaurant in the top bar to connect one.'
         }
       />
 

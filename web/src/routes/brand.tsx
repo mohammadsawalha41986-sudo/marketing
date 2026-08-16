@@ -1,18 +1,19 @@
 /** Brand DNA editor, logo upload, and the suggested-identity approval flow. */
 
 import { useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { Check, Palette, Sparkles, Upload, Wand2 } from 'lucide-react';
 
-import { api, qs, type Language, type Paginated } from '../lib/api';
+import { api, type Language } from '../lib/api';
 import { useQuery } from '../lib/hooks';
 import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
+import { useRestaurant } from '../lib/restaurant';
 import {
   Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Field, Input,
   PageHeader, Select, Tabs, Textarea, useToast,
 } from '../components/ui';
-import { PlatformPreview, Swatch } from '../components/domain';
+import { Swatch } from '../components/domain';
+import { ContentPreview } from '../components/content-preview';
 
 interface SuggestedPalette {
   primary: string;
@@ -80,18 +81,18 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
   const { t } = useI18n();
   const { user, isAgency } = useAuth();
   const { push } = useToast();
-  const [params, setParams] = useSearchParams();
   const fileRef = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<'dna' | 'identity'>('dna');
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [draft, setDraft] = useState<Brand | null>(null);
 
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(
-    portal ? null : `/clients${qs({ pageSize: 100 })}`,
-  );
+  // Brand DNA is per restaurant, and which one is the top bar's business. When
+  // nothing is chosen there, the first restaurant keeps the page from being an
+  // empty shell.
+  const { restaurants, currentId, loading: loadingRestaurants } = useRestaurant();
 
-  const clientId = portal ? user?.clientId ?? '' : params.get('client') ?? clients.data?.items[0]?.id ?? '';
+  const clientId = portal ? user?.clientId ?? '' : currentId || restaurants[0]?.id || '';
   const { data, loading, error, refetch } = useQuery<{ brand: Brand }>(clientId ? `/brands/${clientId}` : null, [clientId]);
 
   useEffect(() => {
@@ -172,7 +173,7 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
     }
   };
 
-  if (!portal && clients.data && clients.data.items.length === 0) {
+  if (!portal && !loadingRestaurants && restaurants.length === 0) {
     return (
       <>
         <PageHeader title={t('brand.dna')} />
@@ -199,17 +200,6 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
         subtitle="What the AI reads before it writes a single word for this client."
         action={
           <>
-            {!portal && clients.data ? (
-              <Select
-                value={clientId}
-                onChange={(event) => setParams({ client: event.target.value })}
-                className="w-52"
-              >
-                {clients.data.items.map((client) => (
-                  <option key={client.id} value={client.id}>{client.name}</option>
-                ))}
-              </Select>
-            ) : null}
             {!readOnly ? <Button onClick={save} loading={saving}>{t('common.save')}</Button> : null}
           </>
         }
@@ -415,7 +405,7 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
             <Card>
               <CardHeader title="How a post would look" />
               <div className="p-4">
-                <PlatformPreview
+                <ContentPreview
                   platform="INSTAGRAM"
                   brandName={draft.businessName}
                   logoUrl={draft.logoUrl}

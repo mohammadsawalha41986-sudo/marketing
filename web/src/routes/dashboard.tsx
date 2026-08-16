@@ -5,13 +5,14 @@ import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Activity, Bell, Building2, CalendarClock, Eye, Megaphone, MousePointerClick,
-  ThumbsUp, TrendingUp, Wallet,
+  Store, ThumbsUp, TrendingUp, Wallet,
 } from 'lucide-react';
 
 import { qs, type Metrics, type Platform } from '../lib/api';
 import { useQuery } from '../lib/hooks';
 import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
+import { useRestaurant } from '../lib/restaurant';
 import { isoDate, money, num, pct, ratio, relative, humanize } from '../lib/format';
 import { Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, PageHeader, Select } from '../components/ui';
 import { AlertRow, KpiCard, PlatformChip, StatusBadge, type Alert } from '../components/domain';
@@ -55,11 +56,20 @@ export function DashboardPage({ portal = false }: { portal?: boolean }) {
     return { from: isoDate(from), to: isoDate(to) };
   }, [days]);
 
+  // Home answers "how are things going" for whatever the top bar is pointed at:
+  // one restaurant, or all of them. Both endpoints already scope by client, so
+  // this is the same data narrowed, not a different number.
+  const { current, currentId } = useRestaurant();
+  const clientId = portal ? '' : currentId;
+
   const { data, loading, error, refetch } = useQuery<DashboardData>(
-    `/analytics/dashboard${qs(range)}`,
-    [range.from, range.to],
+    `/analytics/dashboard${qs({ ...range, clientId })}`,
+    [range.from, range.to, clientId],
   );
-  const upcoming = useQuery<{ items: CalendarItem[] }>(`/calendar${qs({ view: 'week' })}`);
+  const upcoming = useQuery<{ items: CalendarItem[] }>(
+    `/calendar${qs({ view: 'week', clientId })}`,
+    [clientId],
+  );
 
   const greeting = user?.name.split(' ')[0] ?? '';
   const base = portal ? '/client' : '/app';
@@ -79,9 +89,17 @@ export function DashboardPage({ portal = false }: { portal?: boolean }) {
   return (
     <>
       <PageHeader
-        title={portal ? user?.client?.businessName ?? t('nav.dashboard') : `${t('dash.greeting')}, ${greeting}`}
+        title={
+          portal
+            ? user?.client?.businessName ?? t('nav.home')
+            : current
+              ? current.businessName
+              : `${t('dash.greeting')}, ${greeting}`
+        }
         subtitle={
-          data ? `${data.range.from} → ${data.range.to} · ${t('common.vsPrevious')}` : t('common.loading')
+          data
+            ? `${!portal && !current ? `${t('dash.allRestaurants')} · ` : ''}${data.range.from} → ${data.range.to} · ${t('common.vsPrevious')}`
+            : t('common.loading')
         }
         action={
           <>
@@ -97,20 +115,32 @@ export function DashboardPage({ portal = false }: { portal?: boolean }) {
         }
       />
 
-      {/* Operational counters */}
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+      {/*
+        * What is in the pipeline, before what it earned. Opening the day on
+        * spend answers a question nobody has at 9am; the counters below are the
+        * work that is waiting.
+        */}
+      <p className="mb-2 text-[13px] font-medium text-muted">{t('dash.needsYou')}</p>
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         {loading || !kpis ? (
           Array.from({ length: 4 }).map((_, index) => <CardSkeleton key={index} rows={1} />)
         ) : (
           <>
-            {!portal ? (
-              <KpiCard label={t('kpi.clients')} value={kpis.clients} icon={Building2} />
-            ) : (
+            {portal ? (
               <KpiCard label={t('kpi.impressions')} value={kpis.impressions} icon={Eye} compact previous={previous?.impressions} />
+            ) : current ? (
+              // One restaurant is selected, so counting restaurants is noise.
+              <KpiCard label={t('kpi.inReview')} value={kpis.pendingApprovals} icon={ThumbsUp} />
+            ) : (
+              <KpiCard label={t('kpi.restaurants')} value={kpis.clients} icon={Store} />
             )}
             <KpiCard label={t('kpi.campaigns')} value={kpis.activeCampaigns} icon={Megaphone} />
             <KpiCard label={t('kpi.scheduled')} value={kpis.scheduled} icon={CalendarClock} />
-            <KpiCard label={t('kpi.pending')} value={kpis.pendingApprovals} icon={ThumbsUp} />
+            {portal || !current ? (
+              <KpiCard label={t('kpi.pending')} value={kpis.pendingApprovals} icon={ThumbsUp} />
+            ) : (
+              <KpiCard label={t('kpi.reach')} value={kpis.reach} compact icon={Eye} previous={previous?.reach} />
+            )}
           </>
         )}
       </div>
@@ -227,7 +257,8 @@ export function DashboardPage({ portal = false }: { portal?: boolean }) {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[13px] font-medium text-fg">{item.name}</p>
                     <p className="text-[12px] text-muted">
-                      {item.client.name} · {item.scheduledAt ? relative(item.scheduledAt, lang) : '—'}
+                      {current ? '' : `${item.client.name} · `}
+                      {item.scheduledAt ? relative(item.scheduledAt, lang) : '—'}
                     </p>
                   </div>
                   <PlatformChip platform={item.platform} size="sm" />
@@ -291,7 +322,7 @@ export function DashboardPage({ portal = false }: { portal?: boolean }) {
             icon={Building2}
             title={t('empty.clients.title')}
             body={t('empty.clients.body')}
-            action={<Button onClick={() => navigate('/app/clients')}>Add your first client</Button>}
+            action={<Button onClick={() => navigate('/app/restaurants')}>Add your first restaurant</Button>}
           />
         </Card>
       ) : null}

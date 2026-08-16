@@ -4,14 +4,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, CreditCard, FileText, Gauge, Image,
+  Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, CreditCard, FileText, Gauge, Image,
   LayoutDashboard, Languages, LogOut, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
-  Settings, Shield, Sparkles, Sun, ThumbsUp, Users, X, type LucideIcon,
+  Rocket, Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Users, X, type LucideIcon,
 } from 'lucide-react';
 
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useI18n, type TranslationKey } from '../lib/i18n';
+import { useRestaurant } from '../lib/restaurant';
 import { useTheme } from '../lib/theme';
 import { cn } from '../lib/utils';
 import { relative } from '../lib/format';
@@ -24,56 +25,101 @@ interface NavItem {
   end?: boolean;
 }
 
+/*
+ * The operator's navigation.
+ *
+ * Grouped by what you came here to do rather than by which database table the
+ * page reads, which is why Campaigns and Organic Content sit together under
+ * Marketing while the studio pages that produce them sit under Create.
+ *
+ * Two entries are deliberately gone from the top level. "Clients" is now
+ * Restaurants — the same page and the same API, named for what it holds.
+ * "Approvals" was a whole section for a field on a piece of content; review
+ * state now lives with the content it belongs to, and the page itself is still
+ * routed and still reachable, just not competing for a slot in the primary nav.
+ */
 const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
   {
-    heading: 'nav.overview',
+    heading: 'group.workspace',
     items: [
-      { to: '/app/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard },
-      { to: '/app/ceo', labelKey: 'nav.ceo', icon: Gauge },
+      { to: '/app/dashboard', labelKey: 'nav.home', icon: LayoutDashboard },
+      { to: '/app/restaurants', labelKey: 'nav.restaurants', icon: Store },
+      { to: '/app/brand', labelKey: 'nav.brandDna', icon: Palette },
+      { to: '/app/media', labelKey: 'nav.assets', icon: Image },
+    ],
+  },
+  {
+    heading: 'group.create',
+    items: [
+      { to: '/app/image-ads', labelKey: 'nav.imageAds', icon: Image },
+      { to: '/app/video-ads', labelKey: 'nav.videoAds', icon: Clapperboard },
+      { to: '/app/studio', labelKey: 'nav.aiContent', icon: Sparkles },
+    ],
+  },
+  {
+    heading: 'group.marketing',
+    items: [
+      { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
+      { to: '/app/meta-campaigns', labelKey: 'nav.metaCampaigns', icon: Rocket },
+      { to: '/app/content', labelKey: 'nav.organicContent', icon: PenLine },
+    ],
+  },
+  {
+    heading: 'group.social',
+    items: [
+      { to: '/app/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
+    ],
+  },
+  {
+    heading: 'group.insights',
+    items: [
       { to: '/app/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
+      { to: '/app/ceo', labelKey: 'nav.ceo', icon: Gauge },
       { to: '/app/reports', labelKey: 'nav.reports', icon: FileText },
     ],
   },
   {
-    heading: 'nav.workspace',
+    heading: 'group.operations',
     items: [
-      { to: '/app/clients', labelKey: 'nav.clients', icon: Building2 },
-      { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
-      { to: '/app/content', labelKey: 'nav.content', icon: PenLine },
-      { to: '/app/studio', labelKey: 'nav.studio', icon: Sparkles },
-      { to: '/app/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
-      { to: '/app/media', labelKey: 'nav.media', icon: Image },
-      { to: '/app/approvals', labelKey: 'nav.approvals', icon: ThumbsUp },
+      { to: '/app/notifications', labelKey: 'nav.notifications', icon: Bell },
     ],
   },
   {
-    heading: 'nav.settings',
+    heading: 'group.settings',
     items: [
-      { to: '/app/brand', labelKey: 'nav.brand', icon: Palette },
       { to: '/app/integrations', labelKey: 'nav.integrations', icon: CreditCard },
       { to: '/app/settings', labelKey: 'nav.settings', icon: Settings },
     ],
   },
 ];
 
+/*
+ * The portal keeps its review queue in the nav: a portal user's whole reason to
+ * be here is to look at work and say yes or no to it.
+ */
 const CLIENT_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
   {
-    heading: 'nav.overview',
+    heading: 'group.workspace',
     items: [
-      { to: '/client/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard },
-      { to: '/client/ceo', labelKey: 'nav.ceo', icon: Gauge },
-      { to: '/client/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
-      { to: '/client/reports', labelKey: 'nav.reports', icon: FileText },
+      { to: '/client/dashboard', labelKey: 'nav.home', icon: LayoutDashboard },
+      { to: '/client/brand', labelKey: 'nav.brandDna', icon: Palette },
+      { to: '/client/approvals', labelKey: 'nav.reviews', icon: ThumbsUp },
     ],
   },
   {
-    heading: 'nav.workspace',
+    heading: 'group.marketing',
     items: [
       { to: '/client/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
-      { to: '/client/content', labelKey: 'nav.content', icon: PenLine },
-      { to: '/client/approvals', labelKey: 'nav.approvals', icon: ThumbsUp },
+      { to: '/client/content', labelKey: 'nav.organicContent', icon: PenLine },
       { to: '/client/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
-      { to: '/client/brand', labelKey: 'nav.brand', icon: Palette },
+    ],
+  },
+  {
+    heading: 'group.insights',
+    items: [
+      { to: '/client/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
+      { to: '/client/ceo', labelKey: 'nav.ceo', icon: Gauge },
+      { to: '/client/reports', labelKey: 'nav.reports', icon: FileText },
     ],
   },
 ];
@@ -143,6 +189,100 @@ function NavSection({ section, onNavigate }: { section: (typeof AGENCY_NAV)[numb
           </NavLink>
         ))}
       </nav>
+    </div>
+  );
+}
+
+/**
+ * The restaurant this session is working on.
+ *
+ * Sits in the top bar rather than on each page because it is the frame for
+ * everything underneath it: the campaigns you see, the posts, the assets, the
+ * connected accounts. "All restaurants" stays available — the roll-up view is
+ * the reason the home dashboard exists.
+ */
+function RestaurantSwitch() {
+  const { restaurants, currentId, current, setCurrentId, loading } = useRestaurant();
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [open]);
+
+  // Nothing to switch between until there is something to switch between.
+  if (loading || restaurants.length === 0) return null;
+
+  const choose = (id: string) => {
+    setCurrentId(id);
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((value) => !value)}
+        className="flex h-9 max-w-[13rem] items-center gap-2 rounded-lg border border-line bg-elevated px-2.5 text-[13px] transition-colors hover:border-brand/30"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        {current ? (
+          <Avatar name={current.businessName} src={current.logoUrl} size={20} />
+        ) : (
+          <Store className="h-4 w-4 shrink-0 text-muted" />
+        )}
+        <span className="min-w-0 truncate font-medium text-fg">
+          {current ? current.businessName : t('restaurant.all')}
+        </span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted" />
+      </button>
+
+      <AnimatePresence>
+        {open ? (
+          <motion.div
+            initial={{ opacity: 0, y: -6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.98 }}
+            transition={{ duration: 0.15 }}
+            role="listbox"
+            className="absolute start-0 z-50 mt-2 max-h-80 w-[min(18rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-line bg-surface p-1.5 shadow-lift"
+          >
+            <button
+              role="option"
+              aria-selected={currentId === ''}
+              onClick={() => choose('')}
+              className={cn(
+                'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-start text-[13px] transition-colors hover:bg-elevated',
+                currentId === '' ? 'font-medium text-brand' : 'text-muted',
+              )}
+            >
+              <Store className="h-4 w-4 shrink-0" />
+              {t('restaurant.all')}
+            </button>
+            {restaurants.map((row) => (
+              <button
+                key={row.id}
+                role="option"
+                aria-selected={currentId === row.id}
+                onClick={() => choose(row.id)}
+                className={cn(
+                  'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-start text-[13px] transition-colors hover:bg-elevated',
+                  currentId === row.id ? 'font-medium text-brand' : 'text-fg',
+                )}
+              >
+                <Avatar name={row.businessName} src={row.logoUrl} size={20} />
+                <span className="min-w-0 truncate">{row.businessName}</span>
+              </button>
+            ))}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
@@ -498,6 +638,8 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
           <div className="min-w-0 flex-1">
             {variant === 'admin' ? (
               <Badge tone="danger" dot>Super Admin</Badge>
+            ) : variant === 'agency' ? (
+              <RestaurantSwitch />
             ) : user?.organization ? (
               <p className="truncate text-sm font-medium text-fg">{user.organization.name}</p>
             ) : null}
