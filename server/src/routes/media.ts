@@ -13,6 +13,7 @@ import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
 import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
 import { IMAGE_MIME, VIDEO_MIME, uploadAny, sniffImage } from '../middleware/upload.js';
 import { env } from '../env.js';
+import { safeFetch } from '../lib/safe-fetch.js';
 import { storage } from '../services/storage/index.js';
 import {
   createMedia,
@@ -199,11 +200,12 @@ mediaRouter.post(
  * server staying up and serving the same picture, and a rendered ad that breaks
  * three months later is worse than the storage cost.
  *
- * The fetch is deliberately constrained: https only, no redirects followed to
- * another host, a size ceiling, and the bytes are magic-number checked before
- * anything is written — a URL supplied by a user is an untrusted input, and
- * this endpoint would otherwise be a way to make the server fetch arbitrary
- * addresses.
+ * The fetch is deliberately constrained: see lib/safe-fetch.ts. https only,
+ * every redirect hop re-resolved and checked against private address ranges, a
+ * size ceiling counted while streaming, and the bytes magic-number checked
+ * before anything is written. A URL supplied by a user is an untrusted input,
+ * and this endpoint would otherwise be a way to make the server fetch arbitrary
+ * addresses from inside the production network.
  */
 mediaRouter.post(
   '/from-url',
@@ -224,48 +226,29 @@ mediaRouter.post(
       url: string; clientId?: string; campaignId?: string; category?: string; tags: string[];
     };
 
-    const target = new URL(body.url);
-    if (target.protocol !== 'https:') throw badRequest('Only https image URLs can be imported');
-
     const clientId = resolveClientId(actor, body.clientId);
     if (clientId) {
       const client = await prisma.client.findFirst({ where: { id: clientId, organizationId: orgId(actor) }, select: { id: true } });
       if (!client) throw notFound('Client');
     }
     if (body.campaignId) {
-      const campaign = await prisma.campaign.findFirst({ where: { id: body.campaignId, organizationId: orgId(actor) }, select: { id: true } });
+      const campaign = await prisma.campaign.findFirst({ where: { id: body.campaignId, ...scopeWhere(actor) }, select: { id: true } });
       if (!campaign) throw notFound('Campaign');
     }
 
-    const limitBytes = env.MAX_UPLOAD_MB * 1024 * 1024;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-
-    let buffer: Buffer;
-    let contentType: string;
-    try {
-      const response = await fetch(target, { redirect: 'follow', signal: controller.signal });
-      if (!response.ok) throw badRequest(`The image URL responded with ${response.status}`);
-
-      // Refuse a redirect that landed on a different host than the one asked for.
-      if (new URL(response.url).host !== target.host) {
-        throw badRequest('The image URL redirected to a different host');
-      }
-
-      const declared = Number(response.headers.get('content-length') ?? '0');
-      if (declared > limitBytes) throw badRequest(`That image is larger than the ${env.MAX_UPLOAD_MB}MB limit`);
-
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (bytes.byteLength > limitBytes) throw badRequest(`That image is larger than the ${env.MAX_UPLOAD_MB}MB limit`);
-
-      buffer = bytes;
-      contentType = (response.headers.get('content-type') ?? '').split(';')[0]?.trim() ?? '';
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') throw badRequest('The image URL took too long to respond');
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
+    /*
+     * Fetched through the SSRF-hardened client, which resolves DNS and checks
+     * the destination address on every redirect hop. A URL box that the server
+     * dereferences is a request-forgery primitive; validating the hostname the
+     * operator typed proves nothing about where the request actually lands.
+     */
+    const fetched = await safeFetch(body.url, {
+      maxBytes: env.MAX_UPLOAD_MB * 1024 * 1024,
+      accept: 'image/*',
+    });
+    const buffer = fetched.body;
+    const target = new URL(fetched.finalUrl);
+    const contentType = fetched.contentType;
 
     // The bytes decide, not the header — a content-type can claim anything.
     const sniffed = sniffImage(buffer);

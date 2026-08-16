@@ -303,34 +303,35 @@ model Organization {
   subscriptions Subscription[]
   auditLogs     AuditLog[]
   aiUsages      AiUsage[]
+  products      Product[]
 }
 
 model User {
-  id             String   @id @default(cuid())
-  email          String   @unique
+  id             String    @id @default(cuid())
+  email          String    @unique
   name           String
   passwordHash   String
-  role           Role     @default(AGENCY_STAFF)
-  locale         Language @default(EN)
-  themePref      String   @default("dark")
+  role           Role      @default(AGENCY_STAFF)
+  locale         Language  @default(EN)
+  themePref      String    @default("dark")
   avatarUrl      String?
-  isActive       Boolean  @default(true)
+  isActive       Boolean   @default(true)
   lastLoginAt    DateTime?
   organizationId String?
   // Set for CLIENT_ADMIN / CLIENT_USER: pins the user to a single client.
   clientId       String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  organization  Organization?  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client        Client?        @relation(fields: [clientId], references: [id], onDelete: SetNull)
-  sessions      Session[]
-  resetTokens   PasswordResetToken[]
-  comments      Comment[]
-  approvals     Approval[]
-  notifications Notification[]
-  auditLogs     AuditLog[]
-  createdContents Content[]  @relation("ContentAuthor")
+  organization    Organization?        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client          Client?              @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  sessions        Session[]
+  resetTokens     PasswordResetToken[]
+  comments        Comment[]
+  approvals       Approval[]
+  notifications   Notification[]
+  auditLogs       AuditLog[]
+  createdContents Content[]            @relation("ContentAuthor")
 
   @@index([organizationId])
   @@index([clientId])
@@ -353,12 +354,12 @@ model Session {
 }
 
 model PasswordResetToken {
-  id        String   @id @default(cuid())
-  tokenHash String   @unique
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
   userId    String
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -385,7 +386,7 @@ model Client {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
-  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization  Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   brand         Brand?
   users         User[]
   campaigns     Campaign[]
@@ -398,6 +399,7 @@ model Client {
   snapshots     AnalyticsSnapshot[]
   aiUsages      AiUsage[]
   creatives     Creative[]
+  products      Product[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -406,44 +408,44 @@ model Client {
 
 /// Brand DNA — the bounded context handed to the AI service on every generation.
 model Brand {
-  id               String   @id @default(cuid())
-  clientId         String   @unique
-  organizationId   String
-  businessName     String
-  businessType     String?
-  industry         String?
-  description      String?
-  targetAudience   String?
-  location         String?
-  personality      String[] @default([])
-  toneOfVoice      String?
-  values           String[] @default([])
-  products         String[] @default([])
-  services         String[] @default([])
-  usps             String[] @default([])
-  offers           String[] @default([])
-  keywords         String[] @default([])
-  forbiddenWords   String[] @default([])
-  ctaStyle         String?
+  id                String   @id @default(cuid())
+  clientId          String   @unique
+  organizationId    String
+  businessName      String
+  businessType      String?
+  industry          String?
+  description       String?
+  targetAudience    String?
+  location          String?
+  personality       String[] @default([])
+  toneOfVoice       String?
+  values            String[] @default([])
+  products          String[] @default([])
+  services          String[] @default([])
+  usps              String[] @default([])
+  offers            String[] @default([])
+  keywords          String[] @default([])
+  forbiddenWords    String[] @default([])
+  ctaStyle          String?
   preferredLanguage Language @default(EN)
   // Approved identity. Colors are hex strings; the extractor only ever suggests.
-  primaryColor     String   @default("#6366F1")
-  secondaryColor   String   @default("#8B5CF6")
-  accentColor      String   @default("#22D3EE")
-  backgroundColor  String   @default("#0B0F1A")
-  textColor        String   @default("#E8EBF2")
-  fontFamily       String   @default("Inter")
-  logoUrl          String?
+  primaryColor      String   @default("#6366F1")
+  secondaryColor    String   @default("#8B5CF6")
+  accentColor       String   @default("#22D3EE")
+  backgroundColor   String   @default("#0B0F1A")
+  textColor         String   @default("#E8EBF2")
+  fontFamily        String   @default("Inter")
+  logoUrl           String?
   /// Storage key for the logo, so it can be re-read from object storage. The URL
   /// is for the browser; the key is what the server needs and the two are not
   /// interchangeable once media lives in a bucket rather than on disk.
-  logoKey          String?
-  logoDarkUrl      String?
+  logoKey           String?
+  logoDarkUrl       String?
   /// Unapproved palette suggested from the uploaded logo, pending review.
-  suggestedPalette Json?
-  paletteApproved  Boolean  @default(false)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  suggestedPalette  Json?
+  paletteApproved   Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   client Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
   assets BrandAsset[]
@@ -485,9 +487,9 @@ model Media {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
-  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client?        @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  campaign     Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   contentLinks ContentMedia[]
   creatives    Creative[]
 
@@ -572,7 +574,7 @@ model Campaign {
   description        String?
   language           Language?
   offer              String?
-  products           String[]          @default([])
+  products           String[]           @default([])
   landingPageUrl     String?
   ctaLabel           String?
 
@@ -593,8 +595,8 @@ model Campaign {
   discounts    Decimal? @db.Decimal(14, 2)
   cogs         Decimal? @db.Decimal(14, 2)
 
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   client       Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
@@ -685,17 +687,17 @@ model Content {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  campaign     Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  author       User?          @relation("ContentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
-  variants     ContentVariant[]
-  hashtags     Hashtag[]
-  mediaLinks   ContentMedia[]
-  approvals    Approval[]
-  comments     Comment[]
+  organization  Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client        Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  campaign      Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  author        User?            @relation("ContentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  variants      ContentVariant[]
+  hashtags      Hashtag[]
+  mediaLinks    ContentMedia[]
+  approvals     Approval[]
+  comments      Comment[]
   calendarEvent CalendarEvent?
-  creatives    Creative[]
+  creatives     Creative[]
 
   @@index([organizationId])
   @@index([clientId])
@@ -737,7 +739,7 @@ model Hashtag {
 model ContentMedia {
   contentId String
   mediaId   String
-  position  Int     @default(0)
+  position  Int    @default(0)
 
   content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
   media   Media   @relation(fields: [mediaId], references: [id], onDelete: Cascade)
@@ -894,19 +896,19 @@ model Integration {
   credentials    Json?
 
   /// AES-256-GCM envelopes. Never selected by any API-facing query.
-  accessTokenEnc  String?
-  refreshTokenEnc String?
-  tokenExpiresAt  DateTime?
+  accessTokenEnc   String?
+  refreshTokenEnc  String?
+  tokenExpiresAt   DateTime?
   /// Non-reversible fingerprint, so logs and support can identify which token
   /// is in play without the token itself ever being written down.
   tokenFingerprint String?
-  metadata         Json     @default("{}")
+  metadata         Json      @default("{}")
 
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client               @relation(fields: [clientId], references: [id], onDelete: Cascade)
   accounts     IntegrationAccount[]
   syncRuns     IntegrationSyncRun[]
 
@@ -922,22 +924,22 @@ model Integration {
 /// as one `accountId` because the operator selects which ones to attach, and
 /// because publishing has to target a specific one.
 model IntegrationAccount {
-  id             String              @id @default(cuid())
-  integrationId  String
-  clientId       String
-  kind           ExternalAccountKind
+  id               String              @id @default(cuid())
+  integrationId    String
+  clientId         String
+  kind             ExternalAccountKind
   /// The provider's own identifier. Names are never sufficient — they change.
-  externalId     String
-  name           String
-  username       String?
+  externalId       String
+  name             String
+  username         String?
   /// e.g. the ad account's own currency. Never assumed.
-  currency       String?
-  timezone       String?
+  currency         String?
+  timezone         String?
   parentExternalId String?
-  selected       Boolean             @default(false)
-  metadata       Json                @default("{}")
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
+  selected         Boolean             @default(false)
+  metadata         Json                @default("{}")
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
 
   integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
 
@@ -954,18 +956,18 @@ model IntegrationAccount {
 /// the client and the provider so a state issued for one cannot be replayed
 /// against the other.
 model OAuthTransaction {
-  id          String    @id @default(cuid())
-  organizationId String
-  clientId    String
-  platform    Platform
-  stateHash   String    @unique
-  redirectUri String
+  id              String    @id @default(cuid())
+  organizationId  String
+  clientId        String
+  platform        Platform
+  stateHash       String    @unique
+  redirectUri     String
   /// PKCE verifier, encrypted at rest like any other credential.
   codeVerifierEnc String?
-  expiresAt   DateTime
-  consumedAt  DateTime?
-  metadata    Json      @default("{}")
-  createdAt   DateTime  @default(now())
+  expiresAt       DateTime
+  consumedAt      DateTime?
+  metadata        Json      @default("{}")
+  createdAt       DateTime  @default(now())
 
   @@index([clientId, platform])
   @@index([expiresAt])
@@ -997,24 +999,24 @@ model IntegrationSyncRun {
 // ---------------------------------------------------------------- billing
 
 model Plan {
-  id             String   @id @default(cuid())
-  key            String   @unique
-  name           String
-  description    String?
-  priceMonthly   Decimal  @db.Decimal(10, 2)
-  priceYearly    Decimal  @db.Decimal(10, 2)
-  currency       String   @default("USD")
-  maxClients     Int
-  maxUsers       Int
-  maxCampaigns   Int
-  maxAiPerMonth  Int
-  maxStorageMb   Int
+  id              String   @id @default(cuid())
+  key             String   @unique
+  name            String
+  description     String?
+  priceMonthly    Decimal  @db.Decimal(10, 2)
+  priceYearly     Decimal  @db.Decimal(10, 2)
+  currency        String   @default("USD")
+  maxClients      Int
+  maxUsers        Int
+  maxCampaigns    Int
+  maxAiPerMonth   Int
+  maxStorageMb    Int
   maxIntegrations Int
-  features       String[] @default([])
-  isActive       Boolean  @default(true)
-  sortOrder      Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  features        String[] @default([])
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   subscriptions Subscription[]
 }
@@ -1080,5 +1082,48 @@ model AiUsage {
   client       Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, createdAt])
+  @@index([clientId])
+}
+
+/// A product imported from a merchant's own page.
+///
+/// This is the head of the pipeline: a URL becomes a Product, the Product becomes
+/// ad copy and creatives, and those get published. Every field is nullable
+/// because the extractor is forbidden from inventing anything — a page that does
+/// not state a price produces a row with no price, and the operator is asked for
+/// it rather than an ad going out with a number nobody wrote.
+///
+/// `extraction` keeps the provenance of each field (json-ld, opengraph, html…),
+/// so a reviewer can tell a merchant's structured claim from a page heading that
+/// happened to look like a product name.
+model Product {
+  id              String   @id @default(cuid())
+  organizationId  String
+  clientId        String
+  sourceUrl       String?
+  name            String
+  brand           String?
+  description     String?
+  price           Decimal? @db.Decimal(12, 2)
+  salePrice       Decimal? @db.Decimal(12, 2)
+  currency        String?
+  sku             String?
+  category        String?
+  availability    String?
+  features        String[] @default([])
+  /// Imported imagery, stored as Media so it lives in object storage like
+  /// everything else rather than as a hotlink to the merchant's server.
+  mainMediaId     String?
+  galleryMediaIds String[] @default([])
+  sourceVideoUrl  String?
+  /// Per-field provenance and the list of fields the page did not state.
+  extraction      Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
   @@index([clientId])
 }

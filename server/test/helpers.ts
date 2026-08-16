@@ -19,7 +19,7 @@ export async function resetDatabase(): Promise<void> {
       "AiUsage", "AuditLog", "Notification", "Report", "AnalyticsSnapshot",
       "Comment", "Approval", "CalendarEvent", "ContentMedia", "Hashtag",
       "ContentVariant", "Creative", "Content", "CampaignCost",
-      "CampaignPlatform", "Campaign", "Media",
+      "CampaignPlatform", "Campaign", "Product", "Media",
       "BrandAsset", "Brand", "Integration", "Subscription", "Plan",
       "PasswordResetToken", "Session", "User", "Client", "Organization"
     RESTART IDENTITY CASCADE;
