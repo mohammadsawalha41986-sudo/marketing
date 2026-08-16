@@ -51,6 +51,7 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
   {
     heading: 'group.create',
     items: [
+      { to: '/app/image-ads', labelKey: 'nav.imageAds', icon: Image },
       { to: '/app/studio', labelKey: 'nav.aiContent', icon: Sparkles },
     ],
   },
