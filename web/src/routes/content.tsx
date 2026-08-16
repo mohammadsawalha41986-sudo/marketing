@@ -16,6 +16,7 @@ import {
   PageHeader, Pagination, Select, Tabs, Textarea, useToast,
 } from '../components/ui';
 import { AiBadge, AiNotice, PlatformPreview, PlatformChip, StatusBadge } from '../components/domain';
+import { CreativeStudio } from '../components/creative-studio';
 
 const PLATFORMS: Platform[] = ['INSTAGRAM', 'FACEBOOK', 'TIKTOK', 'SNAPCHAT', 'GOOGLE_ADS', 'GOOGLE_BUSINESS', 'LINKEDIN', 'X'];
 const TYPES = ['POST', 'STORY', 'REEL', 'VIDEO', 'CAROUSEL', 'AD', 'ARTICLE', 'EMAIL'];
@@ -184,6 +185,8 @@ export function StudioPage() {
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [previewPlatform, setPreviewPlatform] = useState<Platform>('INSTAGRAM');
+  // Lifted so the live preview shows the same source the creative renders from.
+  const [studioMediaUrl, setStudioMediaUrl] = useState<string | null>(null);
 
   const campaigns = useQuery<Paginated<{ id: string; name: string }>>(
     brief.clientId ? `/campaigns${qs({ clientId: brief.clientId, pageSize: 100 })}` : null,
@@ -426,9 +429,19 @@ export function StudioPage() {
                 caption={copy.caption}
                 cta={copy.cta}
                 hashtags={copy.hashtags}
+                mediaUrl={studioMediaUrl}
               />
             </div>
           </Card>
+
+          <CreativeStudio
+            clientId={brief.clientId}
+            campaignId={brief.campaignId || undefined}
+            platform={previewPlatform}
+            headline={copy.headline}
+            ctaLabel={copy.cta}
+            onSourceChange={setStudioMediaUrl}
+          />
 
           <Card className="p-4">
             <p className="text-[13px] leading-relaxed text-muted">

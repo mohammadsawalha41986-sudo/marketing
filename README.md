@@ -248,6 +248,39 @@ refusal to fake a connection.
 Set `TEST_DATABASE_URL` to point the suite at a different database; it defaults
 to `marketing_os_test`.
 
+## Deploying to Railway
+
+Same architecture as everywhere else: **one** service runs the whole app. The
+Express process serves the API *and* the built SPA, so a second service for the
+front end is not part of the design — one exists in the project only as a
+leftover and serves nothing.
+
+Configuration lives in `railway.server.json` rather than in the dashboard, so a
+redeploy cannot silently lose it. Point the service at it with
+**Settings → Config as code → `railway.server.json`**. The filename is
+deliberately *not* `railway.json`: every service built from this repository
+would pick that up automatically, including ones that must not run the app's
+build.
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Build command | `npm run build` | Builds **both** workspaces. A workspace-scoped build (`npm run build --workspace=@marketing-os/server`) compiles the API only, leaves `web/dist` absent, and every page request then 404s — the container logs `WARNING — the front end has not been built` at startup, which is the symptom to look for |
+| Pre-deploy command | `npx prisma migrate deploy && node scripts/verify-database-schema.mjs` | Applies committed migrations before the new container takes traffic, then checks the tables are genuinely there. `migrate deploy` trusts the `_prisma_migrations` table alone: if a migration is *recorded* but its objects are absent it prints "No pending migrations to apply" and the app boots broken, which is how this deployment kept failing with `The table public.Session does not exist`. The check reads catalog views only and fails the deploy rather than letting a bad schema take traffic |
+| Start command | `npm run start` | Production Node process. Never `npm run dev`, never `vite` |
+| Healthcheck path | `/api/health` | Reports database and engine state, not just liveness |
+
+**Do not set `PORT`.** Railway injects it and the app binds `0.0.0.0` on
+whatever it is given.
+
+**`APP_URL` must be the real public URL** (`https://<service>.up.railway.app`,
+or the custom domain). It is the default CORS origin in production and appears
+in generated links; a placeholder such as `https://your-domain.com` is visible
+in the startup banner and is the fastest way to spot that it was never set.
+
+Uploads are written to `STORAGE_LOCAL_DIR` on the container filesystem, which
+Railway replaces on every deploy. Attach a **volume** at that path before
+anyone uploads anything worth keeping.
+
 ## Deploying to Hostinger
 
 Target architecture — one Node process, no separate frontend host:

@@ -48,6 +48,42 @@ describe('tenant isolation', () => {
     expect((await alphaAdmin.get(`/api/brands/${beta.clientId}`)).status).toBe(404);
   });
 
+  it('returns 404 for another tenant campaign finance and cost lines', async () => {
+    expect((await alphaAdmin.get(`/api/campaigns/${beta.campaignId}/finance`)).status).toBe(404);
+    expect((await alphaAdmin.get(`/api/campaigns/${beta.campaignId}/costs`)).status).toBe(404);
+  });
+
+  it('refuses to attach a cost line to another tenant campaign', async () => {
+    const response = await alphaAdmin.post(`/api/campaigns/${beta.campaignId}/costs`, {
+      kind: 'ACTUAL',
+      category: 'ADVERTISING',
+      amount: 500,
+    });
+    expect(response.status).toBe(404);
+    expect(await prisma.campaignCost.count({ where: { campaignId: beta.campaignId } })).toBe(0);
+  });
+
+  it('scopes the executive overview to the caller organization', async () => {
+    const response = await alphaAdmin.get('/api/ceo/overview');
+    expect(response.status).toBe(200);
+    const ids = response.body.campaigns.map((campaign: { id: string }) => campaign.id);
+    expect(ids).toContain(alpha.campaignId);
+    expect(ids).not.toContain(beta.campaignId);
+  });
+
+  it('pins a client user executive overview to their own client', async () => {
+    // Naming another client is a miss, not a permission error, so the API
+    // never confirms that the other client exists.
+    const foreign = await alphaClient.get(`/api/ceo/overview?clientId=${beta.clientId}`);
+    expect(foreign.status).toBe(404);
+
+    const own = await alphaClient.get('/api/ceo/overview');
+    expect(own.status).toBe(200);
+    for (const campaign of own.body.campaigns) {
+      expect(campaign.clientId).toBe(alpha.clientId);
+    }
+  });
+
   it('ignores a foreign clientId passed as a filter', async () => {
     const response = await alphaAdmin.get(`/api/campaigns?clientId=${beta.clientId}`);
     expect(response.status).toBe(200);

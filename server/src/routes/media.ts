@@ -11,8 +11,17 @@ import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
 import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
-import { IMAGE_MIME, VIDEO_MIME, uploadAny, sniffImage } from '../middleware/upload.js';
+import { AUDIO_MIME, IMAGE_MIME, VIDEO_MIME, uploadAny, sniffImage } from '../middleware/upload.js';
+import { env } from '../env.js';
+import { safeFetch } from '../lib/safe-fetch.js';
 import { storage } from '../services/storage/index.js';
+import {
+  createMedia,
+  deleteObjectIfUnreferenced,
+  readObject,
+  sendObject,
+  withMediaUrls,
+} from '../services/storage/objects.js';
 import { recordAudit } from '../services/audit.js';
 
 export const mediaRouter: Router = Router();
@@ -21,6 +30,9 @@ mediaRouter.use(requireAuth);
 function typeFor(mimeType: string): MediaType {
   if (IMAGE_MIME.has(mimeType)) return MediaType.IMAGE;
   if (VIDEO_MIME.has(mimeType)) return MediaType.VIDEO;
+  // Audio has no MediaType of its own; it is a document-class asset whose real
+  // type is carried by mimeType, which is what the video renderer reads.
+  if (AUDIO_MIME.has(mimeType)) return MediaType.DOCUMENT;
   return MediaType.DOCUMENT;
 }
 
@@ -67,7 +79,36 @@ mediaRouter.get(
       prisma.media.count({ where }),
     ]);
 
-    res.json(pageResult(items, total, query));
+    res.json(pageResult(items.map(withMediaUrls), total, query));
+  }),
+);
+
+/**
+ * Serve the bytes for one asset.
+ *
+ * The library reads through here rather than from a bucket URL, so the tenant
+ * check applies to the image itself and not merely to the row describing it.
+ * That is what lets the bucket stay private: there is no URL anywhere that
+ * works without a session belonging to the client who owns the file.
+ */
+mediaRouter.get(
+  '/:id/file',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+
+    const media = await prisma.media.findFirst({
+      where: { id: req.params.id, ...scopeWhere(actor) },
+      select: { filename: true, mimeType: true, originalName: true },
+    });
+    if (!media) throw notFound('Media');
+
+    const buffer = await readObject(media.filename);
+    sendObject(res, buffer, {
+      mimeType: media.mimeType,
+      filename: media.originalName,
+      download: req.query.download === '1',
+    });
   }),
 );
 
@@ -105,41 +146,154 @@ mediaRouter.post(
       let width: number | null = null;
       let height: number | null = null;
       if (isImage) {
-        const meta = await sharp(file.buffer).metadata();
-        width = meta.width ?? null;
-        height = meta.height ?? null;
+        /*
+         * The magic-number check above proves the file *starts* like an image;
+         * it cannot prove the rest of it decodes. A truncated or malformed body
+         * makes libvips throw here, and unhandled that is a 500 — which tells
+         * the operator the server is broken when their file is. Rejected as a
+         * bad request instead, naming the file.
+         */
+        try {
+          const meta = await sharp(file.buffer).metadata();
+          width = meta.width ?? null;
+          height = meta.height ?? null;
+        } catch {
+          throw badRequest(`${file.originalname} could not be decoded. It may be truncated or corrupt.`);
+        }
       }
 
       const stored = await storage.save(file.buffer, {
         filename: file.originalname,
         mimeType: file.mimetype,
-        prefix: clientId ? `clients/${clientId}` : 'shared',
+        // The tenant boundary is part of the object key, so one client's assets
+        // are separable in the bucket itself and not merely by a database column.
+        prefix: clientId ? `clients/${clientId}/assets` : 'shared/assets',
       });
 
       created.push(
-        await prisma.media.create({
-          data: {
-            organizationId: orgId(actor),
-            clientId: clientId ?? null,
-            campaignId: campaignId ?? null,
-            type: typeFor(file.mimetype),
-            filename: stored.key,
-            originalName: file.originalname.slice(0, 200),
-            mimeType: file.mimetype,
-            sizeBytes: stored.sizeBytes,
-            width,
-            height,
-            url: stored.url,
-            thumbnailUrl: isImage ? stored.url : null,
-            category: category ?? null,
-            tags: [],
-          },
+        await createMedia({
+          organizationId: orgId(actor),
+          clientId: clientId ?? null,
+          campaignId: campaignId ?? null,
+          type: typeFor(file.mimetype),
+          filename: stored.key,
+          originalName: file.originalname.slice(0, 200),
+          mimeType: file.mimetype,
+          sizeBytes: stored.sizeBytes,
+          width,
+          height,
+          url: stored.url,
+          thumbnailUrl: isImage ? stored.url : null,
+          category: category ?? null,
+          tags: [],
         }),
       );
     }
 
     await recordAudit({ actor, action: 'media.upload', entity: 'Media', meta: { count: created.length }, ip: req.ip });
     res.status(201).json({ items: created });
+  }),
+);
+
+/**
+ * Ingest an image from a URL into the library.
+ *
+ * The bytes are fetched and stored rather than the URL being kept as a
+ * reference. Hotlinking would leave every creative dependent on somebody else's
+ * server staying up and serving the same picture, and a rendered ad that breaks
+ * three months later is worse than the storage cost.
+ *
+ * The fetch is deliberately constrained: see lib/safe-fetch.ts. https only,
+ * every redirect hop re-resolved and checked against private address ranges, a
+ * size ceiling counted while streaming, and the bytes magic-number checked
+ * before anything is written. A URL supplied by a user is an untrusted input,
+ * and this endpoint would otherwise be a way to make the server fetch arbitrary
+ * addresses from inside the production network.
+ */
+mediaRouter.post(
+  '/from-url',
+  requireAgency,
+  validateBody(
+    z.object({
+      url: z.string().url().max(2000),
+      clientId: z.string().max(40).optional(),
+      campaignId: z.string().max(40).optional(),
+      category: z.string().trim().max(80).optional(),
+      tags: z.array(z.string().trim().min(1).max(40)).max(20).default([]),
+    }),
+  ),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+    const body = req.body as {
+      url: string; clientId?: string; campaignId?: string; category?: string; tags: string[];
+    };
+
+    const clientId = resolveClientId(actor, body.clientId);
+    if (clientId) {
+      const client = await prisma.client.findFirst({ where: { id: clientId, organizationId: orgId(actor) }, select: { id: true } });
+      if (!client) throw notFound('Client');
+    }
+    if (body.campaignId) {
+      const campaign = await prisma.campaign.findFirst({ where: { id: body.campaignId, ...scopeWhere(actor) }, select: { id: true } });
+      if (!campaign) throw notFound('Campaign');
+    }
+
+    /*
+     * Fetched through the SSRF-hardened client, which resolves DNS and checks
+     * the destination address on every redirect hop. A URL box that the server
+     * dereferences is a request-forgery primitive; validating the hostname the
+     * operator typed proves nothing about where the request actually lands.
+     */
+    const fetched = await safeFetch(body.url, {
+      maxBytes: env.MAX_UPLOAD_MB * 1024 * 1024,
+      accept: 'image/*',
+    });
+    const buffer = fetched.body;
+    const target = new URL(fetched.finalUrl);
+    const contentType = fetched.contentType;
+
+    // The bytes decide, not the header — a content-type can claim anything.
+    const sniffed = sniffImage(buffer);
+    if (!sniffed) throw badRequest('That URL did not return a readable image');
+    const mimeType = sniffed === 'jpeg' ? 'image/jpeg' : `image/${sniffed}`;
+    if (contentType && !IMAGE_MIME.has(contentType)) {
+      // Not fatal — the magic number already proved it is an image — but the
+      // real type is what gets stored.
+    }
+
+    const meta = await sharp(buffer)
+      .metadata()
+      .catch(() => {
+        throw badRequest('That URL returned an image that could not be decoded.');
+      });
+    const name = decodeURIComponent(target.pathname.split('/').pop() || 'image').slice(0, 200);
+
+    const stored = await storage.save(buffer, {
+      filename: name,
+      mimeType,
+      prefix: clientId ? `clients/${clientId}/assets` : 'shared/assets',
+    });
+
+    const media = await createMedia({
+      organizationId: orgId(actor),
+      clientId: clientId ?? null,
+      campaignId: body.campaignId ?? null,
+      type: MediaType.IMAGE,
+      filename: stored.key,
+      originalName: name,
+      mimeType,
+      sizeBytes: stored.sizeBytes,
+      width: meta.width ?? null,
+      height: meta.height ?? null,
+      url: stored.url,
+      thumbnailUrl: stored.url,
+      category: body.category ?? null,
+      tags: body.tags,
+    });
+
+    await recordAudit({ actor, action: 'media.import', entity: 'Media', entityId: media.id, meta: { host: target.host }, ip: req.ip });
+    res.status(201).json({ media });
   }),
 );
 
@@ -170,7 +324,7 @@ mediaRouter.patch(
       where: { id: existing.id },
       data: req.body as Prisma.MediaUpdateInput,
     });
-    res.json({ media });
+    res.json({ media: withMediaUrls(media) });
   }),
 );
 
@@ -189,17 +343,20 @@ mediaRouter.delete(
     if (!existing) throw notFound('Media');
 
     await prisma.media.delete({ where: { id: existing.id } });
-    // The row is the source of truth; a leftover blob is tolerable, a broken
-    // reference is not, so the file is removed after the record.
-    await storage.delete(existing.filename).catch((error) => {
-      console.warn('[media] could not delete stored file:', (error as Error).message);
-    });
+    /*
+     * The row is the source of truth; a leftover blob is tolerable, a broken
+     * reference is not, so the object is removed after the record — and only if
+     * nothing else still points at it. Keys are content-addressed, so the same
+     * file uploaded twice, or a logo that is both a Brand and a Media row, share
+     * one object, and deleting it out from under the survivor would break it.
+     */
+    const object = await deleteObjectIfUnreferenced(existing.filename);
 
     await recordAudit({
       actor, action: 'media.delete', entity: 'Media', entityId: existing.id,
-      meta: { name: existing.originalName }, ip: req.ip,
+      meta: { name: existing.originalName, object }, ip: req.ip,
     });
-    res.json({ ok: true });
+    res.json({ ok: true, object });
   }),
 );
 

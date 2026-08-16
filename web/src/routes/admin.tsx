@@ -486,7 +486,7 @@ export function AdminAuditPage() {
 export function AdminSettingsPage() {
   const { data, loading } = useQuery<{
     node: string; environment: string; appUrl: string; uptimeSeconds: number;
-    storage: { driver: string; maxUploadMb: number };
+    storage: { driver: string; persistent: boolean; configured: boolean; reason: string | null; maxUploadMb: number };
     ai: { provider: string; model: string; configured: boolean; keyConfigured: boolean };
     session: { ttlHours: number; secureCookies: boolean };
     rateLimit: { windowMinutes: number; max: number };
@@ -501,6 +501,17 @@ export function AdminSettingsPage() {
         { label: 'Uptime', value: `${Math.floor(data.uptimeSeconds / 60)} min`, icon: Activity },
         { label: 'Database', value: data.database.connected ? 'Connected' : 'Down', icon: Database },
         { label: 'Storage driver', value: data.storage.driver, icon: HardDrive },
+        // Stated plainly, because the difference decides whether anything
+        // uploaded today is still there after the next deploy.
+        {
+          label: 'Media persistence',
+          value: data.storage.persistent
+            ? 'Persistent object storage'
+            : data.storage.configured
+              ? 'Local disk — lost on redeploy'
+              : 'Not configured — uploads refused',
+          icon: HardDrive,
+        },
         { label: 'Max upload', value: `${data.storage.maxUploadMb} MB`, icon: HardDrive },
         { label: 'AI provider', value: `${data.ai.provider} (${data.ai.model})`, icon: Server },
         { label: 'AI key configured', value: data.ai.keyConfigured ? 'Yes' : 'No', icon: Shield },

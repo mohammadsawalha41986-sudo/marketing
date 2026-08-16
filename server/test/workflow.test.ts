@@ -430,7 +430,9 @@ describe('uploads and brand identity', () => {
     expect(response.status).toBe(201);
     expect(response.body.items[0].type).toBe('IMAGE');
     expect(response.body.items[0].width).toBe(1);
-    expect(response.body.items[0].url).toMatch(/^\/uploads\//);
+    // Media is fetched through the API, not from a filesystem path — that path
+    // only ever resolved on the container that happened to receive the upload.
+    expect(response.body.items[0].url).toMatch(/^\/api\/media\/[\w-]+\/file$/);
   });
 });
 
@@ -470,9 +472,14 @@ describe('integrations', () => {
 
     const response = await admin.post(`/api/integrations/${tenant.clientId}/INSTAGRAM/connect`);
 
-    expect(response.status).toBe(501);
-    expect(response.body.error.code).toBe('ADAPTER_NOT_IMPLEMENTED');
-    expect(response.body.error.details.requiredEnv).toContain('META_APP_ID');
+    // 503, not 501: a missing credential is a configuration gap with a known
+    // fix, and the response names the variables so the operator can act on it
+    // rather than being told the feature does not exist.
+    expect(response.status).toBe(503);
+    expect(response.body.error.code).toBe('PROVIDER_NOT_CONFIGURED');
+    expect(response.body.error.details.missingEnv).toContain('META_APP_ID');
+    expect(response.body.error.details.readiness).toBe('NOT_CONFIGURED');
+    expect(response.body.error.message).not.toMatch(/not implemented/i);
 
     // The row exists and is honestly marked disconnected.
     const integration = await prisma.integration.findFirst({ where: { clientId: tenant.clientId } });

@@ -4,15 +4,33 @@ import type { Lang } from './i18n';
 
 const locales: Record<Lang, string> = { en: 'en-US', ar: 'ar-JO-u-nu-latn' };
 
-export function money(value: number, lang: Lang = 'en', compact = false): string {
+/**
+ * Money, in the currency the row is actually denominated in.
+ *
+ * `currency` is last and defaults to USD so existing calls are unaffected, but
+ * anything showing a campaign figure should pass the campaign's own currency —
+ * a budget of 10,000 SAR rendered as $10,000 is not a formatting nit, it is a
+ * wrong number on a financial dashboard.
+ */
+export function money(value: number, lang: Lang = 'en', compact = false, currency = 'USD'): string {
   const abs = Math.abs(value);
+
   if (compact && abs >= 1000) {
-    if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 1 : 2)}M`;
-    return `$${(value / 1000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
+    // Intl has no compact currency notation, so the symbol is resolved once
+    // and reused rather than hardcoding '$'.
+    const symbol =
+      new Intl.NumberFormat(locales[lang], { style: 'currency', currency, maximumFractionDigits: 0 })
+        .formatToParts(0)
+        .find((part) => part.type === 'currency')?.value ?? currency;
+    const scaled = abs >= 1_000_000 ? value / 1_000_000 : value / 1000;
+    const suffix = abs >= 1_000_000 ? 'M' : 'k';
+    const digits = abs >= 1_000_000 ? (abs >= 10_000_000 ? 1 : 2) : abs >= 10_000 ? 0 : 1;
+    return `${symbol}${scaled.toFixed(digits)}${suffix}`;
   }
+
   return new Intl.NumberFormat(locales[lang], {
     style: 'currency',
-    currency: 'USD',
+    currency,
     maximumFractionDigits: abs < 100 ? 2 : 0,
   }).format(value);
 }

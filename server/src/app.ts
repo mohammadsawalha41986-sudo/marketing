@@ -11,9 +11,9 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
-import { REPO_ROOT, corsOrigins, env, isProd, isTest, uploadDir } from './env.js';
+import { REPO_ROOT, corsOrigins, env, isProd, isTest } from './env.js';
 import { apiRouter } from './routes/index.js';
 import { csrfGuard, loadActor } from './middleware/auth.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
@@ -106,20 +106,16 @@ export function createApp(): Express {
   app.use(csrfGuard);
   app.use('/api', apiRouter);
 
-  // Uploaded media. Served with a restrictive disposition so a stored file can
-  // never execute in the app's origin.
-  app.use(
-    '/uploads',
-    express.static(uploadDir, {
-      maxAge: isProd ? '30d' : 0,
-      index: false,
-      dotfiles: 'deny',
-      setHeaders: (res) => {
-        res.setHeader('X-Content-Type-Options', 'nosniff');
-        res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'; media-src 'self'");
-      },
-    }),
-  );
+  /*
+   * There is deliberately no static handler for uploaded media any more.
+   *
+   * Media is now served by `/api/media/:id/file`, `/api/creatives/:id/file` and
+   * `/api/brands/:clientId/logo`, each of which resolves the object through the
+   * storage layer and checks that the caller's tenant owns it. Mounting the
+   * upload directory as static would reopen an unauthenticated path to the same
+   * bytes, and it only ever worked for the disk driver in the first place — the
+   * files are not on this machine once object storage is configured.
+   */
 
   /*
    * The same process serves the built SPA, which is what makes this deployable
@@ -145,9 +141,9 @@ export function createApp(): Express {
     );
 
     app.get('*', (req, res, next) => {
-      // API and upload routes must fall through to their own handlers, so a
-      // wrong API path returns JSON 404 rather than a page.
-      if (req.path.startsWith('/api') || req.path.startsWith('/uploads')) {
+      // API routes must fall through to their own handlers, so a wrong API path
+      // returns JSON 404 rather than a page.
+      if (req.path.startsWith('/api')) {
         next();
         return;
       }

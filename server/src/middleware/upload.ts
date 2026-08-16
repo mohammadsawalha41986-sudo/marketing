@@ -9,6 +9,23 @@ import { badRequest } from '../lib/errors.js';
 
 export const IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
 export const VIDEO_MIME = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
+/*
+ * Audio a user supplies for a video's soundtrack. Browsers disagree about the
+ * MIME type for the same file — an .m4a arrives as audio/mp4, audio/x-m4a or
+ * audio/aac depending on the platform — so all the spellings are accepted rather
+ * than the upload failing on one operator's machine and not another's.
+ */
+export const AUDIO_MIME = new Set([
+  'audio/mpeg',
+  'audio/mp3',
+  'audio/wav',
+  'audio/x-wav',
+  'audio/wave',
+  'audio/mp4',
+  'audio/x-m4a',
+  'audio/m4a',
+  'audio/aac',
+]);
 export const DOC_MIME = new Set([
   'application/pdf',
   'application/msword',
@@ -17,7 +34,7 @@ export const DOC_MIME = new Set([
   'text/csv',
 ]);
 
-export const ALLOWED_MIME = new Set([...IMAGE_MIME, ...VIDEO_MIME, ...DOC_MIME]);
+export const ALLOWED_MIME = new Set([...IMAGE_MIME, ...VIDEO_MIME, ...AUDIO_MIME, ...DOC_MIME]);
 
 /**
  * SVG is deliberately excluded: it is an executable document and serving it from

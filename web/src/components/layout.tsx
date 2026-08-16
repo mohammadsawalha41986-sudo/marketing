@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, CreditCard, FileText, Image,
+  Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, CreditCard, FileText, Gauge, Image,
   LayoutDashboard, Languages, LogOut, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
   Settings, Shield, Sparkles, Sun, ThumbsUp, Users, X, type LucideIcon,
 } from 'lucide-react';
@@ -29,6 +29,7 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
     heading: 'nav.overview',
     items: [
       { to: '/app/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard },
+      { to: '/app/ceo', labelKey: 'nav.ceo', icon: Gauge },
       { to: '/app/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
       { to: '/app/reports', labelKey: 'nav.reports', icon: FileText },
     ],
@@ -60,6 +61,7 @@ const CLIENT_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
     heading: 'nav.overview',
     items: [
       { to: '/client/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard },
+      { to: '/client/ceo', labelKey: 'nav.ceo', icon: Gauge },
       { to: '/client/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
       { to: '/client/reports', labelKey: 'nav.reports', icon: FileText },
     ],

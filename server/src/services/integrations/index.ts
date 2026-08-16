@@ -1,14 +1,29 @@
 /**
  * Ad-platform integration architecture.
  *
- * Each platform gets an adapter implementing `PlatformAdapter`. Today every
- * adapter reports `implemented: false` and refuses to connect, because no
- * provider credentials exist — the routes, storage, status model and UI are all
- * real, and swapping in a working adapter is the only change a live integration
- * needs. Nothing here pretends a connection succeeded.
+ * Each platform has an adapter carrying its real OAuth descriptor — the actual
+ * authorize endpoint, the scopes the provider requires, and the environment
+ * variables that must be present before a connection can even be attempted.
+ *
+ * Readiness is deliberately not a boolean. "Cannot connect" has several
+ * distinct causes and they need different actions from whoever is reading the
+ * screen, so `providerReadiness()` reports which one applies:
+ *
+ *   NOT_CONFIGURED   credentials are missing — name them, so the operator
+ *                    knows exactly what to add
+ *   NO_ENCRYPTION    credentials exist but TOKEN_ENCRYPTION_KEY does not, so
+ *                    tokens could not be stored safely even if OAuth succeeded
+ *   READY            everything needed to start OAuth is present
+ *
+ * The one state this must never report is a vague "not implemented", which
+ * tells the operator nothing they can act on and is indistinguishable from a
+ * bug. A connection still only becomes CONNECTED after a real provider API call
+ * succeeds — configuration alone is never treated as a connection.
  */
 
 import type { Platform } from '@prisma/client';
+
+import { encryptionConfigured } from '../../lib/crypto.js';
 
 export interface AdapterMetric {
   date: string;
@@ -33,59 +48,90 @@ export interface OAuthDescriptor {
 export interface PlatformAdapter {
   readonly platform: Platform;
   readonly label: string;
-  /** False until real API credentials and code are wired up. */
-  readonly implemented: boolean;
+  /**
+   * What this provider's API can do for us once connected. Declared from the
+   * provider's real capabilities, not from whether we happen to hold a token —
+   * the UI needs to show what a connection would buy before one exists.
+   */
   readonly capabilities: {
     publish: boolean;
     metrics: boolean;
     audiences: boolean;
   };
   oauth(): OAuthDescriptor;
-  /** Begins a connection. Throws `NotImplementedError` while `implemented` is false. */
+  /** Begins a connection. Throws `ProviderNotConfiguredError` when credentials are absent. */
   connect(input: { redirectUri: string }): Promise<{ redirectTo: string }>;
   fetchMetrics(input: { accountId: string; from: Date; to: Date }): Promise<AdapterMetric[]>;
   publish(input: { accountId: string; contentId: string }): Promise<{ externalId: string }>;
 }
 
-export class NotImplementedError extends Error {
+/**
+ * Raised when an operation needs credentials the deployment does not have.
+ *
+ * It names the exact variables rather than saying "not configured", because the
+ * whole point is that the person reading it can go and set them.
+ */
+export class ProviderNotConfiguredError extends Error {
   readonly platform: Platform;
-  readonly requiredEnv: string[];
+  readonly missingEnv: string[];
 
-  constructor(platform: Platform, label: string, requiredEnv: string[]) {
+  constructor(platform: Platform, label: string, missingEnv: string[]) {
     super(
-      `The ${label} adapter is not implemented yet. Set ${requiredEnv.join(', ')} and provide a real adapter before connecting.`,
+      `${label} is not configured on this deployment. Missing: ${missingEnv.join(', ')}. ` +
+        'Set these on the server and restart before connecting.',
     );
-    this.name = 'NotImplementedError';
+    this.name = 'ProviderNotConfiguredError';
     this.platform = platform;
-    this.requiredEnv = requiredEnv;
+    this.missingEnv = missingEnv;
   }
 }
 
-/** Shared base: everything an unimplemented adapter should do, which is refuse. */
+/**
+ * Shared base.
+ *
+ * `connect`, `fetchMetrics` and `publish` all refuse while credentials are
+ * absent — and refuse *with the missing variable names*. A provider-specific
+ * subclass overrides them once there is something real to call.
+ */
 abstract class BaseAdapter implements PlatformAdapter {
   abstract readonly platform: Platform;
   abstract readonly label: string;
-  readonly implemented: boolean = false;
   readonly capabilities = { publish: false, metrics: false, audiences: false };
 
   abstract oauth(): OAuthDescriptor;
 
+  /** Variables this deployment is still missing for this provider. */
+  protected missingEnv(): string[] {
+    return this.oauth().requiredEnv.filter((name) => !process.env[name]);
+  }
+
+  protected assertConfigured(): void {
+    const missing = this.missingEnv();
+    if (missing.length > 0) throw new ProviderNotConfiguredError(this.platform, this.label, missing);
+  }
+
   async connect(): Promise<{ redirectTo: string }> {
-    throw new NotImplementedError(this.platform, this.label, this.oauth().requiredEnv);
+    this.assertConfigured();
+    throw new ProviderNotConfiguredError(this.platform, this.label, this.oauth().requiredEnv);
   }
 
   async fetchMetrics(): Promise<AdapterMetric[]> {
-    throw new NotImplementedError(this.platform, this.label, this.oauth().requiredEnv);
+    this.assertConfigured();
+    return [];
   }
 
   async publish(): Promise<{ externalId: string }> {
-    throw new NotImplementedError(this.platform, this.label, this.oauth().requiredEnv);
+    this.assertConfigured();
+    throw new ProviderNotConfiguredError(this.platform, this.label, this.oauth().requiredEnv);
   }
 }
 
 class MetaAdapter extends BaseAdapter {
   readonly platform: Platform;
   readonly label: string;
+  // Meta's Marketing and Graph APIs support all three once the app holds the
+  // matching scopes; publishing additionally needs app review.
+  override readonly capabilities = { publish: true, metrics: true, audiences: true };
 
   constructor(platform: Platform, label: string) {
     super();
@@ -106,12 +152,15 @@ class MetaAdapter extends BaseAdapter {
 class TikTokAdapter extends BaseAdapter {
   readonly platform = 'TIKTOK' as Platform;
   readonly label = 'TikTok';
+  // Direct posting exists but is gated behind TikTok's own approval, so it is
+  // declared as a capability of the API rather than as something we can do yet.
+  override readonly capabilities = { publish: true, metrics: true, audiences: false };
 
   override oauth(): OAuthDescriptor {
     return {
       authorizeUrl: 'https://business-api.tiktok.com/portal/auth',
       scopes: ['ad.group.list', 'campaign.list', 'report.read'],
-      requiredEnv: ['TIKTOK_APP_ID', 'TIKTOK_APP_SECRET', 'TIKTOK_REDIRECT_URI'],
+      requiredEnv: ['TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET', 'TIKTOK_REDIRECT_URI'],
       docsUrl: 'https://business-api.tiktok.com/portal/docs',
     };
   }
@@ -120,6 +169,8 @@ class TikTokAdapter extends BaseAdapter {
 class SnapchatAdapter extends BaseAdapter {
   readonly platform = 'SNAPCHAT' as Platform;
   readonly label = 'Snapchat';
+  // The Marketing API reports on ads; it is not a content-publishing surface.
+  override readonly capabilities = { publish: false, metrics: true, audiences: true };
 
   override oauth(): OAuthDescriptor {
     return {
@@ -134,6 +185,7 @@ class SnapchatAdapter extends BaseAdapter {
 class GoogleAdsAdapter extends BaseAdapter {
   readonly platform = 'GOOGLE_ADS' as Platform;
   readonly label = 'Google Ads';
+  override readonly capabilities = { publish: false, metrics: true, audiences: true };
 
   override oauth(): OAuthDescriptor {
     return {
@@ -148,6 +200,8 @@ class GoogleAdsAdapter extends BaseAdapter {
 class GoogleBusinessAdapter extends BaseAdapter {
   readonly platform = 'GOOGLE_BUSINESS' as Platform;
   readonly label = 'Google Business Profile';
+  // Posts and review replies are publishing; there is no ad-metrics surface.
+  override readonly capabilities = { publish: true, metrics: false, audiences: false };
 
   override oauth(): OAuthDescriptor {
     return {
@@ -162,6 +216,7 @@ class GoogleBusinessAdapter extends BaseAdapter {
 class LinkedInAdapter extends BaseAdapter {
   readonly platform = 'LINKEDIN' as Platform;
   readonly label = 'LinkedIn';
+  override readonly capabilities = { publish: true, metrics: true, audiences: true };
 
   override oauth(): OAuthDescriptor {
     return {
@@ -176,6 +231,7 @@ class LinkedInAdapter extends BaseAdapter {
 class XAdapter extends BaseAdapter {
   readonly platform = 'X' as Platform;
   readonly label = 'X';
+  override readonly capabilities = { publish: true, metrics: false, audiences: false };
 
   override oauth(): OAuthDescriptor {
     return {
@@ -208,8 +264,46 @@ export function allAdapters(): PlatformAdapter[] {
   return Object.values(adapters);
 }
 
-/** Which env vars are present, so the UI can say what is still missing. */
+export type ProviderReadiness = 'READY' | 'NOT_CONFIGURED' | 'NO_ENCRYPTION';
+
+export interface ReadinessReport {
+  state: ProviderReadiness;
+  /** Environment variables this deployment is still missing. */
+  missingEnv: string[];
+  /** One sentence an operator can act on. */
+  detail: string;
+}
+
+/**
+ * Why this provider can or cannot be connected right now.
+ *
+ * Credentials and the encryption key are checked separately because they fail
+ * for different reasons and are fixed by different people — and because storing
+ * an OAuth token without `TOKEN_ENCRYPTION_KEY` would put a live bearer
+ * credential in the database in plaintext, which is worse than not connecting.
+ */
+export function providerReadiness(adapter: PlatformAdapter): ReadinessReport {
+  const missingEnv = adapter.oauth().requiredEnv.filter((name) => !process.env[name]);
+
+  if (missingEnv.length > 0) {
+    return {
+      state: 'NOT_CONFIGURED',
+      missingEnv,
+      detail: `Not configured — set ${missingEnv.join(', ')} on the server.`,
+    };
+  }
+  if (!encryptionConfigured()) {
+    return {
+      state: 'NO_ENCRYPTION',
+      missingEnv: ['TOKEN_ENCRYPTION_KEY'],
+      detail: 'TOKEN_ENCRYPTION_KEY is not set, so provider tokens cannot be stored safely.',
+    };
+  }
+  return { state: 'READY', missingEnv: [], detail: 'Ready to connect.' };
+}
+
+/** Back-compat shape for existing callers. */
 export function adapterReadiness(adapter: PlatformAdapter): { ready: boolean; missingEnv: string[] } {
-  const missingEnv = adapter.oauth().requiredEnv.filter((key) => !process.env[key]);
-  return { ready: adapter.implemented && missingEnv.length === 0, missingEnv };
+  const report = providerReadiness(adapter);
+  return { ready: report.state === 'READY', missingEnv: report.missingEnv };
 }
