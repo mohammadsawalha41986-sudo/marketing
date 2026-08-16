@@ -22,6 +22,8 @@
 import sharp from 'sharp';
 import { CreativeFormat } from '@prisma/client';
 
+import { analyzeSource, type CreativeAnalysis } from './analyze.js';
+import { composeBase, planComposition, type Composition } from './compose.js';
 import type { CreativePreset } from './presets.js';
 
 export interface BrandTreatment {
@@ -48,6 +50,9 @@ export interface RenderedCreative {
   format: CreativeFormat;
   mimeType: string;
   extension: string;
+  /** How the frame was built, so the UI can explain the result. */
+  composition: Composition;
+  analysis: CreativeAnalysis;
 }
 
 /** XML-escape. Copy is operator-supplied, so it cannot be trusted into markup. */
@@ -189,11 +194,15 @@ export function overlaySvg(input: {
 export async function renderCreative(input: RenderInput): Promise<RenderedCreative> {
   const { preset, format } = input;
 
-  // `cover` crops to fill rather than distorting; `attention` biases the crop
-  // towards the busiest region, which for food photography is the dish.
-  const base = sharp(input.source, { failOn: 'error' })
-    .rotate() // honour EXIF orientation before measuring anything
-    .resize(preset.width, preset.height, { fit: 'cover', position: sharp.strategy.attention });
+  /*
+   * Analyse, then decide how to build the frame. This is the step that makes a
+   * vertical variant a different composition rather than a slice of the
+   * horizontal one — see compose.ts for why a crop is the wrong tool once the
+   * aspects diverge.
+   */
+  const analysis = await analyzeSource(input.source);
+  const composition = planComposition(analysis, preset);
+  const baseBuffer = await composeBase({ source: input.source, analysis, preset, composition });
 
   const svg = overlaySvg({
     preset,
@@ -202,7 +211,7 @@ export async function renderCreative(input: RenderInput): Promise<RenderedCreati
     ctaLabel: input.ctaLabel,
   });
 
-  const composed = base.composite([{ input: Buffer.from(svg), top: 0, left: 0 }]);
+  const composed = sharp(baseBuffer).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]);
 
   const buffer =
     format === CreativeFormat.JPG
@@ -216,6 +225,8 @@ export async function renderCreative(input: RenderInput): Promise<RenderedCreati
     format,
     mimeType: format === CreativeFormat.JPG ? 'image/jpeg' : 'image/png',
     extension: format === CreativeFormat.JPG ? 'jpg' : 'png',
+    composition,
+    analysis,
   };
 }
 

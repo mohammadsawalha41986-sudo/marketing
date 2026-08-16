@@ -276,6 +276,7 @@ creativesRouter.post(
             headline,
             ctaLabel,
             match: match as unknown as Prisma.InputJsonValue,
+            composition: rendered.composition as unknown as Prisma.InputJsonValue,
           },
         }),
       );

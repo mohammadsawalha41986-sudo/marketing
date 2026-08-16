@@ -525,6 +525,9 @@ model Creative {
   /// The match result as scored at render time. Frozen deliberately: a creative
   /// approved at 95 must still show 95 later, even if the brand is edited after.
   match          Json           @default("{}")
+  /// How the frame was built — CROP or EXTEND, and why. Kept so the UI can
+  /// explain a variant, and so a regression back to blind cropping is visible.
+  composition    Json           @default("{}")
   status         CreativeStatus @default(DRAFT)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
