@@ -48,12 +48,13 @@ export async function readObject(key: string): Promise<Buffer> {
  * not a file removal.
  */
 async function referenceCount(key: string): Promise<number> {
-  const [media, creatives, brands] = await Promise.all([
+  const [media, creatives, videos, brands] = await Promise.all([
     prisma.media.count({ where: { filename: key } }),
     prisma.creative.count({ where: { storageKey: key } }),
+    prisma.videoCreative.count({ where: { storageKey: key } }),
     prisma.brand.count({ where: { logoKey: key } }),
   ]);
-  return media + creatives + brands;
+  return media + creatives + videos + brands;
 }
 
 /**

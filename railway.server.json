@@ -10,7 +10,8 @@
       "scripts/**",
       "package.json",
       "package-lock.json",
-      "railway.server.json"
+      "railway.server.json",
+      "railpack.json"
     ]
   },
   "deploy": {

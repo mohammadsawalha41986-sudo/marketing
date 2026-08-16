@@ -292,18 +292,19 @@ model Organization {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users         User[]
-  clients       Client[]
-  campaigns     Campaign[]
-  contents      Content[]
-  media         Media[]
-  reports       Report[]
-  notifications Notification[]
-  integrations  Integration[]
-  subscriptions Subscription[]
-  auditLogs     AuditLog[]
-  aiUsages      AiUsage[]
-  products      Product[]
+  users          User[]
+  clients        Client[]
+  campaigns      Campaign[]
+  contents       Content[]
+  media          Media[]
+  reports        Report[]
+  notifications  Notification[]
+  integrations   Integration[]
+  subscriptions  Subscription[]
+  auditLogs      AuditLog[]
+  aiUsages       AiUsage[]
+  products       Product[]
+  videoCreatives VideoCreative[]
 }
 
 model User {
@@ -386,20 +387,21 @@ model Client {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
-  organization  Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  brand         Brand?
-  users         User[]
-  campaigns     Campaign[]
-  contents      Content[]
-  media         Media[]
-  reports       Report[]
-  notifications Notification[]
-  integrations  Integration[]
-  subscription  Subscription?
-  snapshots     AnalyticsSnapshot[]
-  aiUsages      AiUsage[]
-  creatives     Creative[]
-  products      Product[]
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  brand          Brand?
+  users          User[]
+  campaigns      Campaign[]
+  contents       Content[]
+  media          Media[]
+  reports        Report[]
+  notifications  Notification[]
+  integrations   Integration[]
+  subscription   Subscription?
+  snapshots      AnalyticsSnapshot[]
+  aiUsages       AiUsage[]
+  creatives      Creative[]
+  products       Product[]
+  videoCreatives VideoCreative[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -1126,4 +1128,62 @@ model Product {
 
   @@index([organizationId])
   @@index([clientId])
+}
+
+/// Audio provenance for a video.
+///
+/// Tracked explicitly because "where did this music come from" is a legal
+/// question, not a metadata nicety. NONE and UPLOAD are the only values the
+/// system can produce today; LIBRARY exists for a licensed catalogue and is
+/// never set without one.
+enum AudioSource {
+  NONE
+  UPLOAD
+  LIBRARY
+}
+
+/// A rendered video advertisement.
+///
+/// Separate from Creative rather than a variant of it: a video has a duration, a
+/// scene script, an audio track and a codec, none of which mean anything for a
+/// still, and collapsing them would leave half the columns null on every row of
+/// whichever type is more common.
+model VideoCreative {
+  id              String         @id @default(cuid())
+  organizationId  String
+  clientId        String
+  productId       String?
+  campaignId      String?
+  contentId       String?
+  /// The still image the video was composed from. The master is never mutated.
+  sourceMediaId   String?
+  platform        Platform
+  placement       String
+  width           Int
+  height          Int
+  durationSeconds Float
+  storageKey      String
+  url             String
+  sizeBytes       Int
+  videoCodec      String?
+  audioCodec      String?
+  frameRate       Float?
+  audioSource     AudioSource    @default(NONE)
+  audioMediaId    String?
+  /// The scene script as rendered, so it can be edited and re-rendered.
+  script          Json
+  /// Per-scene composition strategy, so a regression to blind cropping is
+  /// visible in the data rather than only in the pixels.
+  compositions    Json?
+  status          CreativeStatus @default(DRAFT)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([productId])
+  @@index([campaignId])
 }

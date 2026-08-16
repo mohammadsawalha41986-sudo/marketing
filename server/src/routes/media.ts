@@ -11,7 +11,7 @@ import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
 import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
-import { IMAGE_MIME, VIDEO_MIME, uploadAny, sniffImage } from '../middleware/upload.js';
+import { AUDIO_MIME, IMAGE_MIME, VIDEO_MIME, uploadAny, sniffImage } from '../middleware/upload.js';
 import { env } from '../env.js';
 import { safeFetch } from '../lib/safe-fetch.js';
 import { storage } from '../services/storage/index.js';
@@ -30,6 +30,9 @@ mediaRouter.use(requireAuth);
 function typeFor(mimeType: string): MediaType {
   if (IMAGE_MIME.has(mimeType)) return MediaType.IMAGE;
   if (VIDEO_MIME.has(mimeType)) return MediaType.VIDEO;
+  // Audio has no MediaType of its own; it is a document-class asset whose real
+  // type is carried by mimeType, which is what the video renderer reads.
+  if (AUDIO_MIME.has(mimeType)) return MediaType.DOCUMENT;
   return MediaType.DOCUMENT;
 }
 

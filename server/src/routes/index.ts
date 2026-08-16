@@ -4,6 +4,7 @@ import { Router } from 'express';
 
 import { readiness } from '../lib/db-health.js';
 import { storageStatus } from '../services/storage/index.js';
+import { ffmpegCapability } from '../services/video/ffmpeg.js';
 import { authRouter } from './auth.js';
 import { clientsRouter } from './clients.js';
 import { brandsRouter } from './brands.js';
@@ -12,6 +13,7 @@ import { productsRouter } from './products.js';
 import { campaignsRouter } from './campaigns.js';
 import { ceoRouter } from './ceo.js';
 import { creativesRouter } from './creatives.js';
+import { videosRouter } from './videos.js';
 import { contentRouter } from './content.js';
 import { calendarRouter } from './calendar.js';
 import { approvalsRouter } from './approvals.js';
@@ -40,7 +42,7 @@ export const apiRouter: Router = Router();
  * fixes, and neither value discloses anything about the deployment.
  */
 apiRouter.get('/health', (_req, res) => {
-  void readiness().then((health) => {
+  void Promise.all([readiness(), ffmpegCapability()]).then(([health, video]) => {
     const body = {
       status: health.state === 'ok' ? 'healthy' : 'degraded',
       database: health.state === 'ok' ? 'ok' : 'unreachable',
@@ -56,6 +58,9 @@ apiRouter.get('/health', (_req, res) => {
        */
       storage: storageStatus().driver,
       mediaPersistent: storageStatus().persistent,
+      // Same treatment as storage: a capability the deployment either has or
+      // does not, reported rather than discovered mid-render.
+      video: video.available ? 'available' : 'unavailable',
       uptime: Math.round(process.uptime()),
     };
     res.status(health.state === 'ok' ? 200 : 503).json(body);
@@ -68,6 +73,7 @@ apiRouter.use('/clients', clientsRouter);
 apiRouter.use('/brands', brandsRouter);
 apiRouter.use('/media', mediaRouter);
 apiRouter.use('/products', productsRouter);
+apiRouter.use('/videos', videosRouter);
 apiRouter.use('/campaigns', campaignsRouter);
 apiRouter.use('/ceo', ceoRouter);
 apiRouter.use('/creatives', creativesRouter);
