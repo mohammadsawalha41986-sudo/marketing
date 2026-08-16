@@ -14,7 +14,7 @@ import { ClientDetailPage, ClientsPage } from './routes/clients';
 import { CampaignDetailPage, CampaignsPage } from './routes/campaigns';
 import { ContentDetailPage, ContentPage, StudioPage } from './routes/content';
 import { BrandPage } from './routes/brand';
-import { ImageAdsPage } from './routes/ads';
+import { ImageAdsPage, VideoAdsPage } from './routes/ads';
 import { MetaCampaignsPage } from './routes/publishing';
 import {
   ApprovalsPage, CalendarPage, IntegrationsPage, MediaPage, NotificationsPage, SettingsPage,
@@ -100,6 +100,7 @@ export default function App() {
                 <Route path="content" element={<ContentPage />} />
                 <Route path="content/:id" element={<ContentDetailPage />} />
                 <Route path="image-ads" element={<ImageAdsPage />} />
+                <Route path="video-ads" element={<VideoAdsPage />} />
                 <Route path="studio" element={<StudioPage />} />
                 <Route path="meta-campaigns" element={<MetaCampaignsPage />} />
                 <Route path="campaigns" element={<CampaignsPage />} />
