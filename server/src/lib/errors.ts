@@ -34,6 +34,16 @@ export const notFound = (what = 'Resource') => new AppError(404, 'NOT_FOUND', `$
 
 export const conflict = (message: string) => new AppError(409, 'CONFLICT', message);
 
+/**
+ * The resource existed but its bytes are gone.
+ *
+ * Distinct from 404 on purpose: the row is still there and the id is still
+ * valid, so "not found" would send someone looking for a lookup bug. 410 says
+ * the reference is good and the object behind it is missing — which on an
+ * ephemeral filesystem is the expected outcome of a redeploy.
+ */
+export const gone = (message: string) => new AppError(410, 'STORED_OBJECT_MISSING', message);
+
 export const tooLarge = (message: string) => new AppError(413, 'PAYLOAD_TOO_LARGE', message);
 
 export const unprocessable = (message: string, details?: unknown) =>

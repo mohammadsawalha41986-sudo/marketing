@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { readFile } from 'node:fs/promises';
 
 import { prisma } from '../lib/prisma.js';
-import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
+import { asyncHandler, badRequest, gone, notFound } from '../lib/errors.js';
 import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam } from '../lib/http.js';
@@ -117,11 +117,49 @@ function treatmentFor(client: { name: string; businessName: string; brand: { pri
  * an empty buffer that would render as a blank creative.
  */
 async function readStored(key: string): Promise<Buffer> {
-  if (storage.read) return storage.read(key);
+  try {
+    if (storage.read) return await storage.read(key);
 
-  const path = storage.localPath(key);
-  if (!path) throw badRequest(`Storage driver "${storage.name}" cannot read objects back for rendering`);
-  return readFile(path);
+    const path = storage.localPath(key);
+    if (!path) throw badRequest(`Storage driver "${storage.name}" cannot read objects back for rendering`);
+    return await readFile(path);
+  } catch (error) {
+    /*
+     * A stored object that has gone missing is a specific, diagnosable state,
+     * and on an ephemeral filesystem it is the *expected* one: the row survives
+     * a redeploy, the file does not. Reported as 410 Gone with that cause named,
+     * because "Something went wrong" sends the operator hunting for a bug in
+     * the renderer when the real answer is that production has no persistent
+     * storage configured.
+     */
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || (error as Error).message?.includes('could not read')) {
+      throw gone(
+        storage.name === 'local'
+          ? 'The stored file is no longer on disk. This deployment uses the local storage driver, so uploads and rendered creatives are lost whenever the container is replaced. Configure S3-compatible object storage (S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY) to make media persistent.'
+          : 'The stored file is no longer available in object storage.',
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Turn an image-decoding failure into an answer the operator can act on.
+ *
+ * sharp raises libvips errors like `vipspng: libpng read error` for a file that
+ * passed the magic-number check but is truncated or malformed inside. Left
+ * unhandled that becomes a 500, which reads as "the renderer is broken" when in
+ * fact the input was.
+ */
+function asDecodeError(error: unknown): never {
+  const message = (error as Error).message ?? '';
+  if (/vips|libpng|jpeg|heif|magick|unsupported image format|Input buffer/i.test(message)) {
+    throw badRequest(
+      'That image could not be decoded. It may be truncated or corrupt — re-export it and upload it again.',
+    );
+  }
+  throw error;
 }
 
 const analyseSchema = z.object({
@@ -207,7 +245,9 @@ creativesRouter.post(
     for (const preset of presets) {
       const match = scoreCreative({ media, brand: client.brand, campaign, preset, headline, ctaLabel });
 
-      const rendered = await renderCreative({ source, preset, brand, headline, ctaLabel, format: body.format });
+      const rendered = await renderCreative({ source, preset, brand, headline, ctaLabel, format: body.format }).catch(
+        asDecodeError,
+      );
 
       // Stored under the client's own prefix, which keeps one tenant's rendered
       // artwork out of another's folder even at the storage layer.
@@ -325,10 +365,10 @@ creativesRouter.get(
 
     if (wanted !== creative.format) {
       const sharp = (await import('sharp')).default;
-      buffer =
-        wanted === CreativeFormat.JPG
-          ? await sharp(stored).jpeg({ quality: 90, chromaSubsampling: '4:4:4' }).toBuffer()
-          : await sharp(stored).png({ compressionLevel: 9 }).toBuffer();
+      buffer = await (wanted === CreativeFormat.JPG
+        ? sharp(stored).jpeg({ quality: 90, chromaSubsampling: '4:4:4' }).toBuffer()
+        : sharp(stored).png({ compressionLevel: 9 }).toBuffer()
+      ).catch(asDecodeError);
       mimeType = wanted === CreativeFormat.JPG ? 'image/jpeg' : 'image/png';
       extension = wanted === CreativeFormat.JPG ? 'jpg' : 'png';
     }

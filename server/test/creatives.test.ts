@@ -11,6 +11,10 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import sharp from 'sharp';
+import { unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+
+import { uploadDir } from '../src/env.js';
 
 import { Agent, agent, createTenant, prisma, resetDatabase, type Tenant } from './helpers.js';
 
@@ -210,6 +214,41 @@ describe('creative rendering and download', () => {
 
     expect(response.body.match.band).toBe('BLOCKED');
     expect(response.body.match.blockers[0]).toMatch(/resolution/i);
+  });
+
+  it('rejects a corrupt image at upload rather than failing later at render', async () => {
+    // A file can pass the magic-number check and still be undecodable: correct
+    // PNG signature, malformed body. libvips raises "libpng read error", which
+    // unhandled became a 500 and read as "the renderer is broken" when the
+    // input was the problem. Found on production. It is now caught at the
+    // earliest point that can know — the upload — so a file that can never be
+    // rendered does not enter the library at all.
+    const header = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const truncated = Buffer.concat([header, Buffer.from('not really a png body')]);
+
+    const upload = await alphaAdmin
+      .post('/api/media')
+      .field('clientId', alpha.clientId)
+      .attach('files', truncated, { filename: 'broken.png', contentType: 'image/png' });
+
+    expect(upload.status).toBe(400);
+    expect(upload.body.error.message).toMatch(/could not be decoded/i);
+    expect(await prisma.media.count({ where: { originalName: 'broken.png' } })).toBe(0);
+  });
+
+  it('reports a vanished stored object as gone, naming ephemeral storage', async () => {
+    // The exact production failure: the row survives a redeploy, the file does
+    // not. A 500 would send someone hunting for a renderer bug.
+    const rendered = await alphaAdmin.post('/api/creatives', { mediaId, presetKeys: ['INSTAGRAM_SQUARE'] });
+    const id = rendered.body.creatives[0].id as string;
+
+    const creative = await prisma.creative.findUniqueOrThrow({ where: { id } });
+    await unlink(join(uploadDir, creative.storageKey));
+
+    const response = await alphaAdmin.get(`/api/creatives/${id}/download`);
+    expect(response.status).toBe(410);
+    expect(response.body.error.code).toBe('STORED_OBJECT_MISSING');
+    expect(response.body.error.message).toMatch(/object storage|no longer on disk/i);
   });
 
   it('refuses to render from a non-image asset', async () => {

@@ -106,9 +106,20 @@ mediaRouter.post(
       let width: number | null = null;
       let height: number | null = null;
       if (isImage) {
-        const meta = await sharp(file.buffer).metadata();
-        width = meta.width ?? null;
-        height = meta.height ?? null;
+        /*
+         * The magic-number check above proves the file *starts* like an image;
+         * it cannot prove the rest of it decodes. A truncated or malformed body
+         * makes libvips throw here, and unhandled that is a 500 — which tells
+         * the operator the server is broken when their file is. Rejected as a
+         * bad request instead, naming the file.
+         */
+        try {
+          const meta = await sharp(file.buffer).metadata();
+          width = meta.width ?? null;
+          height = meta.height ?? null;
+        } catch {
+          throw badRequest(`${file.originalname} could not be decoded. It may be truncated or corrupt.`);
+        }
       }
 
       const stored = await storage.save(file.buffer, {
@@ -229,7 +240,11 @@ mediaRouter.post(
       // real type is what gets stored.
     }
 
-    const meta = await sharp(buffer).metadata();
+    const meta = await sharp(buffer)
+      .metadata()
+      .catch(() => {
+        throw badRequest('That URL returned an image that could not be decoded.');
+      });
     const name = decodeURIComponent(target.pathname.split('/').pop() || 'image').slice(0, 200);
 
     const stored = await storage.save(buffer, {
