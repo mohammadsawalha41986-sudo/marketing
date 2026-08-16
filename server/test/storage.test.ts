@@ -286,3 +286,78 @@ describe('surviving a redeploy', () => {
     expect(objects.size).toBe(2);
   });
 });
+
+/**
+ * Transport failures.
+ *
+ * The first time production met a TLS handshake rejection from R2, the upload
+ * came back as HTTP 500 "Something went wrong" — which tells an operator the
+ * application is broken when the truth is that it cannot reach the bucket. The
+ * fixes for those two situations have nothing in common, so they must not look
+ * the same from outside.
+ */
+describe('unreachable object storage', () => {
+  /** What undici actually throws: a TypeError with the reason in `cause`. */
+  function failing(cause: { message?: string; code?: string }) {
+    return vi.fn(async () => {
+      const error = new TypeError('fetch failed');
+      (error as unknown as { cause: unknown }).cause = cause;
+      throw error;
+    }) as unknown as typeof fetch;
+  }
+
+  const TLS = {
+    message:
+      '801C1E9DB87F0000:error:0A000410:SSL routines:ssl3_read_bytes:sslv3 alert handshake failure:../ssl/record/rec_layer_s3.c:1601:SSL alert number 40',
+  };
+
+  it('reports a rejected TLS handshake as a storage failure, naming the likely cause', async () => {
+    const storage = new S3Storage(CONFIG, failing(TLS));
+
+    const error = await storage
+      .save(Buffer.from('x'), { filename: 'a.png', mimeType: 'image/png' })
+      .catch((e: Error & { code?: string; status?: number }) => e);
+
+    expect(error.code).toBe('STORAGE_UPLOAD_FAILED');
+    expect(error.status).toBe(502);
+    // The message has to point at the thing that is actually wrong.
+    expect(error.message).toMatch(/TLS handshake was rejected/i);
+    expect(error.message).toMatch(/S3_ENDPOINT/);
+  });
+
+  it('distinguishes DNS, refusal and timeout from each other', async () => {
+    const cases: Array<[{ message?: string; code?: string }, RegExp]> = [
+      [{ code: 'ENOTFOUND', message: 'getaddrinfo ENOTFOUND bucket.example' }, /could not be resolved/i],
+      [{ code: 'ECONNREFUSED', message: 'connect ECONNREFUSED' }, /refused/i],
+      [{ code: 'UND_ERR_CONNECT_TIMEOUT', message: 'Connect Timeout Error' }, /timed out/i],
+    ];
+
+    for (const [cause, expected] of cases) {
+      const error = await new S3Storage(CONFIG, failing(cause)).read('k.png').catch((e: Error) => e);
+      expect(error.message, String(cause.code)).toMatch(expected);
+      expect((error as Error & { code?: string }).code).toBe('STORAGE_READ_FAILED');
+    }
+  });
+
+  it('does not report an unreachable bucket as an absent object', async () => {
+    // The dangerous confusion: "exists: false" would send an operator to
+    // re-upload a file that is sitting in the bucket, unreachable.
+    await expect(new S3Storage(CONFIG, failing(TLS)).exists('k.png')).rejects.toMatchObject({
+      code: 'STORAGE_READ_FAILED',
+    });
+  });
+
+  it('does not report a refused query as an absent object either', async () => {
+    // 403 means the bucket is there and refusing us; only 404 means absent.
+    await expect(new S3Storage(CONFIG, stub(403)).exists('k.png')).rejects.toMatchObject({
+      code: 'STORAGE_READ_FAILED',
+    });
+    expect(await new S3Storage(CONFIG, stub(404)).exists('k.png')).toBe(false);
+  });
+
+  it('surfaces a transport failure on delete rather than swallowing it', async () => {
+    await expect(new S3Storage(CONFIG, failing(TLS)).delete('k.png')).rejects.toMatchObject({
+      code: 'STORAGE_DELETE_FAILED',
+    });
+  });
+});

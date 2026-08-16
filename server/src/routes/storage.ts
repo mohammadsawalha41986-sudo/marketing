@@ -75,16 +75,33 @@ storageRouter.get(
       }
     })();
 
+    /*
+     * Every failure here is reported, never thrown.
+     *
+     * This is the endpoint an operator opens *because* storage is misbehaving.
+     * Answering 500 "Something went wrong" when the bucket is unreachable would
+     * make the diagnostic tool fail in exactly the situation it exists for —
+     * which is what it did the first time it met a TLS handshake rejection.
+     */
     const object = key
       ? await (async () => {
-          const exists = storage.exists ? await storage.exists(key) : null;
-          if (!exists) return { key, exists: false, sizeBytes: null, sha256: null, error: null };
+          const base = { key, exists: null as boolean | null, sizeBytes: null as number | null, sha256: null as string | null };
+
+          let exists: boolean;
+          try {
+            exists = storage.exists ? await storage.exists(key) : false;
+          } catch (error) {
+            return { ...base, reachable: false, error: (error as Error).message };
+          }
+
+          if (!exists) return { ...base, exists: false, reachable: true, error: null };
 
           try {
             const bytes = await storage.read!(key);
             return {
               key,
               exists: true,
+              reachable: true,
               sizeBytes: bytes.byteLength,
               sha256: createHash('sha256').update(bytes).digest('hex'),
               error: null,
@@ -92,7 +109,7 @@ storageRouter.get(
           } catch (error) {
             // Present but unreadable is its own answer — a permissions problem
             // reads completely differently from a missing object.
-            return { key, exists: true, sizeBytes: null, sha256: null, error: (error as Error).message };
+            return { ...base, exists: true, reachable: true, error: (error as Error).message };
           }
         })()
       : null;

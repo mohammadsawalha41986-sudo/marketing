@@ -18,7 +18,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { extname } from 'node:path';
 
-import { gone, storageDeleteFailed, storageReadFailed, storageUploadFailed } from '../../lib/errors.js';
+import { AppError, gone, storageDeleteFailed, storageReadFailed, storageUploadFailed } from '../../lib/errors.js';
 import type { StorageProvider, StoredFile } from './index.js';
 
 export interface S3Config {
@@ -120,6 +120,36 @@ function safeExtension(filename: string, mimeType: string): string {
   return fallback[mimeType] ?? '.bin';
 }
 
+/**
+ * Describe a transport-level failure in terms an operator can act on.
+ *
+ * A request that never reaches the bucket fails as `TypeError: fetch failed`
+ * with the real reason buried in `cause`, and unhandled it becomes a 500
+ * "Something went wrong" — which says the application is broken when the truth
+ * is that it cannot reach object storage. The distinction matters because the
+ * fixes are unrelated: a TLS alert means the endpoint hostname is wrong or the
+ * account does not exist, a DNS failure means a typo, a refused connection means
+ * egress is blocked.
+ */
+function transportReason(error: unknown): string | null {
+  if (error instanceof AppError) return null;
+
+  const cause = (error as { cause?: { message?: string; code?: string } }).cause;
+  const detail = cause?.message ?? (error as Error).message ?? '';
+  const code = cause?.code;
+
+  if (/handshake failure|sslv3 alert|SSL routines|ERR_TLS/i.test(detail)) {
+    return 'the TLS handshake was rejected by the endpoint — check that S3_ENDPOINT is the exact account endpoint (https://<account-id>.r2.cloudflarestorage.com) with no bucket, path or port';
+  }
+  if (code === 'ENOTFOUND' || /getaddrinfo/i.test(detail)) return 'the endpoint hostname could not be resolved — check S3_ENDPOINT';
+  if (code === 'ECONNREFUSED') return 'the connection was refused by the endpoint';
+  if (code === 'UND_ERR_CONNECT_TIMEOUT' || /timeout/i.test(detail)) return 'the connection to the endpoint timed out';
+  if (/certificate|CERT_/i.test(detail)) return `the endpoint's TLS certificate was rejected: ${detail}`;
+  if (/fetch failed/i.test((error as Error).message ?? '')) return `the request never reached object storage: ${detail || 'unknown transport error'}`;
+
+  return null;
+}
+
 export class S3Storage implements StorageProvider {
   readonly name = 's3';
 
@@ -127,6 +157,24 @@ export class S3Storage implements StorageProvider {
     private readonly config: S3Config,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
+
+  /**
+   * Issue a signed request, converting a transport failure into a typed storage
+   * error rather than letting it escape as an unhandled TypeError.
+   */
+  private async send(
+    key: string,
+    init: { method: string; headers: Record<string, string>; body?: Uint8Array },
+    wrap: (message: string) => AppError,
+  ): Promise<Response> {
+    try {
+      return await this.fetchImpl(this.url(key), init as RequestInit);
+    } catch (error) {
+      const reason = transportReason(error);
+      if (reason) throw wrap(`Object storage is unreachable: ${reason}.`);
+      throw error;
+    }
+  }
 
   private url(key: string): string {
     return this.config.forcePathStyle
@@ -165,7 +213,11 @@ export class S3Storage implements StorageProvider {
       now: new Date(),
     });
 
-    const response = await this.fetchImpl(this.url(key), { method: 'PUT', headers, body: new Uint8Array(buffer) });
+    const response = await this.send(
+      key,
+      { method: 'PUT', headers, body: new Uint8Array(buffer) },
+      storageUploadFailed,
+    );
     if (!response.ok) {
       throw storageUploadFailed(`Object storage rejected the upload (HTTP ${response.status}).`);
     }
@@ -183,7 +235,7 @@ export class S3Storage implements StorageProvider {
       now: new Date(),
     });
 
-    const response = await this.fetchImpl(this.url(key), { method: 'GET', headers });
+    const response = await this.send(key, { method: 'GET', headers }, storageReadFailed);
     if (!response.ok) {
       /*
        * A 404/410 is not the same class of problem as a 403 or a 500. The object
@@ -209,8 +261,13 @@ export class S3Storage implements StorageProvider {
       headers: {},
       now: new Date(),
     });
-    const response = await this.fetchImpl(this.url(key), { method: 'HEAD', headers });
-    return response.ok;
+    const response = await this.send(key, { method: 'HEAD', headers }, storageReadFailed);
+    if (response.ok) return true;
+    // 404 is the only status that means "not there". A 403 means the bucket is
+    // refusing us, and reporting that as "absent" would send an operator to
+    // re-upload a file that is already sitting in the bucket.
+    if (response.status === 404) return false;
+    throw storageReadFailed(`Object storage could not be queried (HTTP ${response.status}).`);
   }
 
   async delete(key: string): Promise<void> {
@@ -223,7 +280,7 @@ export class S3Storage implements StorageProvider {
       now: new Date(),
     });
 
-    const response = await this.fetchImpl(this.url(key), { method: 'DELETE', headers });
+    const response = await this.send(key, { method: 'DELETE', headers }, storageDeleteFailed);
     // 404 means the object is already gone, which is the outcome we wanted.
     if (!response.ok && response.status !== 404) {
       throw storageDeleteFailed(`Object storage could not delete the file (HTTP ${response.status}).`);
