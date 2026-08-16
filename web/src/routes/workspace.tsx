@@ -129,12 +129,15 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
   const [anchor, setAnchor] = useState(new Date());
   const [peek, setPeek] = useState<string | null>(null);
 
+  // The month grid shows the restaurant chosen in the top bar, or all of them.
+  const { currentId: clientId, current } = useRestaurant();
+
   const { data, loading, error, refetch } = useQuery<{
     view: string;
     range: { from: string; to: string };
     items: CalendarItem[];
     counts: Record<string, number>;
-  }>(`/calendar${qs({ view, anchor: isoDate(anchor) })}`, [view, isoDate(anchor)]);
+  }>(`/calendar${qs({ view, anchor: isoDate(anchor), clientId })}`, [view, isoDate(anchor), clientId]);
 
   const shift = (direction: number) => {
     const next = new Date(anchor);
@@ -178,7 +181,11 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
     <>
       <PageHeader
         title={t('nav.calendar')}
-        subtitle="Everything scheduled, colour-coded by where it is in the workflow."
+        subtitle={
+          current
+            ? `Everything scheduled for ${current.businessName}, colour-coded by where it is in the workflow.`
+            : 'Everything scheduled, colour-coded by where it is in the workflow.'
+        }
         action={
           <>
             <div className="flex items-center gap-1 rounded-xl border border-line bg-elevated p-0.5">
