@@ -200,3 +200,85 @@ describe('brand logos', () => {
     expect(suggested.body.suggested).toBeTruthy();
   });
 });
+
+/**
+ * Storage diagnostics.
+ *
+ * This endpoint exists so an acceptance test can ask "is this object really in
+ * the bucket" for a key the database may never have seen. That power is exactly
+ * why the tenant check on it matters: object keys carry the client id, so a
+ * probe against another agency's key must be refused even though the answer is
+ * only a size and a digest.
+ */
+describe('storage diagnostics', () => {
+  let alpha: Tenant;
+  let beta: Tenant;
+  let admin: Agent;
+  let outsider: Agent;
+  let key: string;
+
+  beforeAll(async () => {
+    await resetDatabase();
+    alpha = await createTenant('alpha');
+    beta = await createTenant('beta');
+    admin = agent();
+    await admin.login(alpha.adminEmail);
+    outsider = agent();
+    await outsider.login(beta.adminEmail);
+
+    const upload = await admin
+      .post('/api/media')
+      .field('clientId', alpha.clientId)
+      .attach('files', await image(64), 'diag.png');
+    const media = await prisma.media.findUniqueOrThrow({ where: { id: upload.body.items[0].id } });
+    key = media.filename;
+  });
+
+  it('reports the driver and confirms an object by digest', async () => {
+    const response = await admin.get(`/api/storage/diagnostics?key=${encodeURIComponent(key)}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.driver).toBe(storage.name);
+    expect(response.body.object.exists).toBe(true);
+    expect(response.body.object.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(response.body.object.sizeBytes).toBeGreaterThan(0);
+  });
+
+  it('never returns credentials, only whether they are set', async () => {
+    const response = await admin.get(`/api/storage/diagnostics?key=${encodeURIComponent(key)}`);
+    const body = JSON.stringify(response.body);
+
+    // The variable *names* appear — that is the report. The values must not.
+    expect(typeof response.body.variables.S3_ACCESS_KEY_ID).toBe('boolean');
+    expect(typeof response.body.variables.S3_SECRET_ACCESS_KEY).toBe('boolean');
+
+    for (const name of ['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY'] as const) {
+      const value = process.env[name];
+      if (value) expect(body).not.toContain(value);
+    }
+
+    // A digest of the object, never the object.
+    expect(response.body.object.content).toBeUndefined();
+  });
+
+  it('says plainly when an object is missing rather than erroring', async () => {
+    const response = await admin.get(
+      `/api/storage/diagnostics?key=${encodeURIComponent(`clients/${alpha.clientId}/assets/deadbeef.png`)}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.object.exists).toBe(false);
+    expect(response.body.object.sha256).toBeNull();
+  });
+
+  it('refuses a probe against another organisation’s key', async () => {
+    const response = await outsider.get(`/api/storage/diagnostics?key=${encodeURIComponent(key)}`);
+    expect(response.status).toBe(403);
+  });
+
+  it('requires the owner to ask about storage in general', async () => {
+    // With no key there is no tenant to scope to, so the unscoped form stays
+    // owner-only.
+    expect((await admin.get('/api/storage/diagnostics')).status).toBe(403);
+  });
+});
