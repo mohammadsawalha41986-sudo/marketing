@@ -109,14 +109,18 @@ function treatmentFor(client: { name: string; businessName: string; brand: { pri
   };
 }
 
-/** Read the source bytes back out of the storage provider. */
-async function readSource(key: string): Promise<Buffer> {
+/**
+ * Read stored bytes back, whichever driver is in use.
+ *
+ * Remote drivers implement `read`; the disk driver exposes a path. Neither is
+ * assumed — a driver that can do neither fails loudly rather than handing back
+ * an empty buffer that would render as a blank creative.
+ */
+async function readStored(key: string): Promise<Buffer> {
+  if (storage.read) return storage.read(key);
+
   const path = storage.localPath(key);
-  if (!path) {
-    // A remote driver would fetch here; local is the only driver today and the
-    // failure must be explicit rather than a silent empty buffer.
-    throw badRequest(`Storage driver "${storage.name}" cannot read objects back for rendering`);
-  }
+  if (!path) throw badRequest(`Storage driver "${storage.name}" cannot read objects back for rendering`);
   return readFile(path);
 }
 
@@ -194,7 +198,7 @@ creativesRouter.post(
         })
       : [resolvePreset(body)];
 
-    const source = await readSource(media.filename);
+    const source = await readStored(media.filename);
     const brand = treatmentFor(client);
     const headline = body.headline ?? content?.headline ?? null;
     const ctaLabel = body.ctaLabel ?? campaign?.ctaLabel ?? null;
@@ -312,7 +316,7 @@ creativesRouter.get(
     });
     if (!creative) throw notFound('Creative');
 
-    const stored = await readSource(creative.storageKey);
+    const stored = await readStored(creative.storageKey);
     const wanted = query.format ?? creative.format;
 
     let buffer = stored;

@@ -207,11 +207,41 @@ enum BrandAssetKind {
   PALETTE
 }
 
+/// Connection lifecycle.
+///
+/// CONNECTED is reached only after a provider API call has actually succeeded —
+/// never from configuration or from a token existing. The states between
+/// DISCONNECTED and CONNECTED exist because they need different actions:
+/// CONNECTING means OAuth is mid-flight, REAUTH_REQUIRED means a refresh failed
+/// and only the operator can fix it, EXPIRED means the token aged out and a
+/// refresh may still succeed.
 enum IntegrationStatus {
   DISCONNECTED
+  CONNECTING
   CONNECTED
+  TOKEN_EXPIRED
+  REAUTH_REQUIRED
   ERROR
   EXPIRED
+}
+
+/// What an external account is, in the provider's own terms.
+enum ExternalAccountKind {
+  BUSINESS
+  PAGE
+  INSTAGRAM
+  AD_ACCOUNT
+  CUSTOMER
+  LOCATION
+  ORGANIZATION
+  PROFILE
+}
+
+enum SyncStatus {
+  RUNNING
+  SUCCESS
+  PARTIAL
+  FAILED
 }
 
 enum SubscriptionStatus {
@@ -852,16 +882,109 @@ model Integration {
   scopes         String[]          @default([])
   lastSyncAt     DateTime?
   lastError      String?
-  /// Provider credentials. Never returned by the API.
+  /// Legacy credential blob. Superseded by the encrypted columns below and
+  /// kept only so existing rows are not destroyed by this migration.
   credentials    Json?
+
+  /// AES-256-GCM envelopes. Never selected by any API-facing query.
+  accessTokenEnc  String?
+  refreshTokenEnc String?
+  tokenExpiresAt  DateTime?
+  /// Non-reversible fingerprint, so logs and support can identify which token
+  /// is in play without the token itself ever being written down.
+  tokenFingerprint String?
+  metadata         Json     @default("{}")
+
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  accounts     IntegrationAccount[]
+  syncRuns     IntegrationSyncRun[]
 
   @@unique([clientId, platform])
   @@index([organizationId])
+  @@index([status])
+}
+
+/// One external account attached to a connection.
+///
+/// A Meta connection can carry a business, several Pages, an Instagram account
+/// and an ad account, each a row here. They are stored separately rather than
+/// as one `accountId` because the operator selects which ones to attach, and
+/// because publishing has to target a specific one.
+model IntegrationAccount {
+  id             String              @id @default(cuid())
+  integrationId  String
+  clientId       String
+  kind           ExternalAccountKind
+  /// The provider's own identifier. Names are never sufficient — they change.
+  externalId     String
+  name           String
+  username       String?
+  /// e.g. the ad account's own currency. Never assumed.
+  currency       String?
+  timezone       String?
+  parentExternalId String?
+  selected       Boolean             @default(false)
+  metadata       Json                @default("{}")
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  /// Re-running discovery must update rows, never duplicate them.
+  @@unique([integrationId, kind, externalId])
+  @@index([clientId])
+}
+
+/// One OAuth authorization attempt.
+///
+/// The state parameter is stored only as a SHA-256 hash: the raw value travels
+/// through the user's browser and the provider, so a database leak must not
+/// hand anyone a usable state. Single-use and short-lived, and pinned to both
+/// the client and the provider so a state issued for one cannot be replayed
+/// against the other.
+model OAuthTransaction {
+  id          String    @id @default(cuid())
+  organizationId String
+  clientId    String
+  platform    Platform
+  stateHash   String    @unique
+  redirectUri String
+  /// PKCE verifier, encrypted at rest like any other credential.
+  codeVerifierEnc String?
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  metadata    Json      @default("{}")
+  createdAt   DateTime  @default(now())
+
+  @@index([clientId, platform])
+  @@index([expiresAt])
+}
+
+/// One synchronisation run, successful or not.
+model IntegrationSyncRun {
+  id               String     @id @default(cuid())
+  organizationId   String
+  clientId         String
+  integrationId    String
+  platform         Platform
+  status           SyncStatus @default(RUNNING)
+  startedAt        DateTime   @default(now())
+  completedAt      DateTime?
+  recordsProcessed Int        @default(0)
+  recordsCreated   Int        @default(0)
+  recordsUpdated   Int        @default(0)
+  recordsFailed    Int        @default(0)
+  /// Human-readable. Never contains a token or a secret.
+  errorMessage     String?
+
+  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@index([clientId, platform])
+  @@index([integrationId, startedAt])
 }
 
 // ---------------------------------------------------------------- billing
