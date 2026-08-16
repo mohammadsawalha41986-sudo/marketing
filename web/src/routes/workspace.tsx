@@ -595,7 +595,9 @@ export function ApprovalsPage({ portal = false }: { portal?: boolean }) {
 interface AdapterInfo {
   platform: Platform;
   label: string;
-  implemented: boolean;
+  /** READY | NOT_CONFIGURED | NO_ENCRYPTION — never a bare "implemented" flag. */
+  readiness: 'READY' | 'NOT_CONFIGURED' | 'NO_ENCRYPTION';
+  readinessDetail: string;
   ready: boolean;
   missingEnv: string[];
   capabilities: { publish: boolean; metrics: boolean; audiences: boolean };
@@ -635,10 +637,12 @@ export function IntegrationsPage() {
       await api.post(`/integrations/${clientId}/${platform}/connect`);
       refetch();
     } catch (err) {
-      // A 501 here is the expected, honest answer while adapters are stubs.
+      // The server answers 503 PROVIDER_NOT_CONFIGURED and names the variables
+      // it needs, so the toast tells the operator what to set rather than that
+      // something is unavailable.
       push({
         tone: 'info',
-        title: 'Adapter not implemented',
+        title: 'Provider not configured',
         body: err instanceof Error ? err.message : undefined,
       });
     }
@@ -656,7 +660,7 @@ export function IntegrationsPage() {
     <>
       <PageHeader
         title={t('nav.integrations')}
-        subtitle="Connection architecture for every ad platform, with adapters ready to be implemented."
+        subtitle="Connection architecture for every ad platform. A provider connects once its credentials are set."
         action={
           <Select value={clientId} onChange={(event) => setClientId(event.target.value)} className="w-52">
             <option value="">All clients</option>
@@ -691,8 +695,12 @@ export function IntegrationsPage() {
               <Card key={adapter.platform} className="p-5">
                 <div className="flex items-start justify-between gap-3">
                   <PlatformChip platform={adapter.platform} />
-                  <Badge tone={connected ? 'ok' : adapter.implemented ? 'neutral' : 'warn'} dot>
-                    {connected ? t('integration.connected') : adapter.implemented ? t('integration.disconnected') : t('integration.notImplemented')}
+                  <Badge tone={connected ? 'ok' : adapter.ready ? 'brand' : 'warn'} dot>
+                    {connected
+                      ? t('integration.connected')
+                      : adapter.ready
+                        ? t('integration.readyToConnect')
+                        : t('integration.notConfigured')}
                   </Badge>
                 </div>
 

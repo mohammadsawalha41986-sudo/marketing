@@ -13,7 +13,7 @@ import { actorOf, requireAgency, requireAuth, requireManager } from '../middlewa
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
 import { assertWritable, orgId, resolveClientId } from '../lib/scope.js';
-import { adapterFor, adapterReadiness, allAdapters, NotImplementedError } from '../services/integrations/index.js';
+import { adapterFor, providerReadiness, allAdapters, ProviderNotConfiguredError } from '../services/integrations/index.js';
 import { hashPassword, passwordProblems } from '../lib/password.js';
 import { recordAudit } from '../services/audit.js';
 import { aiStatus } from '../services/ai/index.js';
@@ -84,13 +84,17 @@ integrationsRouter.get(
     res.json({
       ai: aiStatus(),
       adapters: allAdapters().map((adapter) => {
-        const readiness = adapterReadiness(adapter);
+        const readiness = providerReadiness(adapter);
         const oauth = adapter.oauth();
         return {
           platform: adapter.platform,
           label: adapter.label,
-          implemented: adapter.implemented,
-          ready: readiness.ready,
+          // `readiness` replaces the old boolean `implemented`: the UI needs to
+          // distinguish "credentials missing" from "no encryption key" from
+          // "ready", and each carries the text an operator can act on.
+          readiness: readiness.state,
+          readinessDetail: readiness.detail,
+          ready: readiness.state === 'READY',
           missingEnv: readiness.missingEnv,
           capabilities: adapter.capabilities,
           scopes: oauth.scopes,
@@ -143,7 +147,7 @@ integrationsRouter.post(
     if (!client) throw notFound('Client');
 
     const adapter = adapterFor(platform);
-    const readiness = adapterReadiness(adapter);
+    const readiness = providerReadiness(adapter);
 
     await prisma.integration.upsert({
       where: { clientId_platform: { clientId, platform } },
@@ -155,12 +159,20 @@ integrationsRouter.post(
       const { redirectTo } = await adapter.connect({ redirectUri: `${req.protocol}://${req.get('host')}/api/integrations/callback` });
       res.json({ redirectTo });
     } catch (error) {
-      if (error instanceof NotImplementedError) {
-        res.status(501).json({
+      // A missing credential is a configuration problem with a known fix, not a
+      // server fault — 503 with the exact variable names, so the response tells
+      // the operator what to do rather than that something is unavailable.
+      if (error instanceof ProviderNotConfiguredError) {
+        res.status(503).json({
           error: {
-            code: 'ADAPTER_NOT_IMPLEMENTED',
+            code: 'PROVIDER_NOT_CONFIGURED',
             message: error.message,
-            details: { platform, requiredEnv: error.requiredEnv, missingEnv: readiness.missingEnv, docsUrl: adapter.oauth().docsUrl },
+            details: {
+              platform,
+              missingEnv: error.missingEnv,
+              readiness: readiness.state,
+              docsUrl: adapter.oauth().docsUrl,
+            },
           },
         });
         return;
@@ -218,8 +230,14 @@ integrationsRouter.post(
       });
       res.json({ ok: true });
     } catch (error) {
-      if (error instanceof NotImplementedError) {
-        res.status(501).json({ error: { code: 'ADAPTER_NOT_IMPLEMENTED', message: error.message } });
+      if (error instanceof ProviderNotConfiguredError) {
+        res.status(503).json({
+          error: {
+            code: 'PROVIDER_NOT_CONFIGURED',
+            message: error.message,
+            details: { missingEnv: error.missingEnv },
+          },
+        });
         return;
       }
       throw error;
