@@ -5,6 +5,7 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { AuthProvider } from './lib/auth';
 import { I18nProvider } from './lib/i18n';
+import { RestaurantProvider } from './lib/restaurant';
 import { ThemeProvider } from './lib/theme';
 import { ToastProvider } from './components/ui';
 import './index.css';
@@ -19,7 +20,10 @@ createRoot(container).render(
         <ToastProvider>
           <AuthProvider>
             <BrowserRouter>
-              <App />
+              {/* Inside the router: the selection is mirrored in ?client=. */}
+              <RestaurantProvider>
+                <App />
+              </RestaurantProvider>
             </BrowserRouter>
           </AuthProvider>
         </ToastProvider>

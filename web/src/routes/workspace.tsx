@@ -1,6 +1,6 @@
 /** Calendar, media library, approvals, integrations, notifications and settings. */
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -12,6 +12,7 @@ import { api, qs, type ApprovalStatus, type MediaType, type Paginated, type Plat
 import { useDebounced, useQuery } from '../lib/hooks';
 import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
+import { useRestaurant } from '../lib/restaurant';
 import { bytes, cn } from '../lib/utils';
 import { date, dateTime, humanize, isoDate, relative } from '../lib/format';
 import {
@@ -323,13 +324,16 @@ export function MediaPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState('');
   const [type, setType] = useState('');
-  const [clientId, setClientId] = useState('');
   const [page, setPage] = useState(1);
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<MediaRow | null>(null);
   const debounced = useDebounced(search);
 
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(`/clients${qs({ pageSize: 100 })}`);
+  // The library follows the restaurant chosen in the top bar; the picker that
+  // used to sit in this filter row was a second answer to the same question.
+  const { currentId: clientId } = useRestaurant();
+  useEffect(() => setPage(1), [clientId]);
+
   const { data, loading, error, refetch } = useQuery<Paginated<MediaRow>>(
     `/media${qs({ page, pageSize: 24, search: debounced, type, clientId })}`,
     [page, debounced, type, clientId],
@@ -391,10 +395,6 @@ export function MediaPage() {
           <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
           <Input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder={t('common.search')} className="ps-9" />
         </div>
-        <Select value={clientId} onChange={(e) => { setClientId(e.target.value); setPage(1); }} className="w-48">
-          <option value="">All clients</option>
-          {clients.data?.items.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-        </Select>
         <Select value={type} onChange={(e) => { setType(e.target.value); setPage(1); }} className="w-40">
           <option value="">{t('common.all')}</option>
           {['IMAGE', 'VIDEO', 'DOCUMENT', 'LOGO'].map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
@@ -703,9 +703,10 @@ interface IntegrationRow {
 export function IntegrationsPage() {
   const { t, lang } = useI18n();
   const { push } = useToast();
-  const [clientId, setClientId] = useState('');
+  // Connections belong to a restaurant, and which restaurant is a top-bar
+  // decision now — connecting Meta for the wrong one is not a cheap mistake.
+  const { currentId: clientId, current } = useRestaurant();
 
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(`/clients${qs({ pageSize: 100 })}`);
   const catalog = useQuery<{ ai: { provider: string; model: string; configured: boolean }; adapters: AdapterInfo[] }>('/integrations/catalog');
   const { data, loading, refetch } = useQuery<{ items: IntegrationRow[] }>(
     `/integrations${qs({ clientId })}`,
@@ -714,7 +715,7 @@ export function IntegrationsPage() {
 
   const connect = async (platform: Platform) => {
     if (!clientId) {
-      push({ tone: 'error', title: 'Pick a client first' });
+      push({ tone: 'error', title: 'Choose a restaurant in the top bar first' });
       return;
     }
     try {
@@ -744,12 +745,10 @@ export function IntegrationsPage() {
     <>
       <PageHeader
         title={t('nav.integrations')}
-        subtitle="Connection architecture for every ad platform. A provider connects once its credentials are set."
-        action={
-          <Select value={clientId} onChange={(event) => setClientId(event.target.value)} className="w-52">
-            <option value="">All clients</option>
-            {clients.data?.items.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-          </Select>
+        subtitle={
+          current
+            ? `Connections for ${current.businessName}. A provider connects once its credentials are set.`
+            : 'Connection architecture for every ad platform. Choose a restaurant in the top bar to connect one.'
         }
       />
 

@@ -12,6 +12,7 @@ import {
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useI18n, type TranslationKey } from '../lib/i18n';
+import { useRestaurant } from '../lib/restaurant';
 import { useTheme } from '../lib/theme';
 import { cn } from '../lib/utils';
 import { relative } from '../lib/format';
@@ -185,6 +186,100 @@ function NavSection({ section, onNavigate }: { section: (typeof AGENCY_NAV)[numb
           </NavLink>
         ))}
       </nav>
+    </div>
+  );
+}
+
+/**
+ * The restaurant this session is working on.
+ *
+ * Sits in the top bar rather than on each page because it is the frame for
+ * everything underneath it: the campaigns you see, the posts, the assets, the
+ * connected accounts. "All restaurants" stays available — the roll-up view is
+ * the reason the home dashboard exists.
+ */
+function RestaurantSwitch() {
+  const { restaurants, currentId, current, setCurrentId, loading } = useRestaurant();
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [open]);
+
+  // Nothing to switch between until there is something to switch between.
+  if (loading || restaurants.length === 0) return null;
+
+  const choose = (id: string) => {
+    setCurrentId(id);
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((value) => !value)}
+        className="flex h-9 max-w-[13rem] items-center gap-2 rounded-lg border border-line bg-elevated px-2.5 text-[13px] transition-colors hover:border-brand/30"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        {current ? (
+          <Avatar name={current.businessName} src={current.logoUrl} size={20} />
+        ) : (
+          <Store className="h-4 w-4 shrink-0 text-muted" />
+        )}
+        <span className="min-w-0 truncate font-medium text-fg">
+          {current ? current.businessName : t('restaurant.all')}
+        </span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted" />
+      </button>
+
+      <AnimatePresence>
+        {open ? (
+          <motion.div
+            initial={{ opacity: 0, y: -6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.98 }}
+            transition={{ duration: 0.15 }}
+            role="listbox"
+            className="absolute start-0 z-50 mt-2 max-h-80 w-[min(18rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-line bg-surface p-1.5 shadow-lift"
+          >
+            <button
+              role="option"
+              aria-selected={currentId === ''}
+              onClick={() => choose('')}
+              className={cn(
+                'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-start text-[13px] transition-colors hover:bg-elevated',
+                currentId === '' ? 'font-medium text-brand' : 'text-muted',
+              )}
+            >
+              <Store className="h-4 w-4 shrink-0" />
+              {t('restaurant.all')}
+            </button>
+            {restaurants.map((row) => (
+              <button
+                key={row.id}
+                role="option"
+                aria-selected={currentId === row.id}
+                onClick={() => choose(row.id)}
+                className={cn(
+                  'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-start text-[13px] transition-colors hover:bg-elevated',
+                  currentId === row.id ? 'font-medium text-brand' : 'text-fg',
+                )}
+              >
+                <Avatar name={row.businessName} src={row.logoUrl} size={20} />
+                <span className="min-w-0 truncate">{row.businessName}</span>
+              </button>
+            ))}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
@@ -540,6 +635,8 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
           <div className="min-w-0 flex-1">
             {variant === 'admin' ? (
               <Badge tone="danger" dot>Super Admin</Badge>
+            ) : variant === 'agency' ? (
+              <RestaurantSwitch />
             ) : user?.organization ? (
               <p className="truncate text-sm font-medium text-fg">{user.organization.name}</p>
             ) : null}

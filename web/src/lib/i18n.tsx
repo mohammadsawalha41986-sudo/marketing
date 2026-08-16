@@ -41,6 +41,9 @@ const en = {
   'group.operations': 'Operations',
   'group.settings': 'Settings',
 
+  'restaurant.all': 'All restaurants',
+  'restaurant.label': 'Restaurant',
+
   'nav.dashboard': 'Dashboard',
   'nav.ceo': 'Executive',
   'nav.clients': 'Clients',
@@ -240,6 +243,9 @@ const ar: Record<keyof typeof en, string> = {
   'group.insights': 'التحليلات',
   'group.operations': 'العمليات',
   'group.settings': 'الإعدادات',
+
+  'restaurant.all': 'كل المطاعم',
+  'restaurant.label': 'المطعم',
 
   'nav.dashboard': 'لوحة التحكم',
   'nav.ceo': 'الإدارة التنفيذية',

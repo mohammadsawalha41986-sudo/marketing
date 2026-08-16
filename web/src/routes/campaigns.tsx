@@ -1,13 +1,14 @@
 /** Campaign list, creation, and the per-campaign workspace. */
 
-import { useMemo, useState, type FormEvent } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { CalendarRange, Megaphone, Plus, Search, Target, Wallet } from 'lucide-react';
 
 import { api, qs, type CampaignStatus, type Metrics, type Paginated, type Platform } from '../lib/api';
 import { useDebounced, useQuery } from '../lib/hooks';
 import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
+import { useRestaurant } from '../lib/restaurant';
 import { date, isoDate, money, num, humanize } from '../lib/format';
 import {
   Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Field, Input, Modal,
@@ -152,16 +153,20 @@ export function CampaignsPage({ portal = false }: { portal?: boolean }) {
   const { t, lang } = useI18n();
   const { canManage } = useAuth();
   const navigate = useNavigate();
-  const [params] = useSearchParams();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [page, setPage] = useState(1);
   const [creating, setCreating] = useState(false);
   const debounced = useDebounced(search);
 
+  // The restaurant comes from the top bar, which still honours a ?client= in
+  // the URL — so a link to one restaurant's campaigns keeps working.
+  const { currentId: clientId } = useRestaurant();
+  useEffect(() => setPage(1), [clientId]);
+
   const { data, loading, error, refetch } = useQuery<Paginated<CampaignRow>>(
-    `/campaigns${qs({ page, pageSize: 12, search: debounced, status, clientId: params.get('client') ?? undefined })}`,
-    [page, debounced, status, params.get('client')],
+    `/campaigns${qs({ page, pageSize: 12, search: debounced, status, clientId })}`,
+    [page, debounced, status, clientId],
   );
 
   const base = portal ? '/client' : '/app';
@@ -248,7 +253,7 @@ export function CampaignsPage({ portal = false }: { portal?: boolean }) {
         </Card>
       )}
 
-      <CampaignForm open={creating} onClose={() => setCreating(false)} onSaved={refetch} presetClient={params.get('client') ?? undefined} />
+      <CampaignForm open={creating} onClose={() => setCreating(false)} onSaved={refetch} presetClient={clientId || undefined} />
     </>
   );
 }

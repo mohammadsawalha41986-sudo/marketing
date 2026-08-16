@@ -1,6 +1,6 @@
 /** Analytics with the AI marketing analyst, plus report generation and viewing. */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Bot, Download, FileText, Plus, Sparkles, TrendingUp } from 'lucide-react';
@@ -9,6 +9,7 @@ import { api, qs, type Metrics, type Paginated, type Platform } from '../lib/api
 import { useQuery } from '../lib/hooks';
 import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
+import { useRestaurant } from '../lib/restaurant';
 import { date, isoDate, money, num, pct, ratio, humanize } from '../lib/format';
 import {
   Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Field, Input, Modal,
@@ -37,9 +38,16 @@ export function AnalyticsPage({ portal = false }: { portal?: boolean }) {
   const { user, isAgency } = useAuth();
   const { push } = useToast();
   const [days, setDays] = useState(30);
-  const [clientId, setClientId] = useState(portal ? user?.clientId ?? '' : '');
   const [analysis, setAnalysis] = useState<{ analysis: Analysis; meta: { isFallback: boolean; notice?: string; disclaimer: string } } | null>(null);
   const [analysing, setAnalysing] = useState(false);
+
+  // Whose numbers these are is a top-bar decision. A portal user only ever has
+  // their own.
+  const { currentId, restaurants } = useRestaurant();
+  const clientId = portal ? user?.clientId ?? '' : currentId;
+
+  // A different restaurant makes the previous analysis about somebody else.
+  useEffect(() => setAnalysis(null), [clientId]);
 
   const range = useMemo(() => {
     const to = new Date();
@@ -47,16 +55,15 @@ export function AnalyticsPage({ portal = false }: { portal?: boolean }) {
     return { from: isoDate(from), to: isoDate(to) };
   }, [days]);
 
-  const clients = useQuery<Paginated<{ id: string; name: string }>>(portal ? null : `/clients${qs({ pageSize: 100 })}`);
   const { data, loading, error, refetch } = useQuery<SeriesResponse>(
     `/analytics/series${qs({ ...range, clientId })}`,
     [range.from, range.to, clientId],
   );
 
   const runAnalysis = async () => {
-    const target = clientId || clients.data?.items[0]?.id;
+    const target = clientId || restaurants[0]?.id;
     if (!target) {
-      push({ tone: 'error', title: 'Choose a client to analyse' });
+      push({ tone: 'error', title: 'Choose a restaurant to analyse' });
       return;
     }
     setAnalysing(true);
@@ -79,12 +86,6 @@ export function AnalyticsPage({ portal = false }: { portal?: boolean }) {
         subtitle="Every number here is computed from stored campaign data."
         action={
           <>
-            {!portal ? (
-              <Select value={clientId} onChange={(event) => { setClientId(event.target.value); setAnalysis(null); }} className="w-48">
-                <option value="">All clients</option>
-                {clients.data?.items.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-              </Select>
-            ) : null}
             <Select value={days} onChange={(event) => setDays(Number(event.target.value))} className="w-36">
               {[7, 30, 90].map((value) => <option key={value} value={value}>Last {value} days</option>)}
             </Select>
