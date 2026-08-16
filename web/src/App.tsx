@@ -83,6 +83,14 @@ export default function App() {
                 <Route index element={<Navigate to="dashboard" replace />} />
                 <Route path="dashboard" element={<DashboardPage />} />
                 <Route path="ceo" element={<CeoPage />} />
+                {/*
+                  * Restaurants and clients are the same page. The nav says
+                  * restaurants because that is what they are; /app/clients stays
+                  * routed so existing links, bookmarks and the rows that link to
+                  * /app/clients/:id keep resolving.
+                  */}
+                <Route path="restaurants" element={<ClientsPage />} />
+                <Route path="restaurants/:id" element={<ClientDetailPage />} />
                 <Route path="clients" element={<ClientsPage />} />
                 <Route path="clients/:id" element={<ClientDetailPage />} />
                 <Route path="brand" element={<BrandPage />} />

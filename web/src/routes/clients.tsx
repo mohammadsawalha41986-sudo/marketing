@@ -171,7 +171,7 @@ export function ClientsPage() {
                 key={client.id}
                 hover
                 className="cursor-pointer overflow-hidden"
-                onClick={() => navigate(`/app/clients/${client.id}`)}
+                onClick={() => navigate(`/app/restaurants/${client.id}`)}
               >
                 <span
                   className="block h-1"
@@ -275,7 +275,7 @@ export function ClientDetailPage() {
     try {
       await api.delete(`/clients/${id}`);
       push({ tone: 'success', title: 'Client deleted' });
-      navigate('/app/clients');
+      navigate('/app/restaurants');
     } catch (err) {
       push({ tone: 'error', title: 'Could not delete', body: err instanceof Error ? err.message : undefined });
     }

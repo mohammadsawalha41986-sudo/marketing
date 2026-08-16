@@ -291,7 +291,7 @@ export function DashboardPage({ portal = false }: { portal?: boolean }) {
             icon={Building2}
             title={t('empty.clients.title')}
             body={t('empty.clients.body')}
-            action={<Button onClick={() => navigate('/app/clients')}>Add your first client</Button>}
+            action={<Button onClick={() => navigate('/app/restaurants')}>Add your first restaurant</Button>}
           />
         </Card>
       ) : null}

@@ -11,6 +11,36 @@ const en = {
   'app.name': 'Marketing OS',
   'app.tagline': 'The command centre for every brand you run',
 
+  /*
+   * The navigation vocabulary.
+   *
+   * This is one operator's marketing system for their own restaurants, not a
+   * platform restaurants log into, so the nouns are the operator's: a client is
+   * a restaurant, an approval is a review. The database still calls them
+   * clients and approvals — renaming the schema would be a migration for a
+   * wording change — so the translation layer is where the two vocabularies
+   * meet.
+   */
+  'nav.home': 'Home',
+  'nav.restaurants': 'Restaurants',
+  'nav.brandDna': 'Brand DNA',
+  'nav.assets': 'Assets',
+  'nav.imageAds': 'Image Ads',
+  'nav.videoAds': 'Video Ads',
+  'nav.aiContent': 'AI Content',
+  'nav.metaCampaigns': 'Meta Campaigns',
+  'nav.organicContent': 'Organic Content',
+  'nav.socialPosting': 'Social Posting',
+  'nav.reviews': 'Reviews',
+
+  'group.workspace': 'Workspace',
+  'group.create': 'Create',
+  'group.marketing': 'Marketing',
+  'group.social': 'Social',
+  'group.insights': 'Insights',
+  'group.operations': 'Operations',
+  'group.settings': 'Settings',
+
   'nav.dashboard': 'Dashboard',
   'nav.ceo': 'Executive',
   'nav.clients': 'Clients',
@@ -190,6 +220,26 @@ const en = {
 const ar: Record<keyof typeof en, string> = {
   'app.name': 'ماركتنج أو إس',
   'app.tagline': 'مركز القيادة لكل علامة تجارية تديرها',
+
+  'nav.home': 'الرئيسية',
+  'nav.restaurants': 'المطاعم',
+  'nav.brandDna': 'هوية العلامة',
+  'nav.assets': 'الأصول',
+  'nav.imageAds': 'إعلانات الصور',
+  'nav.videoAds': 'إعلانات الفيديو',
+  'nav.aiContent': 'محتوى الذكاء الاصطناعي',
+  'nav.metaCampaigns': 'حملات ميتا',
+  'nav.organicContent': 'المحتوى العضوي',
+  'nav.socialPosting': 'النشر الاجتماعي',
+  'nav.reviews': 'المراجعات',
+
+  'group.workspace': 'مساحة العمل',
+  'group.create': 'الإنشاء',
+  'group.marketing': 'التسويق',
+  'group.social': 'التواصل الاجتماعي',
+  'group.insights': 'التحليلات',
+  'group.operations': 'العمليات',
+  'group.settings': 'الإعدادات',
 
   'nav.dashboard': 'لوحة التحكم',
   'nav.ceo': 'الإدارة التنفيذية',

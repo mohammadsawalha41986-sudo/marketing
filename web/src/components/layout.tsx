@@ -6,7 +6,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, CreditCard, FileText, Gauge, Image,
   LayoutDashboard, Languages, LogOut, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
-  Settings, Shield, Sparkles, Sun, ThumbsUp, Users, X, type LucideIcon,
+  Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Users, X, type LucideIcon,
 } from 'lucide-react';
 
 import { api, qs, type Paginated } from '../lib/api';
@@ -24,56 +24,98 @@ interface NavItem {
   end?: boolean;
 }
 
+/*
+ * The operator's navigation.
+ *
+ * Grouped by what you came here to do rather than by which database table the
+ * page reads, which is why Campaigns and Organic Content sit together under
+ * Marketing while the studio pages that produce them sit under Create.
+ *
+ * Two entries are deliberately gone from the top level. "Clients" is now
+ * Restaurants — the same page and the same API, named for what it holds.
+ * "Approvals" was a whole section for a field on a piece of content; review
+ * state now lives with the content it belongs to, and the page itself is still
+ * routed and still reachable, just not competing for a slot in the primary nav.
+ */
 const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
   {
-    heading: 'nav.overview',
+    heading: 'group.workspace',
     items: [
-      { to: '/app/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard },
-      { to: '/app/ceo', labelKey: 'nav.ceo', icon: Gauge },
+      { to: '/app/dashboard', labelKey: 'nav.home', icon: LayoutDashboard },
+      { to: '/app/restaurants', labelKey: 'nav.restaurants', icon: Store },
+      { to: '/app/brand', labelKey: 'nav.brandDna', icon: Palette },
+      { to: '/app/media', labelKey: 'nav.assets', icon: Image },
+    ],
+  },
+  {
+    heading: 'group.create',
+    items: [
+      { to: '/app/studio', labelKey: 'nav.aiContent', icon: Sparkles },
+    ],
+  },
+  {
+    heading: 'group.marketing',
+    items: [
+      { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
+      { to: '/app/content', labelKey: 'nav.organicContent', icon: PenLine },
+    ],
+  },
+  {
+    heading: 'group.social',
+    items: [
+      { to: '/app/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
+    ],
+  },
+  {
+    heading: 'group.insights',
+    items: [
       { to: '/app/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
+      { to: '/app/ceo', labelKey: 'nav.ceo', icon: Gauge },
       { to: '/app/reports', labelKey: 'nav.reports', icon: FileText },
     ],
   },
   {
-    heading: 'nav.workspace',
+    heading: 'group.operations',
     items: [
-      { to: '/app/clients', labelKey: 'nav.clients', icon: Building2 },
-      { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
-      { to: '/app/content', labelKey: 'nav.content', icon: PenLine },
-      { to: '/app/studio', labelKey: 'nav.studio', icon: Sparkles },
-      { to: '/app/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
-      { to: '/app/media', labelKey: 'nav.media', icon: Image },
-      { to: '/app/approvals', labelKey: 'nav.approvals', icon: ThumbsUp },
+      { to: '/app/notifications', labelKey: 'nav.notifications', icon: Bell },
     ],
   },
   {
-    heading: 'nav.settings',
+    heading: 'group.settings',
     items: [
-      { to: '/app/brand', labelKey: 'nav.brand', icon: Palette },
       { to: '/app/integrations', labelKey: 'nav.integrations', icon: CreditCard },
       { to: '/app/settings', labelKey: 'nav.settings', icon: Settings },
     ],
   },
 ];
 
+/*
+ * The portal keeps its review queue in the nav: a portal user's whole reason to
+ * be here is to look at work and say yes or no to it.
+ */
 const CLIENT_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
   {
-    heading: 'nav.overview',
+    heading: 'group.workspace',
     items: [
-      { to: '/client/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard },
-      { to: '/client/ceo', labelKey: 'nav.ceo', icon: Gauge },
-      { to: '/client/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
-      { to: '/client/reports', labelKey: 'nav.reports', icon: FileText },
+      { to: '/client/dashboard', labelKey: 'nav.home', icon: LayoutDashboard },
+      { to: '/client/brand', labelKey: 'nav.brandDna', icon: Palette },
+      { to: '/client/approvals', labelKey: 'nav.reviews', icon: ThumbsUp },
     ],
   },
   {
-    heading: 'nav.workspace',
+    heading: 'group.marketing',
     items: [
       { to: '/client/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
-      { to: '/client/content', labelKey: 'nav.content', icon: PenLine },
-      { to: '/client/approvals', labelKey: 'nav.approvals', icon: ThumbsUp },
+      { to: '/client/content', labelKey: 'nav.organicContent', icon: PenLine },
       { to: '/client/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
-      { to: '/client/brand', labelKey: 'nav.brand', icon: Palette },
+    ],
+  },
+  {
+    heading: 'group.insights',
+    items: [
+      { to: '/client/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
+      { to: '/client/ceo', labelKey: 'nav.ceo', icon: Gauge },
+      { to: '/client/reports', labelKey: 'nav.reports', icon: FileText },
     ],
   },
 ];
