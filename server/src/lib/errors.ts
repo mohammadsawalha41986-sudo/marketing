@@ -46,6 +46,29 @@ export const gone = (message: string) => new AppError(410, 'STORED_OBJECT_MISSIN
 
 export const tooLarge = (message: string) => new AppError(413, 'PAYLOAD_TOO_LARGE', message);
 
+/**
+ * Object storage failures, kept apart from generic 500s.
+ *
+ * Storage is the one dependency whose failure mode is routinely a *configuration*
+ * problem rather than a bug, and the three cases need different responses from
+ * whoever is looking at it: nothing is configured (fix the environment), the
+ * bucket refused a write (check credentials and permissions), the bucket refused
+ * a read (the object may be there but unreachable). Collapsing them into
+ * "Something went wrong" is what made the ephemeral-filesystem data loss take so
+ * long to identify.
+ */
+export const storageNotConfigured = (message: string) =>
+  new AppError(503, 'STORAGE_NOT_CONFIGURED', message);
+
+export const storageUploadFailed = (message: string) =>
+  new AppError(502, 'STORAGE_UPLOAD_FAILED', message);
+
+export const storageReadFailed = (message: string) =>
+  new AppError(502, 'STORAGE_READ_FAILED', message);
+
+export const storageDeleteFailed = (message: string) =>
+  new AppError(502, 'STORAGE_DELETE_FAILED', message);
+
 export const unprocessable = (message: string, details?: unknown) =>
   new AppError(422, 'UNPROCESSABLE', message, details);
 

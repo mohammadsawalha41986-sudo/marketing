@@ -200,3 +200,76 @@ describe('adaptive rendering', () => {
     expect(analysis.aspect).toBeCloseTo(16 / 9, 2);
   });
 });
+
+/**
+ * Regression guard for the three placements named in the brief.
+ *
+ * Moving media into object storage touches how the source *reaches* the
+ * renderer — a read from a bucket instead of a read from disk — and nothing
+ * about how the frame is built. This pins that: the same three sizes, still
+ * recomposed rather than cropped, still keeping the material a crop would cut.
+ */
+describe('adaptive engine after the storage change', () => {
+  const CASES = [
+    { key: 'INSTAGRAM_PORTRAIT', width: 1080, height: 1350 },
+    { key: 'INSTAGRAM_STORY', width: 1080, height: 1920 },
+    { key: 'GOOGLE_ADS_LANDSCAPE', width: 1200, height: 628 },
+  ];
+
+  it('still recomposes rather than crops, at exactly the placement dimensions', async () => {
+    const source = await wideSource();
+
+    for (const expected of CASES) {
+      const preset = presetByKey(expected.key)!;
+      const rendered = await renderCreative({
+        source,
+        preset,
+        brand: BRAND,
+        headline: 'Twenty percent off this weekend',
+        ctaLabel: 'Order now',
+        format: CreativeFormat.PNG,
+      });
+
+      const meta = await sharp(rendered.buffer).metadata();
+      expect(meta.width).toBe(expected.width);
+      expect(meta.height).toBe(expected.height);
+
+      if (expected.key === 'GOOGLE_ADS_LANDSCAPE') {
+        // 1.91:1 against 16:9 — close enough that cropping is the right tool,
+        // and it must still be a real crop rather than a squeeze.
+        expect(rendered.composition.strategy).toBe('CROP');
+        expect(rendered.composition.retainedArea).toBeGreaterThan(MIN_RETAINED_AREA);
+      } else {
+        // The tall placements keep the whole frame: both edge markers survive,
+        // which no crop of this source could manage.
+        expect(rendered.composition.strategy).toBe('EXTEND');
+        const sides = await markerSides(rendered.buffer);
+        expect(sides.left).toBe(true);
+        expect(sides.right).toBe(true);
+      }
+    }
+  });
+
+  it('produces a different composition per placement, not one image resized', async () => {
+    const source = await wideSource();
+    const rendered = await Promise.all(
+      CASES.map(async ({ key }) =>
+        renderCreative({
+          source,
+          preset: presetByKey(key)!,
+          brand: BRAND,
+          headline: 'Twenty percent off this weekend',
+          ctaLabel: 'Order now',
+          format: CreativeFormat.PNG,
+        }),
+      ),
+    );
+
+    // Where the intact source sits differs per placement — a resize of one
+    // output would put it in proportionally the same place every time.
+    const placements = rendered.map((item) =>
+      [item.composition.strategy, item.composition.subject.top, item.composition.subject.height].join(':'),
+    );
+    expect(new Set(placements).size).toBe(CASES.length);
+  });
+});

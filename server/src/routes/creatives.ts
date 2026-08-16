@@ -9,15 +9,21 @@
 import { Router } from 'express';
 import { CreativeFormat, CreativeStatus, MediaType, Platform, Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { readFile } from 'node:fs/promises';
 
 import { prisma } from '../lib/prisma.js';
-import { asyncHandler, badRequest, gone, notFound } from '../lib/errors.js';
+import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
 import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam } from '../lib/http.js';
 import { assertWritable, orgId, scopeWhere } from '../lib/scope.js';
 import { storage } from '../services/storage/index.js';
+import {
+  creativeFileUrl,
+  deleteObjectIfUnreferenced,
+  readObject,
+  sendObject,
+  withMediaUrls,
+} from '../services/storage/objects.js';
 import { recordAudit } from '../services/audit.js';
 import { PRESETS, defaultPresetFor, presetByKey, type CreativePreset } from '../services/creative/presets.js';
 import { renderCreative, type BrandTreatment } from '../services/creative/render.js';
@@ -110,41 +116,6 @@ function treatmentFor(client: { name: string; businessName: string; brand: { pri
 }
 
 /**
- * Read stored bytes back, whichever driver is in use.
- *
- * Remote drivers implement `read`; the disk driver exposes a path. Neither is
- * assumed — a driver that can do neither fails loudly rather than handing back
- * an empty buffer that would render as a blank creative.
- */
-async function readStored(key: string): Promise<Buffer> {
-  try {
-    if (storage.read) return await storage.read(key);
-
-    const path = storage.localPath(key);
-    if (!path) throw badRequest(`Storage driver "${storage.name}" cannot read objects back for rendering`);
-    return await readFile(path);
-  } catch (error) {
-    /*
-     * A stored object that has gone missing is a specific, diagnosable state,
-     * and on an ephemeral filesystem it is the *expected* one: the row survives
-     * a redeploy, the file does not. Reported as 410 Gone with that cause named,
-     * because "Something went wrong" sends the operator hunting for a bug in
-     * the renderer when the real answer is that production has no persistent
-     * storage configured.
-     */
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || (error as Error).message?.includes('could not read')) {
-      throw gone(
-        storage.name === 'local'
-          ? 'The stored file is no longer on disk. This deployment uses the local storage driver, so uploads and rendered creatives are lost whenever the container is replaced. Configure S3-compatible object storage (S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY) to make media persistent.'
-          : 'The stored file is no longer available in object storage.',
-      );
-    }
-    throw error;
-  }
-}
-
-/**
  * Turn an image-decoding failure into an answer the operator can act on.
  *
  * sharp raises libvips errors like `vipspng: libpng read error` for a file that
@@ -160,6 +131,18 @@ function asDecodeError(error: unknown): never {
     );
   }
   throw error;
+}
+
+/**
+ * Point a creative's `url` at the authenticated proxy route.
+ *
+ * The column holds whatever the driver returned when the object was written —
+ * a bucket URL under S3, a `/uploads` path under the disk driver — and neither
+ * is something a browser should be sent to. The bucket is private, and the
+ * `/uploads` path only resolves on a machine that still has the file.
+ */
+function withCreativeUrl<T extends { id: string; url: string }>(creative: T): T {
+  return { ...creative, url: creativeFileUrl(creative.id) };
 }
 
 const analyseSchema = z.object({
@@ -236,7 +219,7 @@ creativesRouter.post(
         })
       : [resolvePreset(body)];
 
-    const source = await readStored(media.filename);
+    const source = await readObject(media.filename);
     const brand = treatmentFor(client);
     const headline = body.headline ?? content?.headline ?? null;
     const ctaLabel = body.ctaLabel ?? campaign?.ctaLabel ?? null;
@@ -290,7 +273,7 @@ creativesRouter.post(
       ip: req.ip,
     });
 
-    res.status(201).json({ creatives: created });
+    res.status(201).json({ creatives: created.map(withCreativeUrl) });
   }),
 );
 
@@ -317,7 +300,7 @@ creativesRouter.get(
       orderBy: { createdAt: 'desc' },
       take: 100,
     });
-    res.json({ creatives });
+    res.json({ creatives: creatives.map(withCreativeUrl) });
   }),
 );
 
@@ -331,7 +314,40 @@ creativesRouter.get(
       include: { sourceMedia: { select: { id: true, originalName: true, url: true, width: true, height: true } } },
     });
     if (!creative) throw notFound('Creative');
-    res.json({ creative });
+    res.json({
+      creative: {
+        ...withCreativeUrl(creative),
+        sourceMedia: creative.sourceMedia ? withMediaUrls(creative.sourceMedia) : null,
+      },
+    });
+  }),
+);
+
+/**
+ * The rendered artwork, inline.
+ *
+ * Separate from `/download` because a preview and a download are different
+ * things: this one carries no attachment disposition, so the studio can show the
+ * finished creative in an <img> without the browser trying to save it. Both read
+ * the same stored object through the same tenant check.
+ */
+creativesRouter.get(
+  '/:id/file',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const creative = await prisma.creative.findFirst({
+      where: { id: req.params.id, ...scopeWhere(actor) },
+      select: { storageKey: true, format: true, preset: true },
+    });
+    if (!creative) throw notFound('Creative');
+
+    const buffer = await readObject(creative.storageKey);
+    const jpg = creative.format === CreativeFormat.JPG;
+    sendObject(res, buffer, {
+      mimeType: jpg ? 'image/jpeg' : 'image/png',
+      filename: `${creative.preset.toLowerCase()}.${jpg ? 'jpg' : 'png'}`,
+    });
   }),
 );
 
@@ -357,7 +373,7 @@ creativesRouter.get(
     });
     if (!creative) throw notFound('Creative');
 
-    const stored = await readStored(creative.storageKey);
+    const stored = await readObject(creative.storageKey);
     const wanted = query.format ?? creative.format;
 
     let buffer = stored;
@@ -435,7 +451,9 @@ creativesRouter.delete(
     await prisma.creative.delete({ where: { id: existing.id } });
     // The source asset is deliberately untouched — deleting a rendered variant
     // must never destroy the photograph it was made from.
-    await storage.delete(existing.storageKey).catch(() => undefined);
+    // Only if no other row shares these bytes — a re-render of the same source
+    // at the same placement is content-addressed to the same object.
+    await deleteObjectIfUnreferenced(existing.storageKey);
 
     await recordAudit({ actor, action: 'creative.delete', entity: 'Creative', entityId: existing.id, ip: req.ip });
     res.json({ ok: true });

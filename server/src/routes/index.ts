@@ -3,6 +3,7 @@
 import { Router } from 'express';
 
 import { readiness } from '../lib/db-health.js';
+import { storageStatus } from '../services/storage/index.js';
 import { authRouter } from './auth.js';
 import { clientsRouter } from './clients.js';
 import { brandsRouter } from './brands.js';
@@ -46,6 +47,14 @@ apiRouter.get('/health', (_req, res) => {
       // Non-zero means panics are happening and being recovered from. A climbing
       // number is the signal that the host's thread ceiling is genuinely too low.
       engineRecoveries: health.panicRecoveries,
+      /*
+       * Reported, but not a reason to fail the check. Unconfigured storage
+       * closes the media routes and leaves everything else working, so marking
+       * the whole service unhealthy would take a running deployment down over a
+       * subset of it. Named here so the state is visible without opening the app.
+       */
+      storage: storageStatus().driver,
+      mediaPersistent: storageStatus().persistent,
       uptime: Math.round(process.uptime()),
     };
     res.status(health.state === 'ok' ? 200 : 503).json(body);

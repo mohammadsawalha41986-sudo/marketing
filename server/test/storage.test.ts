@@ -72,7 +72,7 @@ describe('S3 storage', () => {
     expect(JSON.stringify({ url, headers })).not.toContain('secret-key-value');
 
     expect(url).toContain('/marketing-os/clients/abc/creatives/');
-    expect(stored.key).toMatch(/^clients\/abc\/creatives\/\d{4}\/\d{2}\/[0-9a-f]{32}\.png$/);
+    expect(stored.key).toMatch(/^clients\/abc\/creatives\/[0-9a-f]{32}\.png$/);
     expect(stored.sizeBytes).toBe(11);
   });
 
@@ -92,7 +92,7 @@ describe('S3 storage', () => {
     const storage = new S3Storage(CONFIG, stub(403));
     await expect(
       storage.save(Buffer.from('x'), { filename: 'a.png', mimeType: 'image/png' }),
-    ).rejects.toThrow(/HTTP 403/);
+    ).rejects.toMatchObject({ code: 'STORAGE_UPLOAD_FAILED', status: 502 });
   });
 
   it('reads bytes back', async () => {
@@ -108,7 +108,7 @@ describe('S3 storage', () => {
 
   it('surfaces a real delete failure', async () => {
     const storage = new S3Storage(CONFIG, stub(500));
-    await expect(storage.delete('x.png')).rejects.toThrow(/HTTP 500/);
+    await expect(storage.delete('x.png')).rejects.toMatchObject({ code: 'STORAGE_DELETE_FAILED' });
   });
 
   it('reports no local path, so callers use read() instead of an empty file', () => {
@@ -129,5 +129,160 @@ describe('S3 storage', () => {
     const [url] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
     expect(url).toContain('clients/x%20y/');
     expect(url).not.toContain('clients%2Fx');
+  });
+});
+
+describe('reading objects back', () => {
+  it('separates "the object is gone" from "the bucket refused us"', async () => {
+    // 404: the reference outlived the bytes. Re-uploading fixes it.
+    await expect(new S3Storage(CONFIG, stub(404)).read('k.png')).rejects.toMatchObject({
+      code: 'STORED_OBJECT_MISSING',
+      status: 410,
+    });
+
+    // 403: the object may well be there. This is a credentials problem, and
+    // telling the operator the file is missing would send them to re-upload
+    // something that is already sitting in the bucket.
+    await expect(new S3Storage(CONFIG, stub(403)).read('k.png')).rejects.toMatchObject({
+      code: 'STORAGE_READ_FAILED',
+      status: 502,
+    });
+  });
+
+  it('reports existence without reading the body', async () => {
+    expect(await new S3Storage(CONFIG, stub(200)).exists('k.png')).toBe(true);
+    expect(await new S3Storage(CONFIG, stub(404)).exists('k.png')).toBe(false);
+  });
+});
+
+describe('presigned URLs', () => {
+  it('signs a bounded, credential-free GET URL', () => {
+    const url = new S3Storage(CONFIG, stub()).presignedUrl('clients/abc/assets/x.png', 120);
+
+    expect(url).toContain('X-Amz-Signature=');
+    expect(url).toContain('X-Amz-Expires=120');
+    expect(url).toContain('X-Amz-Algorithm=AWS4-HMAC-SHA256');
+    // The access key identifies the credential; the secret must never travel.
+    expect(url).not.toContain('secret-key-value');
+  });
+
+  it('clamps the expiry to what S3 will accept', () => {
+    const storage = new S3Storage(CONFIG, stub());
+    expect(storage.presignedUrl('k.png', 0)).toContain('X-Amz-Expires=1');
+    expect(storage.presignedUrl('k.png', 99_999_999)).toContain('X-Amz-Expires=604800');
+  });
+});
+
+/**
+ * The acceptance criterion for this whole change: media outlives the container.
+ *
+ * A redeploy replaces the process and its filesystem while the database and the
+ * bucket persist. That is simulated here by writing through one driver instance
+ * and reading through a completely separate one — a new object, new
+ * credentials-derived signing state, nothing carried over — against a bucket
+ * that kept the bytes. The read must succeed *without re-uploading*, which is
+ * exactly what fails today on the local driver.
+ */
+describe('surviving a redeploy', () => {
+  function bucket() {
+    const objects = new Map<string, Buffer>();
+
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const key = decodeURIComponent(new URL(String(url)).pathname.replace('/marketing-os/', ''));
+      const method = init?.method ?? 'GET';
+
+      if (method === 'PUT') {
+        objects.set(key, Buffer.from(init?.body as Uint8Array));
+        return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0), text: async () => '' };
+      }
+
+      const stored = objects.get(key);
+      if (!stored) return { ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0), text: async () => '' };
+
+      if (method === 'DELETE') {
+        objects.delete(key);
+        return { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0), text: async () => '' };
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => stored.buffer.slice(stored.byteOffset, stored.byteOffset + stored.byteLength),
+        text: async () => '',
+      };
+    }) as unknown as typeof fetch;
+
+    return { objects, fetchImpl };
+  }
+
+  it('reads back what an earlier container wrote, with no re-upload', async () => {
+    const { fetchImpl } = bucket();
+
+    // Deploy 1: upload a source and render three placement variants from it.
+    const before = new S3Storage(CONFIG, fetchImpl);
+    const source = await before.save(Buffer.from('source-photograph'), {
+      filename: 'burger.png',
+      mimeType: 'image/png',
+      prefix: 'clients/abc/assets',
+    });
+    const variants = await Promise.all(
+      ['1080x1350', '1080x1920', '1200x628'].map((size) =>
+        before.save(Buffer.from(`rendered-${size}`), {
+          filename: `${size}.png`,
+          mimeType: 'image/png',
+          prefix: 'clients/abc/creatives',
+        }),
+      ),
+    );
+
+    const writesDuringFirstDeploy = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // Deploy 2: a brand new process. Only the keys survived, in the database.
+    const after = new S3Storage(CONFIG, fetchImpl);
+
+    expect(Buffer.from(await after.read(source.key)).toString()).toBe('source-photograph');
+    for (const [index, size] of ['1080x1350', '1080x1920', '1200x628'].entries()) {
+      expect(Buffer.from(await after.read(variants[index]!.key)).toString()).toBe(`rendered-${size}`);
+    }
+
+    // Nothing was written during the second deploy: the reads are genuine reads.
+    const writesAfter = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .slice(writesDuringFirstDeploy)
+      .filter((call) => (call[1] as RequestInit).method === 'PUT');
+    expect(writesAfter).toHaveLength(0);
+  });
+
+  it('leaves no orphaned object behind when media is deleted', async () => {
+    const { objects, fetchImpl } = bucket();
+    const storage = new S3Storage(CONFIG, fetchImpl);
+
+    const stored = await storage.save(Buffer.from('bytes'), {
+      filename: 'a.png',
+      mimeType: 'image/png',
+      prefix: 'clients/abc/assets',
+    });
+    expect(objects.has(stored.key)).toBe(true);
+
+    await storage.delete(stored.key);
+    expect(objects.size).toBe(0);
+    // And the reference is now genuinely dead rather than quietly empty.
+    await expect(storage.read(stored.key)).rejects.toMatchObject({ code: 'STORED_OBJECT_MISSING' });
+  });
+
+  it('keeps one client out of another tenant prefix', async () => {
+    const { objects, fetchImpl } = bucket();
+    const storage = new S3Storage(CONFIG, fetchImpl);
+    const bytes = Buffer.from('identical-bytes');
+
+    const a = await storage.save(bytes, { filename: 'x.png', mimeType: 'image/png', prefix: 'clients/aaa/assets' });
+    const b = await storage.save(bytes, { filename: 'x.png', mimeType: 'image/png', prefix: 'clients/bbb/assets' });
+
+    // Identical content, but the tenant is part of the key, so the two clients
+    // never share an object — content addressing must not collapse across the
+    // boundary it is supposed to respect.
+    expect(a.key).not.toBe(b.key);
+    expect(a.key.startsWith('clients/aaa/')).toBe(true);
+    expect(b.key.startsWith('clients/bbb/')).toBe(true);
+    expect(objects.size).toBe(2);
   });
 });

@@ -19,7 +19,7 @@ import { crossTenant } from '../lib/scope.js';
 import { derive, sumSnapshots } from '../services/analytics.js';
 import { recordAudit } from '../services/audit.js';
 import { aiStatus } from '../services/ai/index.js';
-import { storage } from '../services/storage/index.js';
+import { storageStatus } from '../services/storage/index.js';
 import { cookieSecure, env, hasOpenAi } from '../env.js';
 
 export const adminRouter: Router = Router();
@@ -414,7 +414,7 @@ adminRouter.get(
       environment: env.NODE_ENV,
       appUrl: env.APP_URL,
       uptimeSeconds: Math.round(process.uptime()),
-      storage: { driver: storage.name, maxUploadMb: env.MAX_UPLOAD_MB },
+      storage: { ...storageStatus(), maxUploadMb: env.MAX_UPLOAD_MB },
       ai: { ...aiStatus(), keyConfigured: hasOpenAi },
       session: { ttlHours: env.SESSION_TTL_HOURS, secureCookies: cookieSecure },
       rateLimit: { windowMinutes: env.RATE_LIMIT_WINDOW_MIN, max: env.RATE_LIMIT_MAX },

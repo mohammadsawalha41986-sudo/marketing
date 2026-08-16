@@ -430,7 +430,9 @@ describe('uploads and brand identity', () => {
     expect(response.status).toBe(201);
     expect(response.body.items[0].type).toBe('IMAGE');
     expect(response.body.items[0].width).toBe(1);
-    expect(response.body.items[0].url).toMatch(/^\/uploads\//);
+    // Media is fetched through the API, not from a filesystem path — that path
+    // only ever resolved on the container that happened to receive the upload.
+    expect(response.body.items[0].url).toMatch(/^\/api\/media\/[\w-]+\/file$/);
   });
 });
 

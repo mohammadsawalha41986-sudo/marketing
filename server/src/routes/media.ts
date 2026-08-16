@@ -14,6 +14,13 @@ import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope
 import { IMAGE_MIME, VIDEO_MIME, uploadAny, sniffImage } from '../middleware/upload.js';
 import { env } from '../env.js';
 import { storage } from '../services/storage/index.js';
+import {
+  createMedia,
+  deleteObjectIfUnreferenced,
+  readObject,
+  sendObject,
+  withMediaUrls,
+} from '../services/storage/objects.js';
 import { recordAudit } from '../services/audit.js';
 
 export const mediaRouter: Router = Router();
@@ -68,7 +75,36 @@ mediaRouter.get(
       prisma.media.count({ where }),
     ]);
 
-    res.json(pageResult(items, total, query));
+    res.json(pageResult(items.map(withMediaUrls), total, query));
+  }),
+);
+
+/**
+ * Serve the bytes for one asset.
+ *
+ * The library reads through here rather than from a bucket URL, so the tenant
+ * check applies to the image itself and not merely to the row describing it.
+ * That is what lets the bucket stay private: there is no URL anywhere that
+ * works without a session belonging to the client who owns the file.
+ */
+mediaRouter.get(
+  '/:id/file',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+
+    const media = await prisma.media.findFirst({
+      where: { id: req.params.id, ...scopeWhere(actor) },
+      select: { filename: true, mimeType: true, originalName: true },
+    });
+    if (!media) throw notFound('Media');
+
+    const buffer = await readObject(media.filename);
+    sendObject(res, buffer, {
+      mimeType: media.mimeType,
+      filename: media.originalName,
+      download: req.query.download === '1',
+    });
   }),
 );
 
@@ -125,27 +161,27 @@ mediaRouter.post(
       const stored = await storage.save(file.buffer, {
         filename: file.originalname,
         mimeType: file.mimetype,
-        prefix: clientId ? `clients/${clientId}` : 'shared',
+        // The tenant boundary is part of the object key, so one client's assets
+        // are separable in the bucket itself and not merely by a database column.
+        prefix: clientId ? `clients/${clientId}/assets` : 'shared/assets',
       });
 
       created.push(
-        await prisma.media.create({
-          data: {
-            organizationId: orgId(actor),
-            clientId: clientId ?? null,
-            campaignId: campaignId ?? null,
-            type: typeFor(file.mimetype),
-            filename: stored.key,
-            originalName: file.originalname.slice(0, 200),
-            mimeType: file.mimetype,
-            sizeBytes: stored.sizeBytes,
-            width,
-            height,
-            url: stored.url,
-            thumbnailUrl: isImage ? stored.url : null,
-            category: category ?? null,
-            tags: [],
-          },
+        await createMedia({
+          organizationId: orgId(actor),
+          clientId: clientId ?? null,
+          campaignId: campaignId ?? null,
+          type: typeFor(file.mimetype),
+          filename: stored.key,
+          originalName: file.originalname.slice(0, 200),
+          mimeType: file.mimetype,
+          sizeBytes: stored.sizeBytes,
+          width,
+          height,
+          url: stored.url,
+          thumbnailUrl: isImage ? stored.url : null,
+          category: category ?? null,
+          tags: [],
         }),
       );
     }
@@ -250,26 +286,24 @@ mediaRouter.post(
     const stored = await storage.save(buffer, {
       filename: name,
       mimeType,
-      prefix: clientId ? `clients/${clientId}` : 'shared',
+      prefix: clientId ? `clients/${clientId}/assets` : 'shared/assets',
     });
 
-    const media = await prisma.media.create({
-      data: {
-        organizationId: orgId(actor),
-        clientId: clientId ?? null,
-        campaignId: body.campaignId ?? null,
-        type: MediaType.IMAGE,
-        filename: stored.key,
-        originalName: name,
-        mimeType,
-        sizeBytes: stored.sizeBytes,
-        width: meta.width ?? null,
-        height: meta.height ?? null,
-        url: stored.url,
-        thumbnailUrl: stored.url,
-        category: body.category ?? null,
-        tags: body.tags,
-      },
+    const media = await createMedia({
+      organizationId: orgId(actor),
+      clientId: clientId ?? null,
+      campaignId: body.campaignId ?? null,
+      type: MediaType.IMAGE,
+      filename: stored.key,
+      originalName: name,
+      mimeType,
+      sizeBytes: stored.sizeBytes,
+      width: meta.width ?? null,
+      height: meta.height ?? null,
+      url: stored.url,
+      thumbnailUrl: stored.url,
+      category: body.category ?? null,
+      tags: body.tags,
     });
 
     await recordAudit({ actor, action: 'media.import', entity: 'Media', entityId: media.id, meta: { host: target.host }, ip: req.ip });
@@ -304,7 +338,7 @@ mediaRouter.patch(
       where: { id: existing.id },
       data: req.body as Prisma.MediaUpdateInput,
     });
-    res.json({ media });
+    res.json({ media: withMediaUrls(media) });
   }),
 );
 
@@ -323,17 +357,20 @@ mediaRouter.delete(
     if (!existing) throw notFound('Media');
 
     await prisma.media.delete({ where: { id: existing.id } });
-    // The row is the source of truth; a leftover blob is tolerable, a broken
-    // reference is not, so the file is removed after the record.
-    await storage.delete(existing.filename).catch((error) => {
-      console.warn('[media] could not delete stored file:', (error as Error).message);
-    });
+    /*
+     * The row is the source of truth; a leftover blob is tolerable, a broken
+     * reference is not, so the object is removed after the record — and only if
+     * nothing else still points at it. Keys are content-addressed, so the same
+     * file uploaded twice, or a logo that is both a Brand and a Media row, share
+     * one object, and deleting it out from under the survivor would break it.
+     */
+    const object = await deleteObjectIfUnreferenced(existing.filename);
 
     await recordAudit({
       actor, action: 'media.delete', entity: 'Media', entityId: existing.id,
-      meta: { name: existing.originalName }, ip: req.ip,
+      meta: { name: existing.originalName, object }, ip: req.ip,
     });
-    res.json({ ok: true });
+    res.json({ ok: true, object });
   }),
 );
 

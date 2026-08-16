@@ -18,6 +18,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { extname } from 'node:path';
 
+import { gone, storageDeleteFailed, storageReadFailed, storageUploadFailed } from '../../lib/errors.js';
 import type { StorageProvider, StoredFile } from './index.js';
 
 export interface S3Config {
@@ -137,13 +138,23 @@ export class S3Storage implements StorageProvider {
     return this.config.forcePathStyle ? `/${this.config.bucket}/${encodeKey(key)}` : `/${encodeKey(key)}`;
   }
 
-  async save(buffer: Buffer, opts: { filename: string; mimeType: string; prefix?: string }): Promise<StoredFile> {
-    const now = new Date();
-    const folder = [opts.prefix ?? 'media', String(now.getUTCFullYear()), String(now.getUTCMonth() + 1).padStart(2, '0')].join('/');
-    // Content-addressed: the same bytes under the same prefix reuse one object
-    // rather than accumulating a new copy on every re-render.
+  /**
+   * Object key for these bytes under this prefix.
+   *
+   * Content-addressed and *stable over time*: there is deliberately no date
+   * segment. A date folder would mean the same photograph re-rendered next month
+   * lands on a second object, which defeats the deduplication and leaves two
+   * lifetimes to manage for one piece of content. The prefix carries the tenant
+   * boundary (`clients/<clientId>/...`), so the digest only has to be unique
+   * within one client's own material.
+   */
+  keyFor(buffer: Buffer, opts: { filename: string; mimeType: string; prefix?: string }): string {
     const digest = createHash('sha256').update(buffer).digest('hex').slice(0, 32);
-    const key = `${folder}/${digest}${safeExtension(opts.filename, opts.mimeType)}`;
+    return `${opts.prefix ?? 'media'}/${digest}${safeExtension(opts.filename, opts.mimeType)}`;
+  }
+
+  async save(buffer: Buffer, opts: { filename: string; mimeType: string; prefix?: string }): Promise<StoredFile> {
+    const key = this.keyFor(buffer, opts);
 
     const headers = sign({
       config: this.config,
@@ -151,12 +162,12 @@ export class S3Storage implements StorageProvider {
       path: this.path(key),
       payload: buffer,
       headers: { 'content-type': opts.mimeType, 'content-length': String(buffer.byteLength) },
-      now,
+      now: new Date(),
     });
 
     const response = await this.fetchImpl(this.url(key), { method: 'PUT', headers, body: new Uint8Array(buffer) });
     if (!response.ok) {
-      throw new Error(`Object storage rejected the upload (HTTP ${response.status})`);
+      throw storageUploadFailed(`Object storage rejected the upload (HTTP ${response.status}).`);
     }
 
     return { key, url: this.publicUrl(key), sizeBytes: buffer.byteLength };
@@ -173,7 +184,19 @@ export class S3Storage implements StorageProvider {
     });
 
     const response = await this.fetchImpl(this.url(key), { method: 'GET', headers });
-    if (!response.ok) throw new Error(`Object storage could not read ${key} (HTTP ${response.status})`);
+    if (!response.ok) {
+      /*
+       * A 404/410 is not the same class of problem as a 403 or a 500. The object
+       * being absent means the reference outlived the bytes — actionable by
+       * re-uploading. Anything else means the bucket is there and refusing us,
+       * which is a credentials or permissions fix, and re-uploading would not
+       * help. They get different codes so the UI can say different things.
+       */
+      if (response.status === 404 || response.status === 410) {
+        throw gone('That file is no longer present in object storage.');
+      }
+      throw storageReadFailed(`Object storage could not read the file (HTTP ${response.status}).`);
+    }
     return Buffer.from(await response.arrayBuffer());
   }
 
@@ -203,12 +226,58 @@ export class S3Storage implements StorageProvider {
     const response = await this.fetchImpl(this.url(key), { method: 'DELETE', headers });
     // 404 means the object is already gone, which is the outcome we wanted.
     if (!response.ok && response.status !== 404) {
-      throw new Error(`Object storage could not delete ${key} (HTTP ${response.status})`);
+      throw storageDeleteFailed(`Object storage could not delete the file (HTTP ${response.status}).`);
     }
   }
 
   publicUrl(key: string): string {
     return this.config.publicBaseUrl ? `${this.config.publicBaseUrl}/${encodeKey(key)}` : this.url(key);
+  }
+
+  /**
+   * A time-limited URL for one object.
+   *
+   * Used only where a browser has to fetch bytes directly. The default path in
+   * this application is the authenticated proxy route, because that keeps the
+   * tenant check on every single fetch; a presigned URL is a bearer token in a
+   * query string, and once issued it works for anyone holding it until it
+   * expires. Kept short for that reason, and offered rather than assumed.
+   */
+  presignedUrl(key: string, expiresInSeconds = 300): string {
+    const now = new Date();
+    const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
+    const dateStamp = amzDate.slice(0, 8);
+    const scope = `${dateStamp}/${this.config.region}/s3/aws4_request`;
+    const host = new URL(this.config.endpoint).host;
+
+    const query = [
+      ['X-Amz-Algorithm', 'AWS4-HMAC-SHA256'],
+      ['X-Amz-Credential', `${this.config.accessKeyId}/${scope}`],
+      ['X-Amz-Date', amzDate],
+      ['X-Amz-Expires', String(Math.min(Math.max(expiresInSeconds, 1), 604_800))],
+      ['X-Amz-SignedHeaders', 'host'],
+    ]
+      .map(([name, value]) => `${encodeURIComponent(name as string)}=${encodeURIComponent(value as string)}`)
+      .sort()
+      .join('&');
+
+    const canonicalRequest = [
+      'GET',
+      this.path(key),
+      query,
+      `host:${host}\n`,
+      'host',
+      'UNSIGNED-PAYLOAD',
+    ].join('\n');
+
+    const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256Hex(canonicalRequest)].join('\n');
+    const signingKey = hmac(
+      hmac(hmac(hmac(`AWS4${this.config.secretAccessKey}`, dateStamp), this.config.region), 's3'),
+      'aws4_request',
+    );
+    const signature = createHmac('sha256', signingKey).update(stringToSign).digest('hex');
+
+    return `${this.url(key)}?${query}&X-Amz-Signature=${signature}`;
   }
 
   /** Remote driver: there is no path on this machine, and pretending otherwise

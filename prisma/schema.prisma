@@ -434,6 +434,10 @@ model Brand {
   textColor        String   @default("#E8EBF2")
   fontFamily       String   @default("Inter")
   logoUrl          String?
+  /// Storage key for the logo, so it can be re-read from object storage. The URL
+  /// is for the browser; the key is what the server needs and the two are not
+  /// interchangeable once media lives in a bucket rather than on disk.
+  logoKey          String?
   logoDarkUrl      String?
   /// Unapproved palette suggested from the uploaded logo, pending review.
   suggestedPalette Json?

@@ -13,6 +13,7 @@ import { hexColor } from '../lib/http.js';
 import { assertWritable, isClientUser, orgId, type Actor } from '../lib/scope.js';
 import { assertRealImage, uploadImage } from '../middleware/upload.js';
 import { storage } from '../services/storage/index.js';
+import { readObject, sendObject } from '../services/storage/objects.js';
 import { contrastRatio, extractPalette, readableTextOn } from '../services/palette.js';
 import { recordAudit } from '../services/audit.js';
 
@@ -32,6 +33,39 @@ async function loadBrand(actor: Actor, clientId: string) {
   if (!brand) throw notFound('Brand');
   return brand;
 }
+
+/** Where the browser fetches a client's logo. Stable across storage drivers. */
+const brandLogoUrl = (clientId: string): string => `/api/brands/${clientId}/logo`;
+
+/**
+ * Serve the logo bytes.
+ *
+ * Authenticated like everything else here: a logo is a client's own material,
+ * and the point of moving media into a private bucket is lost if the way back
+ * out is an unguarded URL.
+ */
+brandsRouter.get(
+  '/:clientId/logo',
+  validateParams(clientParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const brand = await loadBrand(actor, req.params.clientId as string);
+
+    const key = brand.logoKey ?? (brand.logoUrl?.startsWith('/uploads/') ? brand.logoUrl.slice(9) : null);
+    if (!key) throw notFound('Logo');
+
+    const asset = await prisma.media.findFirst({
+      where: { clientId: brand.clientId, filename: key },
+      select: { mimeType: true, originalName: true },
+    });
+
+    const buffer = await readObject(key);
+    sendObject(res, buffer, {
+      mimeType: asset?.mimeType ?? 'image/png',
+      filename: asset?.originalName ?? 'logo',
+    });
+  }),
+);
 
 const stringList = z.array(z.string().trim().min(1).max(120)).max(40);
 
@@ -114,11 +148,20 @@ brandsRouter.post(
 
     const palette = await extractPalette(file.buffer);
 
+    /*
+     * The browser gets a route on this application; the server keeps the storage
+     * key. Storing the driver's own URL as `logoUrl` was the bug: under the disk
+     * driver it was a path that stopped resolving after a deploy, and under S3 it
+     * is a private bucket URL no browser can fetch.
+     */
+    const logoUrl = brandLogoUrl(brand.clientId);
+
     const [updated] = await prisma.$transaction([
       prisma.brand.update({
         where: { id: brand.id },
         data: {
-          logoUrl: stored.url,
+          logoUrl,
+          logoKey: stored.key,
           suggestedPalette: palette as unknown as Prisma.InputJsonValue,
           paletteApproved: false,
         },
@@ -128,11 +171,11 @@ brandsRouter.post(
         data: {
           brandId: brand.id,
           kind: BrandAssetKind.LOGO,
-          url: stored.url,
+          url: logoUrl,
           meta: { width: meta.width ?? null, height: meta.height ?? null, format: meta.format ?? null } as Prisma.InputJsonValue,
         },
       }),
-      prisma.client.update({ where: { id: brand.clientId }, data: { logoUrl: stored.url } }),
+      prisma.client.update({ where: { id: brand.clientId }, data: { logoUrl } }),
       prisma.media.create({
         data: {
           organizationId: orgId(actor),
@@ -144,7 +187,11 @@ brandsRouter.post(
           sizeBytes: stored.sizeBytes,
           width: meta.width ?? null,
           height: meta.height ?? null,
-          url: stored.url,
+          // The library entry and the brand identity are the same bytes, so they
+          // share one URL — and one object, which the reference-counted delete
+          // above the storage layer relies on.
+          url: logoUrl,
+          thumbnailUrl: logoUrl,
           category: 'brand',
           tags: ['logo'],
         },
@@ -214,14 +261,13 @@ brandsRouter.post(
     assertWritable(actor);
     const brand = await loadBrand(actor, req.params.clientId as string);
 
-    if (!brand.logoUrl) throw badRequest('Upload a logo first');
+    // `logoKey` is the storage key; older rows only ever had a `/uploads/` URL,
+    // so that shape is still accepted as a fallback rather than failing on data
+    // written before the key was recorded.
+    const key = brand.logoKey ?? (brand.logoUrl?.startsWith('/uploads/') ? brand.logoUrl.slice(9) : null);
+    if (!key) throw badRequest('Upload a logo first');
 
-    const key = brand.logoUrl.replace(/^\/uploads\//, '');
-    const path = storage.localPath(key);
-    if (!path) throw badRequest('The current storage driver cannot re-read this logo');
-
-    const { readFile } = await import('node:fs/promises');
-    const palette = await extractPalette(await readFile(path));
+    const palette = await extractPalette(await readObject(key));
 
     const updated = await prisma.brand.update({
       where: { id: brand.id },
