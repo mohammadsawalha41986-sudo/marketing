@@ -4,6 +4,12 @@
 **Branch:** `claude/marketing-os-production-recovery-ls9pug`
 **Scope:** read-only. No source file was modified to produce this document.
 
+> **Status update (same day).** Findings 4.1, 4.2 and the fake-success sync
+> have since been fixed on this branch; §4.3's honesty problem is addressed by
+> the new implementation axis. See `docs/FINAL_VERIFICATION.md` for what is now
+> verified and what remains. The audit below is left as written, because it is
+> the record of what was found.
+
 This is the baseline for the master implementation command. It records what
 exists, what actually runs, what is architecture without a caller, and what is
 demo data. Anything below marked ⛔ is a claim the product currently makes that
