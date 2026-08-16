@@ -692,8 +692,34 @@ interface AdapterInfo {
   ready: boolean;
   missingEnv: string[];
   capabilities: { publish: boolean; metrics: boolean; audiences: boolean };
+  /**
+   * What we built, as opposed to what the provider offers. Readiness says the
+   * deployment is configured; this says whether there is code behind the
+   * button. Six of the eight adapters are ARCHITECTURE_ONLY.
+   */
+  implementation: {
+    oauth: ImplementationState;
+    accountDiscovery: ImplementationState;
+    publish: ImplementationState;
+    metrics: ImplementationState;
+    conversions: ImplementationState;
+  };
+  canConnect: boolean;
   scopes: string[];
   docsUrl: string;
+}
+
+type ImplementationState = 'IMPLEMENTED' | 'PARTIALLY_IMPLEMENTED' | 'ARCHITECTURE_ONLY' | 'NOT_SUPPORTED';
+
+interface DiscoveredAccountRow {
+  id: string;
+  kind: string;
+  externalId: string;
+  name: string;
+  username: string | null;
+  currency: string | null;
+  timezone: string | null;
+  selected: boolean;
 }
 
 interface IntegrationRow {
@@ -707,12 +733,157 @@ interface IntegrationRow {
   client: { id: string; name: string };
 }
 
+
+/**
+ * Choosing which accounts belong to this restaurant.
+ *
+ * This is the step that turns an authorized token into a connection, and it is
+ * deliberately manual. Meta hands back every Page, Instagram account and ad
+ * account the person who authorized can see — which, for anyone who manages
+ * more than one business, includes accounts that have nothing to do with this
+ * restaurant. Attaching them all is how one brand's ad account ends up wired
+ * into another's campaigns, so discovery marks everything unselected and waits.
+ */
+function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose: () => void; onSaved: () => void }) {
+  const { push } = useToast();
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+
+  const { data, loading, error } = useQuery<{
+    integration: {
+      id: string;
+      status: string;
+      accountName: string | null;
+      accounts: DiscoveredAccountRow[];
+    };
+  }>(id ? `/integrations/${id}/accounts` : null, [id]);
+
+  // Seed from whatever is already attached, so reopening does not look empty.
+  useEffect(() => {
+    if (data?.integration) {
+      setChosen(new Set(data.integration.accounts.filter((row) => row.selected).map((row) => row.id)));
+    }
+  }, [data]);
+
+  const toggle = (accountId: string) =>
+    setChosen((current) => {
+      const next = new Set(current);
+      if (next.has(accountId)) next.delete(accountId);
+      else next.add(accountId);
+      return next;
+    });
+
+  const save = async () => {
+    if (!id) return;
+    setSaving(true);
+    try {
+      const result = await api.post<{ status: string; selected: number }>(`/integrations/${id}/select`, {
+        accountIds: [...chosen],
+      });
+      push({
+        tone: result.status === 'CONNECTED' ? 'success' : 'info',
+        title: result.status === 'CONNECTED' ? 'Connected' : 'Detached',
+        body:
+          result.status === 'CONNECTED'
+            ? `${result.selected} account(s) attached to this restaurant.`
+            : 'Nothing is attached, so the connection is disconnected.',
+      });
+      onSaved();
+      onClose();
+    } catch (err) {
+      push({ tone: 'error', title: 'Could not save the selection', body: err instanceof Error ? err.message : undefined });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const byKind = useMemo(() => {
+    const map = new Map<string, DiscoveredAccountRow[]>();
+    for (const row of data?.integration.accounts ?? []) {
+      map.set(row.kind, [...(map.get(row.kind) ?? []), row]);
+    }
+    return [...map.entries()];
+  }, [data]);
+
+  return (
+    <Drawer
+      open={Boolean(id)}
+      onClose={onClose}
+      title="Choose the accounts"
+      footer={
+        <Button className="w-full" onClick={save} loading={saving} disabled={loading || Boolean(error)}>
+          {chosen.size === 0 ? 'Detach everything' : `Attach ${chosen.size} account(s)`}
+        </Button>
+      }
+    >
+      {loading ? (
+        <div className="grid place-items-center py-16"><Spinner className="h-6 w-6" /></div>
+      ) : error ? (
+        <ErrorState message={error} />
+      ) : (
+        <div className="space-y-5">
+          <p className="text-[13px] leading-relaxed text-muted">
+            Meta returned everything {data?.integration.accountName ?? 'this login'} can see. Attach only what belongs
+            to this restaurant — publishing needs one ad account and one Page.
+          </p>
+
+          {byKind.map(([kind, rows]) => (
+            <div key={kind}>
+              <p className="mb-1.5 text-[11px] uppercase tracking-wide text-muted">
+                {kind.replace(/_/g, ' ').toLowerCase()}
+              </p>
+              <div className="space-y-1.5">
+                {rows.map((row) => (
+                  <button
+                    key={row.id}
+                    type="button"
+                    onClick={() => toggle(row.id)}
+                    className={cn(
+                      'flex w-full items-center gap-3 rounded-xl border p-3 text-start transition-colors',
+                      chosen.has(row.id) ? 'border-brand bg-brand/5' : 'border-line hover:border-brand/40',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'grid h-4 w-4 shrink-0 place-items-center rounded border',
+                        chosen.has(row.id) ? 'border-brand bg-brand text-white' : 'border-line',
+                      )}
+                    >
+                      {chosen.has(row.id) ? <Check className="h-3 w-3" /> : null}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-medium text-fg">{row.name}</span>
+                      <span className="block truncate text-[11px] text-muted">
+                        {row.externalId}
+                        {row.currency ? ` · ${row.currency}` : ''}
+                        {row.timezone ? ` · ${row.timezone}` : ''}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {byKind.length === 0 ? (
+            <p className="text-[13px] text-muted">
+              Meta returned no accounts for this login. Check that it administers a Page and an ad account.
+            </p>
+          ) : null}
+        </div>
+      )}
+    </Drawer>
+  );
+}
+
 export function IntegrationsPage() {
   const { t, lang } = useI18n();
   const { push } = useToast();
   // Connections belong to a restaurant, and which restaurant is a top-bar
   // decision now — connecting Meta for the wrong one is not a cheap mistake.
   const { currentId: clientId, current } = useRestaurant();
+
+  const [selecting, setSelecting] = useState<string | null>(null);
 
   const catalog = useQuery<{ ai: { provider: string; model: string; configured: boolean }; adapters: AdapterInfo[] }>('/integrations/catalog');
   const { data, loading, refetch } = useQuery<{ items: IntegrationRow[] }>(
@@ -726,19 +897,50 @@ export function IntegrationsPage() {
       return;
     }
     try {
-      await api.post(`/integrations/${clientId}/${platform}/connect`);
-      refetch();
+      /*
+       * The server answers with the provider's own authorization URL, and the
+       * browser has to actually go there. This used to POST and then refetch,
+       * throwing the redirect away — which is why Connect appeared to do
+       * nothing even when the backend was working.
+       */
+      const { redirectTo } = await api.post<{ redirectTo: string; integrationId: string }>(
+        `/integrations/${clientId}/${platform}/connect`,
+      );
+      window.location.href = redirectTo;
     } catch (err) {
-      // The server answers 503 PROVIDER_NOT_CONFIGURED and names the variables
-      // it needs, so the toast tells the operator what to set rather than that
-      // something is unavailable.
+      // 501 means nobody built it; 503 means it is not configured and names the
+      // variables. Both are actionable, and they are different actions.
       push({
         tone: 'info',
-        title: 'Provider not configured',
+        title: 'Cannot connect yet',
         body: err instanceof Error ? err.message : undefined,
       });
     }
   };
+
+  /*
+   * Coming back from the provider.
+   *
+   * The callback redirects here with either ?connected=meta&integration=... or
+   * ?error=. A successful authorization is not yet a connection — the accounts
+   * still have to be chosen — so success opens the selection drawer rather than
+   * declaring victory.
+   */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const integrationId = params.get('integration');
+    const failure = params.get('error');
+
+    if (failure) push({ tone: 'error', title: 'Meta did not connect', body: failure });
+    if (integrationId) setSelecting(integrationId);
+    if (failure || integrationId) {
+      // Clear the query so a refresh does not replay the toast.
+      window.history.replaceState({}, '', window.location.pathname);
+      refetch();
+    }
+    // Once, on arrival.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const byPlatform = useMemo(() => {
     const map = new Map<string, IntegrationRow>();
@@ -781,16 +983,29 @@ export function IntegrationsPage() {
           {catalog.data?.adapters.map((adapter) => {
             const integration = byPlatform.get(adapter.platform);
             const connected = integration?.status === 'CONNECTED';
+            const buildable = adapter.implementation.oauth === 'IMPLEMENTED';
+            // Authorized but nothing attached yet — the flow is half done.
+            const awaitingSelection = integration?.status === 'CONNECTING';
             return (
               <Card key={adapter.platform} className="p-5">
                 <div className="flex items-start justify-between gap-3">
                   <PlatformChip platform={adapter.platform} />
-                  <Badge tone={connected ? 'ok' : adapter.ready ? 'brand' : 'warn'} dot>
+                  {/*
+                    * Three states, not two. "Not built" is not the same as "not
+                    * configured", and a provider whose credentials are all
+                    * present still cannot connect if nobody wrote the adapter.
+                    */}
+                  <Badge
+                    tone={connected ? 'ok' : !buildable ? 'neutral' : adapter.ready ? 'brand' : 'warn'}
+                    dot
+                  >
                     {connected
                       ? t('integration.connected')
-                      : adapter.ready
-                        ? t('integration.readyToConnect')
-                        : t('integration.notConfigured')}
+                      : !buildable
+                        ? t('integration.notBuilt')
+                        : adapter.ready
+                          ? t('integration.readyToConnect')
+                          : t('integration.notConfigured')}
                   </Badge>
                 </div>
 
@@ -810,16 +1025,32 @@ export function IntegrationsPage() {
                   </p>
                 </div>
 
-                {adapter.missingEnv.length > 0 ? (
+                {!buildable ? (
+                  <div className="mt-3 rounded-lg border border-line bg-elevated p-2.5 text-[12px] text-muted">
+                    Not implemented in this application yet. Its OAuth descriptor exists; the code behind it does not,
+                    so credentials would not help.
+                  </div>
+                ) : adapter.missingEnv.length > 0 ? (
                   <div className="mt-3 rounded-lg border border-warn/25 bg-warn/10 p-2.5 text-[12px] text-warn">
                     Needs: {adapter.missingEnv.join(', ')}
                   </div>
                 ) : null}
 
                 <div className="mt-4 flex flex-wrap gap-2">
-                  <Button size="sm" variant={connected ? 'secondary' : 'primary'} icon={Plug} onClick={() => connect(adapter.platform)} disabled={!clientId}>
-                    {connected ? t('integration.sync') : t('integration.connect')}
+                  <Button
+                    size="sm"
+                    variant={connected ? 'secondary' : 'primary'}
+                    icon={Plug}
+                    onClick={() => connect(adapter.platform)}
+                    disabled={!clientId || !buildable}
+                  >
+                    {connected ? t('integration.reconnect') : t('integration.connect')}
                   </Button>
+                  {integration && (connected || awaitingSelection) ? (
+                    <Button size="sm" variant="secondary" onClick={() => setSelecting(integration.id)}>
+                      {awaitingSelection ? t('integration.chooseAccounts') : t('integration.accounts')}
+                    </Button>
+                  ) : null}
                   <a
                     href={adapter.docsUrl}
                     target="_blank"
@@ -834,6 +1065,8 @@ export function IntegrationsPage() {
           })}
         </div>
       )}
+
+      <AccountSelection id={selecting} onClose={() => setSelecting(null)} onSaved={refetch} />
 
       <Card className="mt-4 p-5">
         <p className="text-[13px] leading-relaxed text-muted">

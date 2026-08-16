@@ -23,9 +23,40 @@ import { Platform } from '@prisma/client';
 
 import { ProviderNotConfiguredError } from './index.js';
 
-/** Pinned: Graph is versioned and an unpinned call breaks on Meta's schedule. */
-export const GRAPH_VERSION = 'v21.0';
+/*
+ * Pinned versions — two of them, because Meta runs two clocks.
+ *
+ * The Graph API and the Marketing API share a host and a version *number* but
+ * not a lifecycle. A Graph version lives about two years and, once expired,
+ * degrades by falling back. A Marketing version lives roughly a year and, once
+ * expired, **fails outright** — ad-account calls stop being served rather than
+ * quietly answering from an older version.
+ *
+ * This file previously pinned one constant at v21.0 for both. v21.0 was
+ * released 2 October 2024: still inside the Graph window (it expires
+ * 21 January 2027), but far outside the Marketing one, so every campaign, ad
+ * set, image, creative, ad and insights call in meta-publish.ts was aimed at an
+ * expired Marketing API. Publishing could not have worked in production
+ * regardless of credentials.
+ *
+ * Verified 2026-08-16 against secondary sources — developers.facebook.com is
+ * unreachable from this build environment (egress proxy), so these values are
+ * documented as *needing confirmation against Meta's own changelog* before a
+ * production publish:
+ *   - v25.0 is the current version (released 18 February 2026)
+ *   - Marketing API v23.0 reached end of life 9 June 2026
+ *   - v26.0 expected around September 2026
+ * See docs/PLATFORM_INTEGRATIONS.md for the sources and the re-check date.
+ *
+ * Both are environment-overridable so a version bump is a variable change
+ * rather than a deploy — Meta's schedule does not wait for our release cycle.
+ */
+export const GRAPH_VERSION = process.env.META_GRAPH_VERSION ?? 'v25.0';
+export const MARKETING_VERSION = process.env.META_MARKETING_VERSION ?? 'v25.0';
+
 const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`;
+/** Ad-account surfaces. Same host, different expiry clock. */
+export const MARKETING = `https://graph.facebook.com/${MARKETING_VERSION}`;
 
 export type FetchLike = (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{
   ok: boolean;
@@ -260,7 +291,8 @@ export async function fetchCampaigns(input: {
   accessToken: string;
   fetchImpl: FetchLike;
 }): Promise<NormalizedCampaign[]> {
-  const url = new URL(`${GRAPH}/${input.adAccountId}/campaigns`);
+  // Ad-account edge: Marketing API, which expires on its own faster clock.
+  const url = new URL(`${MARKETING}/${input.adAccountId}/campaigns`);
   url.searchParams.set('fields', 'id,name,status,objective,daily_budget,lifetime_budget,start_time,stop_time');
   url.searchParams.set('limit', '200');
   url.searchParams.set('access_token', input.accessToken);
@@ -340,7 +372,8 @@ export async function fetchInsights(input: {
   until: string;
   fetchImpl: FetchLike;
 }): Promise<{ insights: NormalizedInsight[]; hasConversionTracking: boolean }> {
-  const url = new URL(`${GRAPH}/${input.campaignId}/insights`);
+  // Insights is a Marketing API surface, not a Graph one.
+  const url = new URL(`${MARKETING}/${input.campaignId}/insights`);
   url.searchParams.set('fields', 'spend,impressions,reach,clicks,actions,action_values,date_start');
   url.searchParams.set('time_increment', '1');
   url.searchParams.set('time_range', JSON.stringify({ since: input.since, until: input.until }));

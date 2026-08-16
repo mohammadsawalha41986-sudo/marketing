@@ -70,7 +70,31 @@ export async function beginAuthorization(input: {
   platform: Platform;
   baseUrl: string;
 }): Promise<AuthorizeResult> {
-  const redirectUri = callbackUrl(input.baseUrl, input.platform);
+  /*
+   * Meta is the authority on this value, not us.
+   *
+   * `redirect_uri` must be byte-identical in the authorize call and in the code
+   * exchange, and it must match one registered in the app console — so
+   * META_REDIRECT_URI wins, and the URI derived from the request host is only a
+   * fallback for a deployment that has not set it. Deriving it and then
+   * exchanging with a different one is the classic "the code is invalid" loop.
+   */
+  const config = metaConfig();
+  const redirectUri = config.redirectUri || callbackUrl(input.baseUrl, input.platform);
+
+  /*
+   * And it has to point back at a route that exists. A console entry aimed at
+   * anything other than the mounted callback path sends the operator's browser
+   * somewhere with the authorization code in the query string and no handler to
+   * consume it — which looks like "Meta did nothing" from the outside.
+   */
+  const expected = callbackPath(input.platform);
+  if (!new URL(redirectUri).pathname.endsWith(expected)) {
+    throw new Error(
+      `META_REDIRECT_URI must end with ${expected} so the authorization lands on the callback route. ` +
+        `It currently points at ${new URL(redirectUri).pathname}.`,
+    );
+  }
 
   const integration = await prisma.integration.upsert({
     where: { clientId_platform: { clientId: input.clientId, platform: input.platform } },
@@ -96,7 +120,6 @@ export async function beginAuthorization(input: {
 
   // Only Meta has a real authorization URL builder so far; the rest report the
   // configuration they need rather than pretending to have a URL.
-  const config = metaConfig();
   return { redirectTo: authorizationUrl({ config, state }), integrationId: integration.id };
 }
 

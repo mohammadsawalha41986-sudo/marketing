@@ -22,7 +22,7 @@ import { approvalsRouter } from './approvals.js';
 import { analyticsRouter } from './analytics.js';
 import { reportsRouter } from './reports.js';
 import { adminRouter } from './admin.js';
-import { integrationsRouter, notificationsRouter, subscriptionsRouter, usersRouter } from './misc.js';
+import { integrationsRouter, notificationsRouter, oauthCallbackRouter, subscriptionsRouter, usersRouter } from './misc.js';
 
 export const apiRouter: Router = Router();
 
@@ -87,6 +87,12 @@ apiRouter.use('/approvals', approvalsRouter);
 apiRouter.use('/analytics', analyticsRouter);
 apiRouter.use('/reports', reportsRouter);
 apiRouter.use('/notifications', notificationsRouter);
+/*
+ * Order matters. The OAuth callback is a redirect from the provider and carries
+ * no session, so it is mounted ahead of the authenticated integrations router —
+ * its authorisation is the single-use state, not a cookie.
+ */
+apiRouter.use('/integrations', oauthCallbackRouter);
 apiRouter.use('/integrations', integrationsRouter);
 apiRouter.use('/subscriptions', subscriptionsRouter);
 apiRouter.use('/admin', adminRouter);

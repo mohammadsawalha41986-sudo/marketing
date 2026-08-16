@@ -13,7 +13,14 @@ import { actorOf, requireAgency, requireAuth, requireManager } from '../middlewa
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
 import { assertWritable, orgId, resolveClientId } from '../lib/scope.js';
-import { adapterFor, providerReadiness, allAdapters, ProviderNotConfiguredError } from '../services/integrations/index.js';
+import {
+  adapterFor, providerReadiness, allAdapters, supportsOAuth,
+  ProviderNotConfiguredError, ProviderNotImplementedError,
+} from '../services/integrations/index.js';
+import { beginAuthorization, completeCallback, selectAccounts } from '../services/integrations/connect-flow.js';
+import { validateToken } from '../services/integrations/meta.js';
+import { decryptSecret } from '../lib/crypto.js';
+import { env } from '../env.js';
 import { hashPassword, passwordProblems } from '../lib/password.js';
 import { recordAudit } from '../services/audit.js';
 import { aiStatus } from '../services/ai/index.js';
@@ -74,6 +81,82 @@ notificationsRouter.post(
 
 // ------------------------------------------------------------------ integrations
 
+/**
+ * The provider's redirect back, on its own unauthenticated router.
+ *
+ * Mounted *before* `requireAuth` deliberately. This request is a top-level
+ * browser navigation initiated by Meta, and depending on the cookie's SameSite
+ * policy the session may not travel with it — gating it on a session would
+ * break the flow for a subset of users in a way that is miserable to diagnose.
+ *
+ * It is not unprotected. The `state` parameter is the authorisation: minted
+ * against one organization, one client and one platform, hashed at rest,
+ * single-use and short-lived (`oauth-state.ts`). `consumeState` is what decides
+ * whose connection this is — nothing here reads a tenant from the query string.
+ */
+export const oauthCallbackRouter: Router = Router();
+
+/**
+ * Where the browser is sent afterwards.
+ *
+ * The result is carried as query parameters, never the code or the token. A
+ * failure sends the operator back to the same screen with the provider's own
+ * message rather than to a dead end.
+ */
+function callbackRedirect(outcome: { ok: true; integrationId: string } | { ok: false; reason: string }): string {
+  const url = new URL('/app/integrations', env.APP_URL);
+  if (outcome.ok) {
+    url.searchParams.set('connected', 'meta');
+    url.searchParams.set('integration', outcome.integrationId);
+  } else {
+    url.searchParams.set('error', outcome.reason.slice(0, 300));
+  }
+  return url.toString();
+}
+
+oauthCallbackRouter.get(
+  '/meta/callback',
+  validateQuery(
+    z.object({
+      // Meta sends either (code, state) or its own error triple.
+      code: z.string().min(1).max(2000).optional(),
+      state: z.string().min(1).max(200).optional(),
+      error: z.string().max(200).optional(),
+      error_reason: z.string().max(200).optional(),
+      error_description: z.string().max(500).optional(),
+    }),
+  ),
+  asyncHandler(async (req, res) => {
+    const query = req.query as {
+      code?: string; state?: string; error?: string; error_description?: string;
+    };
+
+    // The operator pressed Cancel on Meta's dialog. Not an error worth a 500.
+    if (query.error) {
+      res.redirect(callbackRedirect({ ok: false, reason: query.error_description ?? query.error }));
+      return;
+    }
+    if (!query.code || !query.state) {
+      res.redirect(callbackRedirect({ ok: false, reason: 'Meta returned no authorization code' }));
+      return;
+    }
+
+    try {
+      const result = await completeCallback({
+        platform: Platform.FACEBOOK,
+        state: query.state,
+        code: query.code,
+        fetchImpl: fetch as unknown as Parameters<typeof completeCallback>[0]['fetchImpl'],
+      });
+      res.redirect(callbackRedirect({ ok: true, integrationId: result.integrationId }));
+    } catch (error) {
+      // completeCallback has already parked the integration in ERROR with the
+      // reason. Provider messages never carry the code or the token.
+      res.redirect(callbackRedirect({ ok: false, reason: (error as Error).message }));
+    }
+  }),
+);
+
 export const integrationsRouter: Router = Router();
 integrationsRouter.use(requireAuth);
 
@@ -97,6 +180,14 @@ integrationsRouter.get(
           ready: readiness.state === 'READY',
           missingEnv: readiness.missingEnv,
           capabilities: adapter.capabilities,
+          /*
+           * The second axis. Readiness says whether the deployment is
+           * configured; this says whether the code exists. Six of these
+           * adapters are ARCHITECTURE_ONLY and the UI must be able to say so
+           * rather than showing a Connect button that returns 501.
+           */
+          implementation: adapter.implementation,
+          canConnect: supportsOAuth(adapter) && readiness.state === 'READY',
           scopes: oauth.scopes,
           docsUrl: oauth.docsUrl,
         };
@@ -149,15 +240,72 @@ integrationsRouter.post(
     const adapter = adapterFor(platform);
     const readiness = providerReadiness(adapter);
 
+    /*
+     * The row exists even when the connection cannot proceed, so the
+     * integrations screen can list the provider as honestly disconnected rather
+     * than omitting it. `beginAuthorization` upserts the same row and moves it
+     * to CONNECTING, so this is not a competing write.
+     */
     await prisma.integration.upsert({
       where: { clientId_platform: { clientId, platform } },
       create: { organizationId: orgId(actor), clientId, platform, status: IntegrationStatus.DISCONNECTED },
       update: {},
     });
 
+    /*
+     * Two different refusals, asked in this order.
+     *
+     * "Not built" comes first because it is not fixable by configuration: a
+     * Google Ads adapter with all four variables set is configured and still
+     * cannot start a flow. Reporting NOT_CONFIGURED there would send an
+     * operator to add variables that are already present.
+     */
+    if (!supportsOAuth(adapter)) {
+      res.status(501).json({
+        error: {
+          code: 'PROVIDER_NOT_IMPLEMENTED',
+          message: new ProviderNotImplementedError(adapter, 'oauth').message,
+          details: {
+            platform,
+            implementation: adapter.implementation,
+            docsUrl: adapter.oauth().docsUrl,
+          },
+        },
+      });
+      return;
+    }
+
+    if (readiness.state !== 'READY') {
+      res.status(503).json({
+        error: {
+          code: readiness.state === 'NO_ENCRYPTION' ? 'ENCRYPTION_NOT_CONFIGURED' : 'PROVIDER_NOT_CONFIGURED',
+          message: readiness.detail,
+          details: { platform, missingEnv: readiness.missingEnv, readiness: readiness.state, docsUrl: adapter.oauth().docsUrl },
+        },
+      });
+      return;
+    }
+
     try {
-      const { redirectTo } = await adapter.connect({ redirectUri: `${req.protocol}://${req.get('host')}/api/integrations/callback` });
-      res.json({ redirectTo });
+      /*
+       * The real flow, at last. `beginAuthorization` mints a tenant-bound
+       * single-use state, parks the integration in CONNECTING and returns
+       * Meta's own authorization URL. Nothing is CONNECTED until the callback
+       * validates a token and the operator picks the accounts.
+       */
+      const { redirectTo, integrationId } = await beginAuthorization({
+        organizationId: orgId(actor),
+        clientId,
+        platform,
+        baseUrl: env.APP_URL,
+      });
+
+      await recordAudit({
+        actor, action: 'integration.connect', entity: 'Integration', entityId: integrationId,
+        meta: { platform }, ip: req.ip,
+      });
+
+      res.json({ redirectTo, integrationId });
     } catch (error) {
       // A missing credential is a configuration problem with a known fix, not a
       // server fault — 503 with the exact variable names, so the response tells
@@ -178,6 +326,136 @@ integrationsRouter.post(
         return;
       }
       throw error;
+    }
+  }),
+);
+
+/**
+ * What the provider said this account can see, and what the operator has picked.
+ *
+ * Discovery writes every asset unselected, so this is the list the selection
+ * screen renders. `selected` is the operator's answer, not Meta's.
+ */
+integrationsRouter.get(
+  '/:id/accounts',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+
+    const integration = await prisma.integration.findFirst({
+      where: { id: req.params.id, organizationId: orgId(actor) },
+      select: {
+        id: true, clientId: true, platform: true, status: true, accountName: true, lastError: true,
+        accounts: {
+          orderBy: [{ kind: 'asc' }, { name: 'asc' }],
+          select: {
+            id: true, kind: true, externalId: true, name: true, username: true,
+            currency: true, timezone: true, parentExternalId: true, selected: true,
+          },
+        },
+      },
+    });
+    if (!integration) throw notFound('Integration');
+
+    res.json({ integration });
+  }),
+);
+
+/**
+ * Attach the accounts the operator chose. This is what completes a connection.
+ *
+ * Ids that do not belong to this integration are dropped by `selectAccounts`
+ * rather than trusted — a request body is not an authorisation to attach
+ * somebody else's ad account.
+ */
+integrationsRouter.post(
+  '/:id/select',
+  requireAgency,
+  validateParams(idParam),
+  validateBody(z.object({ accountIds: z.array(z.string().max(40)).max(50) })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+
+    const existing = await prisma.integration.findFirst({
+      where: { id: req.params.id, organizationId: orgId(actor) },
+      select: { id: true, platform: true },
+    });
+    if (!existing) throw notFound('Integration');
+
+    const result = await selectAccounts({
+      integrationId: existing.id,
+      organizationId: orgId(actor),
+      accountIds: (req.body as { accountIds: string[] }).accountIds,
+    });
+
+    await recordAudit({
+      actor, action: 'integration.select', entity: 'Integration', entityId: existing.id,
+      meta: { platform: existing.platform, selected: result.selected, status: result.status }, ip: req.ip,
+    });
+
+    res.json(result);
+  }),
+);
+
+/**
+ * Ask the provider whether this connection still works.
+ *
+ * A stored token is not a connection. This spends a real API call on `/me` so
+ * the answer comes from Meta rather than from our own status column, and parks
+ * the integration in ERROR when the provider rejects the credential — which is
+ * how an expired token stops being a mystery.
+ */
+integrationsRouter.get(
+  '/:id/health',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+
+    const integration = await prisma.integration.findFirst({
+      where: { id: req.params.id, organizationId: orgId(actor) },
+      select: {
+        id: true, platform: true, status: true, accessTokenEnc: true, tokenExpiresAt: true,
+        accounts: { where: { selected: true }, select: { kind: true } },
+      },
+    });
+    if (!integration) throw notFound('Integration');
+
+    const adapter = adapterFor(integration.platform);
+    const readiness = providerReadiness(adapter);
+
+    const base = {
+      integrationId: integration.id,
+      platform: integration.platform,
+      status: integration.status,
+      readiness: readiness.state,
+      implementation: adapter.implementation,
+      selectedKinds: integration.accounts.map((account) => account.kind),
+      tokenExpiresAt: integration.tokenExpiresAt,
+    };
+
+    if (!integration.accessTokenEnc) {
+      res.json({ ...base, live: false, detail: 'No credential is stored for this connection.' });
+      return;
+    }
+    if (adapter.implementation.oauth !== 'IMPLEMENTED') {
+      res.json({ ...base, live: false, detail: new ProviderNotImplementedError(adapter, 'oauth').message });
+      return;
+    }
+
+    try {
+      const identity = await validateToken({
+        accessToken: decryptSecret(integration.accessTokenEnc),
+        fetchImpl: fetch as unknown as Parameters<typeof validateToken>[0]['fetchImpl'],
+      });
+      res.json({ ...base, live: true, detail: `Meta answered as ${identity.name}.` });
+    } catch (error) {
+      const message = (error as Error).message.slice(0, 500);
+      await prisma.integration.update({
+        where: { id: integration.id },
+        data: { status: IntegrationStatus.ERROR, lastError: message },
+      });
+      res.json({ ...base, status: IntegrationStatus.ERROR, live: false, detail: message });
     }
   }),
 );
@@ -222,26 +500,32 @@ integrationsRouter.post(
     }
 
     const adapter = adapterFor(integration.platform);
-    try {
-      await adapter.fetchMetrics({
-        accountId: integration.accountId ?? '',
-        from: new Date(Date.now() - 7 * 86400000),
-        to: new Date(),
+
+    /*
+     * This route used to call `adapter.fetchMetrics()`, which for every adapter
+     * returns an empty array, and then answer `{ ok: true }`. Nothing was
+     * fetched and nothing was written, so an operator pressing Sync was told it
+     * worked and then watched the same numbers sit there — the worst kind of
+     * failure, because it is indistinguishable from "there is genuinely no new
+     * data".
+     *
+     * Until the ingestion job exists, the honest answer is 501 naming the state.
+     */
+    if (adapter.implementation.metrics !== 'IMPLEMENTED') {
+      res.status(501).json({
+        error: {
+          code: 'METRICS_SYNC_NOT_IMPLEMENTED',
+          message:
+            `Metric ingestion for ${adapter.label} is not implemented yet ` +
+            `(${adapter.implementation.metrics}), so there is nothing to sync. ` +
+            'No figures on this account come from the provider.',
+          details: { platform: integration.platform, implementation: adapter.implementation },
+        },
       });
-      res.json({ ok: true });
-    } catch (error) {
-      if (error instanceof ProviderNotConfiguredError) {
-        res.status(503).json({
-          error: {
-            code: 'PROVIDER_NOT_CONFIGURED',
-            message: error.message,
-            details: { missingEnv: error.missingEnv },
-          },
-        });
-        return;
-      }
-      throw error;
+      return;
     }
+
+    throw badRequest('Metric sync is not available for this integration.');
   }),
 );
 

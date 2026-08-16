@@ -45,6 +45,30 @@ export interface OAuthDescriptor {
   docsUrl: string;
 }
 
+/**
+ * How much of a surface *we* have actually built.
+ *
+ * This is the second axis, and it exists because readiness alone lies. A
+ * provider whose environment variables are all present reports READY, and for
+ * six of the eight adapters here that means "ready to throw" — the credentials
+ * are fine and there is no implementation behind them. Readiness answers "are
+ * we configured"; this answers "did anyone write the code".
+ */
+export type ImplementationState =
+  | 'IMPLEMENTED'
+  | 'PARTIALLY_IMPLEMENTED'
+  | 'ARCHITECTURE_ONLY'
+  | 'NOT_SUPPORTED';
+
+/** Per surface, because they are built at different times and fail separately. */
+export interface ImplementationReport {
+  oauth: ImplementationState;
+  accountDiscovery: ImplementationState;
+  publish: ImplementationState;
+  metrics: ImplementationState;
+  conversions: ImplementationState;
+}
+
 export interface PlatformAdapter {
   readonly platform: Platform;
   readonly label: string;
@@ -58,6 +82,8 @@ export interface PlatformAdapter {
     metrics: boolean;
     audiences: boolean;
   };
+  /** What we have built against those capabilities. Never aspirational. */
+  readonly implementation: ImplementationReport;
   oauth(): OAuthDescriptor;
   /** Begins a connection. Throws `ProviderNotConfiguredError` when credentials are absent. */
   connect(input: { redirectUri: string }): Promise<{ redirectTo: string }>;
@@ -97,6 +123,17 @@ abstract class BaseAdapter implements PlatformAdapter {
   abstract readonly platform: Platform;
   abstract readonly label: string;
   readonly capabilities = { publish: false, metrics: false, audiences: false };
+  /*
+   * An adapter that declares only its OAuth descriptor is architecture. Saying
+   * so here is what stops the UI offering a Connect button that cannot work.
+   */
+  readonly implementation: ImplementationReport = {
+    oauth: 'ARCHITECTURE_ONLY',
+    accountDiscovery: 'ARCHITECTURE_ONLY',
+    publish: 'ARCHITECTURE_ONLY',
+    metrics: 'ARCHITECTURE_ONLY',
+    conversions: 'NOT_SUPPORTED',
+  };
 
   abstract oauth(): OAuthDescriptor;
 
@@ -132,6 +169,24 @@ class MetaAdapter extends BaseAdapter {
   // Meta's Marketing and Graph APIs support all three once the app holds the
   // matching scopes; publishing additionally needs app review.
   override readonly capabilities = { publish: true, metrics: true, audiences: true };
+
+  /*
+   * The only adapter with anything behind it. OAuth, discovery and the publish
+   * sequence are real code with real provider calls (connect-flow.ts,
+   * publish-flow.ts, meta-publish.ts).
+   *
+   * `metrics` is deliberately not IMPLEMENTED: meta.ts can fetch and normalize
+   * insights, but nothing ingests them into AnalyticsSnapshot yet, so no figure
+   * on a dashboard comes from Meta. Calling that IMPLEMENTED here would put a
+   * green tick next to numbers that are still seed data.
+   */
+  override readonly implementation: ImplementationReport = {
+    oauth: 'IMPLEMENTED',
+    accountDiscovery: 'IMPLEMENTED',
+    publish: 'IMPLEMENTED',
+    metrics: 'ARCHITECTURE_ONLY',
+    conversions: 'NOT_SUPPORTED',
+  };
 
   constructor(platform: Platform, label: string) {
     super();
@@ -262,6 +317,36 @@ export function adapterFor(platform: Platform): PlatformAdapter {
 
 export function allAdapters(): PlatformAdapter[] {
   return Object.values(adapters);
+}
+
+/**
+ * Can this provider's Connect button do anything?
+ *
+ * Configuration is necessary and not sufficient: a Google Ads adapter with all
+ * four environment variables set is configured and still cannot start a flow.
+ * The route asks this before it asks about credentials, so the operator is told
+ * "not built yet" rather than being sent to fix variables that are already fine.
+ */
+export function supportsOAuth(adapter: PlatformAdapter): boolean {
+  return adapter.implementation.oauth === 'IMPLEMENTED';
+}
+
+/** Raised when a provider is configured but the surface is not built. */
+export class ProviderNotImplementedError extends Error {
+  readonly platform: Platform;
+  readonly surface: keyof ImplementationReport;
+  readonly state: ImplementationState;
+
+  constructor(adapter: PlatformAdapter, surface: keyof ImplementationReport) {
+    super(
+      `${adapter.label} ${surface} is not implemented in this application ` +
+        `(${adapter.implementation[surface]}). Its credentials may be present; the code is not.`,
+    );
+    this.name = 'ProviderNotImplementedError';
+    this.platform = adapter.platform;
+    this.surface = surface;
+    this.state = adapter.implementation[surface];
+  }
 }
 
 export type ProviderReadiness = 'READY' | 'NOT_CONFIGURED' | 'NO_ENCRYPTION';
