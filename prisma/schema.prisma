@@ -198,6 +198,17 @@ enum CreativeFormat {
   JPG
 }
 
+/// Where a creative came from, which decides what may be done to it.
+///
+/// UPLOADED is the product's primary path: the operator made the ad somewhere
+/// else and this is the finished file. It is never re-rendered, resized or
+/// overwritten — a variant is always a new row.
+enum CreativeSource {
+  UPLOADED
+  RENDERED
+  GENERATED
+}
+
 enum CreativeStatus {
   DRAFT
   SAVED
@@ -493,6 +504,23 @@ model Media {
   thumbnailUrl   String?
   category       String?
   tags           String[]  @default([])
+
+  /// Content hash of the bytes, hex SHA-256.
+  ///
+  /// Nullable because rows predating it were never hashed, and backfilling
+  /// would mean reading every object out of the bucket. Two uploads of the same
+  /// file share a digest, which is what makes "you already have this" possible
+  /// without comparing pixels.
+  sha256         String?
+  /// Probed from the file itself, never from what the browser claimed.
+  /// Video only; null on images and on rows uploaded before probing existed.
+  durationSeconds Float?
+  frameRate       Float?
+  videoCodec      String?
+  audioCodec      String?
+  bitrateKbps     Int?
+  hasAudio        Boolean?
+
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -500,12 +528,16 @@ model Media {
   client       Client?        @relation(fields: [clientId], references: [id], onDelete: SetNull)
   campaign     Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   contentLinks ContentMedia[]
-  creatives    Creative[]
+  creatives    Creative[]     @relation("CreativeSourceMedia")
+  uploadedAs   Creative[]     @relation("CreativeUploadedMedia")
 
   @@index([organizationId])
   @@index([clientId])
   @@index([campaignId])
   @@index([type])
+  /// Duplicate detection is per tenant: two organizations uploading the same
+  /// stock photo is not a duplicate, it is two businesses using one photo.
+  @@index([organizationId, sha256])
 }
 
 /// A rendered post creative: the finished artwork, not the photograph it was
@@ -523,9 +555,19 @@ model Creative {
   contentId      String?
   campaignId     String?
   /// The untouched asset this was rendered from.
-  sourceMediaId  String
+  ///
+  /// Nullable since uploaded creatives: a finished ad brought in from Canva or
+  /// CapCut has no separate source inside this system — the upload *is* the
+  /// creative. Rendered rows still always carry one.
+  sourceMediaId  String?
+  /// How this creative came to exist. Defaults to RENDERED so every row that
+  /// existed before this column keeps its original meaning.
+  source         CreativeSource @default(RENDERED)
+  /// The uploaded file itself, for source = UPLOADED.
+  mediaId        String?
   platform       Platform
   /// Named preset, e.g. `INSTAGRAM_PORTRAIT` — the aspect the platform wants.
+  /// Uploaded creatives have no preset; they have whatever dimensions they have.
   preset         String
   width          Int
   height         Int
@@ -550,12 +592,15 @@ model Creative {
   client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   content     Content?  @relation(fields: [contentId], references: [id], onDelete: SetNull)
   campaign    Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  sourceMedia Media     @relation(fields: [sourceMediaId], references: [id], onDelete: Cascade)
+  sourceMedia Media?    @relation("CreativeSourceMedia", fields: [sourceMediaId], references: [id], onDelete: Cascade)
+  media       Media?    @relation("CreativeUploadedMedia", fields: [mediaId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
   @@index([clientId])
   @@index([contentId])
   @@index([sourceMediaId])
+  @@index([mediaId])
+  @@index([source])
 }
 
 // ---------------------------------------------------------------- campaigns

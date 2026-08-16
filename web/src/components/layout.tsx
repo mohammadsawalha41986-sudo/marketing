@@ -6,7 +6,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, CreditCard, FileText, Gauge, Image,
   LayoutDashboard, Languages, LogOut, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
-  Rocket, Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Users, X, type LucideIcon,
+  Rocket, Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Upload, Users, X, type LucideIcon,
 } from 'lucide-react';
 
 import { api, qs, type Paginated } from '../lib/api';
@@ -51,6 +51,11 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
   {
     heading: 'group.create',
     items: [
+      /*
+       * Upload first, deliberately. The operator's own finished ad is the
+       * product's primary path; the render tools below it are optional.
+       */
+      { to: '/app/creatives', labelKey: 'nav.creatives', icon: Upload },
       { to: '/app/image-ads', labelKey: 'nav.imageAds', icon: Image },
       { to: '/app/video-ads', labelKey: 'nav.videoAds', icon: Clapperboard },
       { to: '/app/studio', labelKey: 'nav.aiContent', icon: Sparkles },

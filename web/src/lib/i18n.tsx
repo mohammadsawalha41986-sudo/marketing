@@ -32,6 +32,16 @@ const en = {
   'nav.organicContent': 'Organic Content',
   'nav.socialPosting': 'Social Posting',
   'nav.reviews': 'Reviews',
+  'nav.creatives': 'Creatives',
+
+  'creative.dropHere': 'Drop your finished advertisement here',
+  'creative.uploadNote': 'This is your ad exactly as you made it. Nothing here resizes, crops or re-encodes it — the file that runs is the file you upload.',
+  'creative.fileReading': 'What this file is',
+  'creative.placements': 'Where it can run',
+  'creative.noResizeNote': 'A placement your creative does not fit is not a problem with your ad. Make a version at that shape in your design tool and upload it as a separate creative — the original stays exactly as it is.',
+  'creative.library': 'Your creatives',
+  'creative.emptyTitle': 'Nothing uploaded yet',
+  'creative.emptyBody': 'Upload the advertisement you already made and we will tell you where it runs.',
 
   'group.workspace': 'Workspace',
   'group.create': 'Create',
@@ -244,6 +254,16 @@ const ar: Record<keyof typeof en, string> = {
   'nav.organicContent': 'المحتوى العضوي',
   'nav.socialPosting': 'النشر الاجتماعي',
   'nav.reviews': 'المراجعات',
+  'nav.creatives': 'الإعلانات الجاهزة',
+
+  'creative.dropHere': 'أفلِت إعلانك النهائي هنا',
+  'creative.uploadNote': 'هذا إعلانك كما صنعته تماماً. لا شيء هنا يغيّر الحجم أو يقصّ أو يعيد الترميز — الملف الذي يُنشر هو الملف الذي ترفعه.',
+  'creative.fileReading': 'ما هو هذا الملف',
+  'creative.placements': 'أين يمكن نشره',
+  'creative.noResizeNote': 'عدم ملاءمة إعلانك لموضع معيّن ليس عيباً فيه. أنشئ نسخة بذلك المقاس في أداة التصميم وارفعها كإعلان منفصل — الأصل يبقى كما هو تماماً.',
+  'creative.library': 'إعلاناتك',
+  'creative.emptyTitle': 'لم يتم رفع أي شيء بعد',
+  'creative.emptyBody': 'ارفع الإعلان الذي صنعته وسنخبرك أين يمكن نشره.',
 
   'group.workspace': 'مساحة العمل',
   'group.create': 'الإنشاء',
