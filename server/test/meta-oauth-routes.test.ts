@@ -294,9 +294,14 @@ describe('Meta OAuth routes', () => {
     const meta = response.body.adapters.find((row: { platform: string }) => row.platform === 'FACEBOOK');
     expect(meta.implementation.oauth).toBe('IMPLEMENTED');
     expect(meta.implementation.publish).toBe('IMPLEMENTED');
-    // Insights can be fetched but nothing ingests them yet; saying otherwise
-    // would put a tick next to numbers that are still seed data.
-    expect(meta.implementation.metrics).toBe('ARCHITECTURE_ONLY');
+    /*
+     * PARTIALLY_IMPLEMENTED, and the qualifier is load-bearing: insights are
+     * ingested for advertisements this system published and linked to a local
+     * campaign, and for nothing else. Spend made directly in Ads Manager is not
+     * attributed, so claiming IMPLEMENTED would overstate what the dashboards
+     * can account for.
+     */
+    expect(meta.implementation.metrics).toBe('PARTIALLY_IMPLEMENTED');
     expect(meta.canConnect).toBe(true);
 
     const tiktok = response.body.adapters.find((row: { platform: string }) => row.platform === 'TIKTOK');

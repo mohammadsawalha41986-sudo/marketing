@@ -175,16 +175,22 @@ class MetaAdapter extends BaseAdapter {
    * sequence are real code with real provider calls (connect-flow.ts,
    * publish-flow.ts, meta-publish.ts).
    *
-   * `metrics` is deliberately not IMPLEMENTED: meta.ts can fetch and normalize
-   * insights, but nothing ingests them into AnalyticsSnapshot yet, so no figure
-   * on a dashboard comes from Meta. Calling that IMPLEMENTED here would put a
-   * green tick next to numbers that are still seed data.
+   * `metrics` is PARTIALLY_IMPLEMENTED rather than IMPLEMENTED, and the
+   * distinction is real: daily insights are ingested for advertisements this
+   * system published and linked to a local campaign (metric-sync.ts), and for
+   * nothing else. Spend made in Ads Manager against campaigns we did not create
+   * is not attributed here, because guessing which local campaign it belongs to
+   * would corrupt every ratio computed from these rows.
+   *
+   * `conversions` stays NOT_SUPPORTED: Meta reports conversion actions when a
+   * Pixel is configured, but this system has no first-party conversion model to
+   * reconcile them against.
    */
   override readonly implementation: ImplementationReport = {
     oauth: 'IMPLEMENTED',
     accountDiscovery: 'IMPLEMENTED',
     publish: 'IMPLEMENTED',
-    metrics: 'ARCHITECTURE_ONLY',
+    metrics: 'PARTIALLY_IMPLEMENTED',
     conversions: 'NOT_SUPPORTED',
   };
 

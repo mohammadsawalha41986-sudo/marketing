@@ -19,6 +19,7 @@ import {
 } from '../services/integrations/index.js';
 import { beginAuthorization, completeCallback, selectAccounts } from '../services/integrations/connect-flow.js';
 import { validateToken } from '../services/integrations/meta.js';
+import { METRIC_SYNC_PLATFORMS, syncMetaMetrics } from '../services/integrations/metric-sync.js';
 import { decryptSecret } from '../lib/crypto.js';
 import { env } from '../env.js';
 import { hashPassword, passwordProblems } from '../lib/password.js';
@@ -502,16 +503,14 @@ integrationsRouter.post(
     const adapter = adapterFor(integration.platform);
 
     /*
-     * This route used to call `adapter.fetchMetrics()`, which for every adapter
-     * returns an empty array, and then answer `{ ok: true }`. Nothing was
+     * This route used to call `adapter.fetchMetrics()` — which returns an empty
+     * array for every adapter — and then answer `{ ok: true }`. Nothing was
      * fetched and nothing was written, so an operator pressing Sync was told it
-     * worked and then watched the same numbers sit there — the worst kind of
-     * failure, because it is indistinguishable from "there is genuinely no new
-     * data".
+     * worked and watched the same numbers sit there.
      *
-     * Until the ingestion job exists, the honest answer is 501 naming the state.
+     * Meta now ingests for real. Everything else still says so plainly.
      */
-    if (adapter.implementation.metrics !== 'IMPLEMENTED') {
+    if (!METRIC_SYNC_PLATFORMS.includes(integration.platform)) {
       res.status(501).json({
         error: {
           code: 'METRICS_SYNC_NOT_IMPLEMENTED',
@@ -525,7 +524,26 @@ integrationsRouter.post(
       return;
     }
 
-    throw badRequest('Metric sync is not available for this integration.');
+    const result = await syncMetaMetrics({
+      prisma,
+      integrationId: integration.id,
+      organizationId: orgId(actor),
+      fetchImpl: fetch as unknown as Parameters<typeof syncMetaMetrics>[0]['fetchImpl'],
+    });
+    if (!result) throw notFound('Integration');
+
+    await recordAudit({
+      actor,
+      action: 'sync.finish',
+      entity: 'Integration',
+      entityId: integration.id,
+      meta: { status: result.status, campaignsRead: result.campaignsRead, daysWritten: result.daysWritten },
+      ip: req.ip,
+    });
+
+    // A failed run answers 200 with the failure described: the operator needs
+    // to read what happened, and the run row already records it.
+    res.json(result);
   }),
 );
 
