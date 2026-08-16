@@ -7,6 +7,7 @@
  */
 
 import { Router } from 'express';
+import { createHash } from 'node:crypto';
 import { ClientStatus, Prisma, Role, SubscriptionStatus } from '@prisma/client';
 import { z } from 'zod';
 
@@ -19,7 +20,7 @@ import { crossTenant } from '../lib/scope.js';
 import { derive, sumSnapshots } from '../services/analytics.js';
 import { recordAudit } from '../services/audit.js';
 import { aiStatus } from '../services/ai/index.js';
-import { storageStatus } from '../services/storage/index.js';
+import { storage, storageStatus } from '../services/storage/index.js';
 import { cookieSecure, env, hasOpenAi } from '../env.js';
 
 export const adminRouter: Router = Router();
@@ -401,6 +402,85 @@ adminRouter.get(
     ]);
 
     res.json({ ...pageResult(items, total, query), byKind, status: aiStatus() });
+  }),
+);
+
+
+/**
+ * Storage diagnostics.
+ *
+ * Answers one question the rest of the API cannot: **is this object really in
+ * the bucket?** Every other route reaches storage through a database row, so a
+ * successful read proves the row and the object agree — it does not prove which
+ * driver served the bytes, and it cannot be run against a key the database has
+ * never heard of.
+ *
+ * This goes straight to the StorageProvider with a caller-supplied key and
+ * reports the driver, whether the object exists, its length and a SHA-256 of
+ * what came back. That is what makes an acceptance test able to say "the bytes
+ * uploaded before a redeploy are the same bytes read after it" rather than "a
+ * request succeeded".
+ *
+ * Cross-tenant, so it is owner-only, and it never returns object *content* —
+ * only a digest of it. Endpoint and credentials are reported as configured or
+ * not, never as values.
+ */
+adminRouter.get(
+  '/storage/diagnostics',
+  validateQuery(z.object({ key: z.string().max(400).optional() })),
+  asyncHandler(async (req, res) => {
+    crossTenant(actorOf(req));
+    const key = (req.query as { key?: string }).key;
+
+    const status = storageStatus();
+    const configured = {
+      S3_ENDPOINT: Boolean(process.env.S3_ENDPOINT),
+      S3_BUCKET: Boolean(process.env.S3_BUCKET),
+      S3_ACCESS_KEY_ID: Boolean(process.env.S3_ACCESS_KEY_ID),
+      S3_SECRET_ACCESS_KEY: Boolean(process.env.S3_SECRET_ACCESS_KEY),
+      S3_REGION: process.env.S3_REGION ?? null,
+    };
+
+    // The bucket name and endpoint host identify *where* objects go, which the
+    // operator needs. The keys and secret never leave the process.
+    const endpointHost = (() => {
+      try {
+        return process.env.S3_ENDPOINT ? new URL(process.env.S3_ENDPOINT).host : null;
+      } catch {
+        return null;
+      }
+    })();
+
+    const object = key
+      ? await (async () => {
+          const exists = storage.exists ? await storage.exists(key) : null;
+          if (!exists) return { key, exists: false, sizeBytes: null, sha256: null, error: null };
+
+          try {
+            const bytes = await storage.read!(key);
+            return {
+              key,
+              exists: true,
+              sizeBytes: bytes.byteLength,
+              sha256: createHash('sha256').update(bytes).digest('hex'),
+              error: null,
+            };
+          } catch (error) {
+            return { key, exists: true, sizeBytes: null, sha256: null, error: (error as Error).message };
+          }
+        })()
+      : null;
+
+    res.json({
+      driver: status.driver,
+      persistent: status.persistent,
+      configured: status.configured,
+      reason: status.reason,
+      bucket: process.env.S3_BUCKET ?? null,
+      endpointHost,
+      variables: configured,
+      object,
+    });
   }),
 );
 

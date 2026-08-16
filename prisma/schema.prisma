@@ -305,6 +305,7 @@ model Organization {
   aiUsages       AiUsage[]
   products       Product[]
   videoCreatives VideoCreative[]
+  adPublications AdPublication[]
 }
 
 model User {
@@ -402,6 +403,7 @@ model Client {
   creatives      Creative[]
   products       Product[]
   videoCreatives VideoCreative[]
+  adPublications AdPublication[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -1186,4 +1188,80 @@ model VideoCreative {
   @@index([clientId])
   @@index([productId])
   @@index([campaignId])
+}
+
+/// Where a publish attempt actually is.
+///
+/// PUBLISHED is reached only after the provider returns real object ids and the
+/// ad reads back from the provider's own API. Everything else is a state the
+/// operator can act on: PUBLISHING means in flight, FAILED carries the
+/// provider's message, REQUIRES_REAUTH means the credential is the problem and
+/// retrying will not help until someone reconnects.
+enum PublicationStatus {
+  DRAFT
+  APPROVED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  REQUIRES_REAUTH
+}
+
+/// One advertisement published (or attempted) to one platform.
+///
+/// Provider ids are stored in their own columns and never conflated with our
+/// own: `id` is ours, `providerAdId` is Meta's, and an operator searching Ads
+/// Manager needs the second. A row with status PUBLISHED and a null
+/// providerAdId is a contradiction the publish service cannot produce.
+model AdPublication {
+  id              String            @id @default(cuid())
+  organizationId  String
+  clientId        String
+  campaignId      String?
+  productId       String?
+  /// Exactly one of these is the media being published.
+  creativeId      String?
+  videoCreativeId String?
+  platform        Platform
+  status          PublicationStatus @default(DRAFT)
+
+  name         String
+  objective    String
+  dailyBudget  Decimal  @db.Decimal(12, 2)
+  currency     String
+  startDate    DateTime
+  endDate      DateTime
+  countries    String[] @default([])
+  linkUrl      String
+  message      String
+  headline     String
+  callToAction String?
+
+  /// The provider's own ids. Null until the provider returns them.
+  providerCampaignId String?
+  providerAdSetId    String?
+  providerCreativeId String?
+  providerAdId       String?
+  providerImageHash  String?
+  providerVideoId    String?
+  providerAccountId  String?
+  providerStatus     String?
+  managerUrl         String?
+
+  publishedAt  DateTime?
+  /// The provider's message, verbatim, plus the HTTP status. Never swallowed.
+  errorMessage String?
+  errorStatus  Int?
+  /// Every step attempted, with what came back. The audit trail for a publish.
+  steps        Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([campaignId])
+  @@index([status])
 }
