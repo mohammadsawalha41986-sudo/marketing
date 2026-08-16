@@ -110,7 +110,11 @@ export async function publishToMeta(input: PublishInput) {
 
   // ------------------------------------------------- the media must be real
   const creative = publication.creativeId
-    ? await prisma.creative.findFirst({ where: { id: publication.creativeId, clientId: publication.clientId } })
+    ? await prisma.creative.findFirst({
+        where: { id: publication.creativeId, clientId: publication.clientId },
+        // The uploaded file decides whether this is an image or a video ad.
+        include: { media: { select: { mimeType: true, type: true } } },
+      })
     : null;
   const video = publication.videoCreativeId
     ? await prisma.videoCreative.findFirst({ where: { id: publication.videoCreativeId, clientId: publication.clientId } })
@@ -119,6 +123,19 @@ export async function publishToMeta(input: PublishInput) {
   if (!creative && !video) throw badRequest('Attach a creative or a video before publishing');
 
   const storageKey = video?.storageKey ?? creative!.storageKey;
+
+  /*
+   * An uploaded creative can be a video.
+   *
+   * Rendered creatives are always stills — the video pipeline writes
+   * VideoCreative rows — so this branch used to be safe. Since operators can
+   * now upload a finished MP4 as the ad itself, a Creative row may hold video,
+   * and sending those bytes to Meta's image endpoint fails with an error about
+   * the image format that says nothing about the real problem.
+   */
+  const creativeIsVideo =
+    creative?.media?.type === 'VIDEO' || (creative?.media?.mimeType ?? '').startsWith('video/');
+  const publishingVideo = Boolean(video) || creativeIsVideo;
 
   /*
    * Confirm the bytes exist in persistent storage before anything is created at
@@ -212,11 +229,11 @@ export async function publishToMeta(input: PublishInput) {
     let imageHash: string | null = null;
     let videoId: string | null = null;
 
-    if (video) {
+    if (publishingVideo) {
       const uploaded = await uploadVideo({
         adAccountId,
         bytes,
-        filename: `${video.placement.toLowerCase()}.mp4`,
+        filename: video ? `${video.placement.toLowerCase()}.mp4` : 'uploaded-ad.mp4',
         accessToken,
         fetchImpl,
       });
@@ -236,6 +253,7 @@ export async function publishToMeta(input: PublishInput) {
       const uploaded = await uploadImage({
         adAccountId,
         bytes,
+        // An uploaded creative has no preset, so its own name is the sensible one.
         filename: `${creative!.preset.toLowerCase()}.${creative!.format.toLowerCase()}`,
         accessToken,
         fetchImpl,

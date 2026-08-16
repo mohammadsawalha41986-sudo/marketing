@@ -27,6 +27,7 @@ import { idParam } from '../lib/http.js';
 import { assertWritable, orgId, scopeWhere } from '../lib/scope.js';
 import { recordAudit } from '../services/audit.js';
 import { publishToMeta } from '../services/integrations/publish-flow.js';
+import { preflight } from '../services/campaign/preflight.js';
 import { storage } from '../services/storage/index.js';
 
 export const publicationsRouter: Router = Router();
@@ -211,6 +212,28 @@ publicationsRouter.get(
       confirmation:
         'You are about to publish this advertisement. It will be created in the connected Meta ad account, paused, and will spend the daily budget above once you activate it in Ads Manager.',
     });
+  }),
+);
+
+
+/**
+ * Every reason this cannot publish, asked before anything is created.
+ *
+ * Read-only and idempotent, so a review screen can call it as often as it
+ * likes. `canPublish` is the gate the publish button reads.
+ */
+publicationsRouter.get(
+  '/:id/preflight',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const report = await preflight({
+      prisma,
+      publicationId: req.params.id as string,
+      organizationId: orgId(actor),
+    });
+    if (!report) throw notFound('Publication');
+    res.json(report);
   }),
 );
 

@@ -73,6 +73,21 @@ interface Publication {
   createdAt: string;
 }
 
+interface PreflightCheck {
+  key: string;
+  label: string;
+  outcome: 'PASS' | 'WARNING' | 'BLOCK';
+  detail: string;
+  fix: string | null;
+}
+
+interface PreflightReport {
+  outcome: 'PASS' | 'WARNING' | 'BLOCK';
+  canPublish: boolean;
+  checks: PreflightCheck[];
+  summary: string;
+}
+
 interface PreviewResponse {
   publication: Publication;
   client: { id: string; name: string; businessName: string };
@@ -273,6 +288,14 @@ function ReviewDrawer({ id, onClose, onChanged }: { id: string | null; onClose: 
 
   const { data, loading, error, refetch } = useQuery<PreviewResponse>(id ? `/publications/${id}/preview` : null, [id]);
 
+  /*
+   * Preflight asks every question at once, before anything is created at Meta.
+   * The preview endpoint reports its own blockers; this adds the checks that
+   * only matter at launch — approval, currency against the ad account, dates,
+   * whether the file is still in storage.
+   */
+  const check = useQuery<PreflightReport>(id ? `/publications/${id}/preflight` : null, [id, busy]);
+
   const approve = async () => {
     if (!id) return;
     setBusy('approve');
@@ -335,7 +358,8 @@ function ReviewDrawer({ id, onClose, onChanged }: { id: string | null; onClose: 
                 icon={Upload}
                 onClick={() => setConfirming(true)}
                 loading={busy === 'publish'}
-                disabled={!data.readyToPublish}
+                // Both gates: the server's own readiness, and preflight.
+                disabled={!data.readyToPublish || check.data?.canPublish === false}
               >
                 Publish
               </Button>
@@ -364,6 +388,33 @@ function ReviewDrawer({ id, onClose, onChanged }: { id: string | null; onClose: 
                   </p>
                 ))}
               </div>
+            ) : null}
+
+            {check.data ? (
+              <section>
+                <p className="mb-1.5 text-[11px] uppercase tracking-wide text-muted">Preflight</p>
+                <p className="mb-2 text-muted">{check.data.summary}</p>
+                <div className="space-y-1">
+                  {check.data.checks.map((row) => (
+                    <div key={row.key} className="flex items-start gap-2">
+                      <span
+                        className={
+                          row.outcome === 'BLOCK'
+                            ? 'mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-danger'
+                            : row.outcome === 'WARNING'
+                              ? 'mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-warn'
+                              : 'mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-ok'
+                        }
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-fg">{row.label}</span>
+                        <span className="block text-[12px] text-muted">{row.detail}</span>
+                        {row.fix ? <span className="block text-[12px] text-brand">{row.fix}</span> : null}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </section>
             ) : null}
 
             <section>
