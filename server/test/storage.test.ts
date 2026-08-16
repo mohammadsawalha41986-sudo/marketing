@@ -361,3 +361,76 @@ describe('unreachable object storage', () => {
     });
   });
 });
+
+/**
+ * HeadBucket and ListObjectsV2.
+ *
+ * Both are read-only, and both exist to separate failures that an upload
+ * collapses into one 502: a rejected credential, a wrong bucket name and an
+ * unreachable endpoint need three different fixes.
+ */
+describe('read-only bucket operations', () => {
+  function capturing(status: number, body = '') {
+    const calls: Array<{ url: string; method: string; auth: string }> = [];
+    const impl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      calls.push({ url: String(url), method: init?.method ?? 'GET', auth: headers.Authorization ?? '' });
+      return {
+        ok: status < 400,
+        status,
+        text: async () => body,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      } as unknown as Response;
+    });
+    return { impl: impl as unknown as typeof fetch, calls };
+  }
+
+  it('signs HeadBucket against the bucket root and never writes', async () => {
+    const { impl, calls } = capturing(200);
+    const result = await new S3Storage(CONFIG, impl).headBucket();
+
+    expect(result).toEqual({ ok: true, status: 200 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.method).toBe('HEAD');
+    expect(calls[0]!.url).toBe('https://accountid.r2.cloudflarestorage.com/marketing-os');
+    expect(calls[0]!.auth).toMatch(/^AWS4-HMAC-SHA256 Credential=/);
+  });
+
+  it('reports a rejected credential as a status, not an exception', async () => {
+    // 403 is an answer: the endpoint and bucket are fine, the key is not.
+    const { impl } = capturing(403);
+    await expect(new S3Storage(CONFIG, impl).headBucket()).resolves.toEqual({ ok: false, status: 403 });
+  });
+
+  it('lists keys with a signed, canonically ordered query', async () => {
+    const body =
+      '<?xml version="1.0"?><ListBucketResult><Contents><Key>clients/a/assets/x.png</Key></Contents>' +
+      '<Contents><Key>clients/a/creatives/y.png</Key></Contents></ListBucketResult>';
+    const { impl, calls } = capturing(200, body);
+
+    const result = await new S3Storage(CONFIG, impl).listObjects(5);
+
+    expect(result.status).toBe(200);
+    expect(result.keys).toEqual(['clients/a/assets/x.png', 'clients/a/creatives/y.png']);
+    // SigV4 requires query parameters sorted by name; list-type precedes max-keys.
+    expect(calls[0]!.url).toContain('?list-type=2&max-keys=5');
+    expect(calls[0]!.method).toBe('GET');
+  });
+
+  it('clamps the listing size so a probe cannot enumerate a whole bucket', async () => {
+    const { impl, calls } = capturing(200);
+    await new S3Storage(CONFIG, impl).listObjects(100_000);
+    expect(calls[0]!.url).toContain('max-keys=100');
+  });
+
+  it('reports an unreachable endpoint rather than an empty listing', async () => {
+    const failing = vi.fn(async () => {
+      const error = new TypeError('fetch failed');
+      (error as unknown as { cause: unknown }).cause = { message: 'sslv3 alert handshake failure' };
+      throw error;
+    }) as unknown as typeof fetch;
+
+    await expect(new S3Storage(CONFIG, failing).headBucket()).rejects.toMatchObject({ code: 'STORAGE_READ_FAILED' });
+    await expect(new S3Storage(CONFIG, failing).listObjects()).rejects.toMatchObject({ code: 'STORAGE_READ_FAILED' });
+  });
+});

@@ -68,6 +68,8 @@ function sign(input: {
   config: S3Config;
   method: string;
   path: string;
+  /** Canonical query string, already sorted by parameter name. */
+  query?: string;
   payload: Buffer;
   headers: Record<string, string>;
   now: Date;
@@ -93,7 +95,7 @@ function sign(input: {
     .join('');
   const signedHeaders = signedHeaderNames.join(';');
 
-  const canonicalRequest = [method, path, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const canonicalRequest = [method, path, input.query ?? '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
   const scope = `${dateStamp}/${config.region}/s3/aws4_request`;
   const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256Hex(canonicalRequest)].join('\n');
 
@@ -284,6 +286,67 @@ export class S3Storage implements StorageProvider {
     // 404 means the object is already gone, which is the outcome we wanted.
     if (!response.ok && response.status !== 404) {
       throw storageDeleteFailed(`Object storage could not delete the file (HTTP ${response.status}).`);
+    }
+  }
+
+  /**
+   * HeadBucket — does this bucket exist and do these credentials reach it?
+   *
+   * Non-destructive by construction: HEAD reads nothing and writes nothing. This
+   * is the call that separates "the credentials are wrong" from "the bucket name
+   * is wrong" from "the endpoint is wrong", which otherwise all present as a
+   * failed upload.
+   */
+  async headBucket(): Promise<{ ok: boolean; status: number }> {
+    const now = new Date();
+    const path = `/${this.config.bucket}`;
+    const headers = sign({ config: this.config, method: 'HEAD', path, payload: Buffer.alloc(0), headers: {}, now });
+
+    try {
+      const response = await this.fetchImpl(`${this.config.endpoint}${path}`, { method: 'HEAD', headers });
+      return { ok: response.ok, status: response.status };
+    } catch (error) {
+      const reason = transportReason(error);
+      if (reason) throw storageReadFailed(`Object storage is unreachable: ${reason}.`);
+      throw error;
+    }
+  }
+
+  /**
+   * ListObjectsV2, capped. Also read-only.
+   *
+   * Returns keys rather than contents — enough to prove the credentials can
+   * enumerate the bucket without this becoming a way to exfiltrate media.
+   */
+  async listObjects(limit = 5): Promise<{ status: number; keys: string[]; body: string }> {
+    const now = new Date();
+    const query = `list-type=2&max-keys=${Math.min(Math.max(limit, 1), 100)}`;
+    const path = `/${this.config.bucket}`;
+
+    /*
+     * The query string is part of the canonical request, and SigV4 requires its
+     * parameters sorted by key. `list-type` sorts before `max-keys`, so the
+     * literal order above is already canonical.
+     */
+    const headers = sign({
+      config: this.config,
+      method: 'GET',
+      path,
+      query,
+      payload: Buffer.alloc(0),
+      headers: {},
+      now,
+    });
+
+    try {
+      const response = await this.fetchImpl(`${this.config.endpoint}${path}?${query}`, { method: 'GET', headers });
+      const body = await response.text();
+      const keys = [...body.matchAll(/<Key>([^<]+)<\/Key>/g)].map((match) => match[1]!);
+      return { status: response.status, keys, body: body.slice(0, 600) };
+    } catch (error) {
+      const reason = transportReason(error);
+      if (reason) throw storageReadFailed(`Object storage is unreachable: ${reason}.`);
+      throw error;
     }
   }
 
