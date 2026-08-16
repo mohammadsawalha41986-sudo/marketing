@@ -15,7 +15,8 @@ import {
   Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Field, Input, Modal,
   PageHeader, Pagination, Select, Tabs, Textarea, useToast,
 } from '../components/ui';
-import { AiBadge, AiNotice, PlatformPreview, PlatformChip, StatusBadge } from '../components/domain';
+import { AiBadge, AiNotice, PlatformChip, StatusBadge } from '../components/domain';
+import { ContentPreview } from '../components/content-preview';
 import { CreativeStudio } from '../components/creative-studio';
 
 const PLATFORMS: Platform[] = ['INSTAGRAM', 'FACEBOOK', 'TIKTOK', 'SNAPCHAT', 'GOOGLE_ADS', 'GOOGLE_BUSINESS', 'LINKEDIN', 'X'];
@@ -421,7 +422,7 @@ export function StudioPage() {
                   </button>
                 ))}
               </div>
-              <PlatformPreview
+              <ContentPreview
                 platform={previewPlatform}
                 brandName={client?.businessName ?? 'Your brand'}
                 logoUrl={client?.logoUrl}
@@ -589,15 +590,31 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
 
       {tab === 'preview' ? (
         <div className="mx-auto max-w-md">
-          <PlatformPreview
+          <ContentPreview
             platform={content.platform}
+            // The content's own type decides the surface, so a Reel is never
+            // previewed as a square feed post.
+            surface={content.type === 'STORY' ? 'STORY' : content.type === 'REEL' ? 'REEL' : 'FEED'}
             brandName={content.client.businessName}
             logoUrl={content.client.logoUrl}
             headline={content.headline}
             caption={content.caption}
             cta={content.cta}
             hashtags={content.hashtags.map((tag) => tag.tag)}
-            mediaUrl={content.mediaLinks[0]?.media.url}
+            media={
+              content.mediaLinks[0]
+                ? {
+                    url: content.mediaLinks[0].media.url,
+                    kind: content.mediaLinks[0].media.type === 'VIDEO' ? 'VIDEO' : 'IMAGE',
+                    posterUrl: content.mediaLinks[0].media.thumbnailUrl,
+                  }
+                : null
+            }
+            // Both come from the server. Nothing here decides that something is
+            // published or scheduled on its own.
+            status={content.status}
+            scheduledAt={content.scheduledAt}
+            safeZones
           />
         </div>
       ) : null}

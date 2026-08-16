@@ -12,7 +12,8 @@ import {
   Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Field, Input,
   PageHeader, Select, Tabs, Textarea, useToast,
 } from '../components/ui';
-import { PlatformPreview, Swatch } from '../components/domain';
+import { Swatch } from '../components/domain';
+import { ContentPreview } from '../components/content-preview';
 
 interface SuggestedPalette {
   primary: string;
@@ -415,7 +416,7 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
             <Card>
               <CardHeader title="How a post would look" />
               <div className="p-4">
-                <PlatformPreview
+                <ContentPreview
                   platform="INSTAGRAM"
                   brandName={draft.businessName}
                   logoUrl={draft.logoUrl}

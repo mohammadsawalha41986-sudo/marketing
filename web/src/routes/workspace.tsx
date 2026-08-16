@@ -1,7 +1,7 @@
 /** Calendar, media library, approvals, integrations, notifications and settings. */
 
 import { useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Film, FileText, Image as ImageIcon,
@@ -15,10 +15,11 @@ import { useI18n } from '../lib/i18n';
 import { bytes, cn } from '../lib/utils';
 import { date, dateTime, humanize, isoDate, relative } from '../lib/format';
 import {
-  Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Field, Input, Modal,
-  PageHeader, Pagination, Select, Tabs, Textarea, Toggle, useToast,
+  Badge, Button, Card, CardHeader, CardSkeleton, Drawer, EmptyState, ErrorState, Field, Input, Modal,
+  PageHeader, Pagination, Select, Spinner, Tabs, Textarea, Toggle, useToast,
 } from '../components/ui';
-import { PlatformChip, PlatformPreview, StatusBadge } from '../components/domain';
+import { PlatformChip, StatusBadge } from '../components/domain';
+import { ContentPreview } from '../components/content-preview';
 import { ThemeSwitch } from '../components/layout';
 
 // ---------------------------------------------------------------- calendar
@@ -35,6 +36,80 @@ interface CalendarItem {
   campaign: { id: string; name: string } | null;
 }
 
+/**
+ * Peek at a scheduled post without leaving the calendar.
+ *
+ * The calendar endpoint returns scheduling facts — a name, a time, a status —
+ * because that is what a month grid needs. It does not return the caption or
+ * the creative, so this fetches the content itself and hands it to the same
+ * ContentPreview every other screen uses. The alternative was a second,
+ * thinner preview that would drift from the real one.
+ */
+function CalendarPeek({ id, base, onClose }: { id: string | null; base: string; onClose: () => void }) {
+  const navigate = useNavigate();
+  const { data, loading, error } = useQuery<{
+    content: {
+      id: string;
+      name: string;
+      status: string;
+      type: string;
+      platform: Platform;
+      headline: string | null;
+      caption: string | null;
+      cta: string | null;
+      scheduledAt: string | null;
+      client: { businessName: string; logoUrl: string | null };
+      hashtags: Array<{ tag: string }>;
+      mediaLinks: Array<{ media: { url: string; type: string; thumbnailUrl: string | null } }>;
+    };
+  }>(id ? `/content/${id}` : null, [id]);
+
+  const content = data?.content;
+
+  return (
+    <Drawer
+      open={Boolean(id)}
+      onClose={onClose}
+      title={content?.name ?? 'Scheduled post'}
+      footer={
+        content ? (
+          <Button className="w-full" onClick={() => navigate(`${base}/content/${content.id}`)}>
+            Open
+          </Button>
+        ) : null
+      }
+    >
+      {loading ? (
+        <div className="grid place-items-center py-16"><Spinner className="h-6 w-6" /></div>
+      ) : error ? (
+        <ErrorState message={error} />
+      ) : content ? (
+        <ContentPreview
+          platform={content.platform}
+          surface={content.type === 'STORY' ? 'STORY' : content.type === 'REEL' ? 'REEL' : 'FEED'}
+          brandName={content.client.businessName}
+          logoUrl={content.client.logoUrl}
+          headline={content.headline}
+          caption={content.caption}
+          cta={content.cta}
+          hashtags={content.hashtags.map((tag) => tag.tag)}
+          media={
+            content.mediaLinks[0]
+              ? {
+                  url: content.mediaLinks[0].media.url,
+                  kind: content.mediaLinks[0].media.type === 'VIDEO' ? 'VIDEO' : 'IMAGE',
+                  posterUrl: content.mediaLinks[0].media.thumbnailUrl,
+                }
+              : null
+          }
+          status={content.status}
+          scheduledAt={content.scheduledAt}
+        />
+      ) : null}
+    </Drawer>
+  );
+}
+
 const STATUS_DOT: Record<string, string> = {
   DRAFT: 'bg-muted',
   SUBMITTED: 'bg-warn',
@@ -48,9 +123,10 @@ const STATUS_DOT: Record<string, string> = {
 
 export function CalendarPage({ portal = false }: { portal?: boolean }) {
   const { t, lang } = useI18n();
-  const navigate = useNavigate();
+
   const [view, setView] = useState<'month' | 'week' | 'day'>('month');
   const [anchor, setAnchor] = useState(new Date());
+  const [peek, setPeek] = useState<string | null>(null);
 
   const { data, loading, error, refetch } = useQuery<{
     view: string;
@@ -175,7 +251,7 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
                     {items.slice(0, 3).map((item) => (
                       <button
                         key={item.id}
-                        onClick={() => navigate(`${base}/content/${item.id}`)}
+                        onClick={() => setPeek(item.id)}
                         className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-start text-[11px] transition-colors hover:bg-elevated"
                       >
                         <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', STATUS_DOT[item.status] ?? 'bg-muted')} />
@@ -195,7 +271,11 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
         <Card>
           <div className="divide-y divide-line/60">
             {data.items.map((item) => (
-              <Link key={item.id} to={`${base}/content/${item.id}`} className="flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-elevated">
+              <button
+                key={item.id}
+                onClick={() => setPeek(item.id)}
+                className="flex w-full flex-wrap items-center gap-3 px-4 py-3 text-start transition-colors hover:bg-elevated"
+              >
                 <span className={cn('h-2 w-2 shrink-0 rounded-full', STATUS_DOT[item.status] ?? 'bg-muted')} />
                 <span className="w-32 shrink-0 text-[13px] text-muted">
                   {item.scheduledAt ? dateTime(item.scheduledAt, lang) : '—'}
@@ -206,13 +286,15 @@ export function CalendarPage({ portal = false }: { portal?: boolean }) {
                 </span>
                 <PlatformChip platform={item.platform} size="sm" />
                 <StatusBadge status={item.status} kind="content" />
-              </Link>
+              </button>
             ))}
           </div>
         </Card>
       ) : (
         <Card><EmptyState icon={CalendarDays} title={t('empty.calendar.title')} body={t('empty.calendar.body')} /></Card>
       )}
+
+      <CalendarPeek id={peek} base={base} onClose={() => setPeek(null)} />
     </>
   );
 }
@@ -540,7 +622,7 @@ export function ApprovalsPage({ portal = false }: { portal?: boolean }) {
       >
         {active ? (
           <div className="grid gap-5 sm:grid-cols-2">
-            <PlatformPreview
+            <ContentPreview
               platform={active.content.platform}
               brandName={active.content.client.name}
               logoUrl={active.content.client.logoUrl}
@@ -549,6 +631,8 @@ export function ApprovalsPage({ portal = false }: { portal?: boolean }) {
               cta={active.content.cta}
               hashtags={active.content.hashtags.map((tag) => tag.tag)}
               mediaUrl={active.content.mediaLinks[0]?.media.url}
+              scheduledAt={active.content.scheduledAt}
+              safeZones
             />
             <div className="space-y-4">
               <div className="space-y-2 text-[13px]">

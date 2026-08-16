@@ -266,95 +266,11 @@ export function AiEmptyHint({ onRun, loading }: { onRun: () => void; loading: bo
   );
 }
 
-// ---------------------------------------------------------------- previews
-
-/**
- * Platform preview. An approximation of each surface's chrome — enough to judge
- * whether copy fits and reads, not a pixel-accurate clone.
+/*
+ * The platform preview that used to live here is now ContentPreview, in
+ * content-preview.tsx — one component for every surface that shows a post,
+ * rather than a second copy per page.
  */
-export function PlatformPreview({
-  platform, brandName, logoUrl, headline, caption, cta, hashtags, mediaUrl,
-}: {
-  platform: Platform;
-  brandName: string;
-  logoUrl?: string | null;
-  headline?: string | null;
-  caption?: string | null;
-  cta?: string | null;
-  hashtags?: string[];
-  mediaUrl?: string | null;
-}) {
-  const color = PLATFORM_COLORS[platform] ?? '#94a3b8';
-  const isGoogle = platform === 'GOOGLE_ADS';
-  const tags = (hashtags ?? []).slice(0, 6).join(' ');
-
-  if (isGoogle) {
-    return (
-      <div className="rounded-xl border border-line bg-surface p-4">
-        <div className="mb-1 flex items-center gap-2 text-[11px] text-muted">
-          <span className="rounded border border-line px-1 font-semibold">Ad</span>
-          <span className="truncate">{brandName.toLowerCase().replace(/\s+/g, '')}.com</span>
-        </div>
-        <p className="text-[17px] leading-snug text-[#1a0dab] dark:text-[#8ab4f8]">
-          {headline || 'Your headline appears here'}
-        </p>
-        <p className="mt-1 text-[13px] leading-relaxed text-muted">
-          {caption || 'Your description text appears here, up to about 90 characters.'}
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-line bg-surface">
-      <div className="flex items-center gap-2.5 px-3.5 py-2.5">
-        {logoUrl ? (
-          <img src={logoUrl} alt="" className="h-8 w-8 rounded-full object-cover ring-1 ring-line" />
-        ) : (
-          <span className="h-8 w-8 rounded-full" style={{ background: `linear-gradient(135deg, ${color}, ${color}66)` }} />
-        )}
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-[13px] font-semibold text-fg">{brandName}</p>
-          <p className="text-[11px] text-muted">Sponsored</p>
-        </div>
-        <span className="text-lg leading-none text-muted">···</span>
-      </div>
-
-      <div
-        className="relative grid aspect-square w-full place-items-center overflow-hidden"
-        style={{ background: `linear-gradient(135deg, ${color}22, ${color}08)` }}
-      >
-        {mediaUrl ? (
-          <img src={mediaUrl} alt="" className="h-full w-full object-cover" />
-        ) : (
-          <p className="px-6 text-center text-[13px] text-muted">Attach media to preview the creative</p>
-        )}
-        {platform === 'TIKTOK' || platform === 'SNAPCHAT' ? (
-          <span className="absolute bottom-3 start-3 max-w-[75%] text-[13px] font-medium text-white drop-shadow">
-            {headline}
-          </span>
-        ) : null}
-      </div>
-
-      {cta ? (
-        <div className="flex items-center justify-between border-y border-line px-3.5 py-2.5">
-          <span className="text-[13px] text-muted">Learn more</span>
-          <span className="rounded-md px-2.5 py-1 text-[12px] font-semibold text-white" style={{ background: color }}>
-            {cta}
-          </span>
-        </div>
-      ) : null}
-
-      <div className="px-3.5 py-3">
-        {headline ? <p className="text-[13px] font-semibold text-fg">{headline}</p> : null}
-        {caption ? (
-          <p className="mt-1 whitespace-pre-line text-[13px] leading-relaxed text-fg/90 line-clamp-5">{caption}</p>
-        ) : null}
-        {tags ? <p className="mt-1.5 break-words text-[13px] text-brand">{tags}</p> : null}
-      </div>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------- colour swatch
 
