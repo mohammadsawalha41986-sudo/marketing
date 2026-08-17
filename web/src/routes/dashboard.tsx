@@ -154,7 +154,7 @@ export function DashboardPage({ portal = false }: { portal?: boolean }) {
             <KpiCard label={t('kpi.spend')} value={kpis.spend} format="money" compact icon={Wallet} previous={previous?.spend} />
             <KpiCard label={t('kpi.reach')} value={kpis.reach} compact icon={Eye} previous={previous?.reach} />
             <KpiCard label={t('kpi.clicks')} value={kpis.clicks} compact icon={MousePointerClick} previous={previous?.clicks} />
-            <KpiCard label={t('kpi.roas')} value={kpis.roas} format="ratio" icon={TrendingUp} previous={previous?.roas} />
+            <KpiCard label={t('kpi.roas')} value={kpis.roas} format="ratio" icon={TrendingUp} previous={previous?.roas} unavailableReason={kpis.reasons?.roas} />
           </>
         )}
       </div>

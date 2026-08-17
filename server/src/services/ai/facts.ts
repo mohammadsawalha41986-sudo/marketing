@@ -55,7 +55,9 @@ export function buildFacts(input: {
     totals,
     previous,
     platforms: byPlatform(input.current),
-    ctrTrend: changeRatio(totals.ctr, previous.ctr) ?? 0,
+    // 0 means "no movement", which is a claim. Unmeasurable CTR in either
+    // period is not no movement, so the trend is only computed when both exist.
+    ctrTrend: totals.ctr === null || previous.ctr === null ? 0 : changeRatio(totals.ctr, previous.ctr) ?? 0,
     conversionTrend: changeRatio(totals.conversions, previous.conversions) ?? 0,
     spendTrend: changeRatio(totals.spend, previous.spend) ?? 0,
   };

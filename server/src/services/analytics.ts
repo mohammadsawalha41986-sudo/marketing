@@ -28,15 +28,33 @@ export interface Totals {
   engagements: number;
 }
 
+/**
+ * A ratio is `null` when it cannot be computed, never 0.
+ *
+ * This is the same principle `finance.ts` encodes with its `Figure` type, and
+ * it is here for the same reason: zero is a measurement. A campaign that spent
+ * 400 SAR and produced no conversions has a CPA that does not exist — reporting
+ * it as 0.00 states that conversions were free, which is the most flattering
+ * possible reading of the worst possible outcome. Same for ROAS with no revenue
+ * recorded, and CTR with no impressions served.
+ *
+ * `null` rather than `Figure` here because these objects are serialised
+ * straight onto the wire and consumed by charts; `reasons` carries the
+ * explanation alongside, so nothing has to guess why a figure is missing.
+ */
 export interface Derived extends Totals {
-  ctr: number;
-  cpc: number;
-  cpm: number;
-  cpa: number;
-  conversionRate: number;
-  roas: number;
-  engagementRate: number;
+  ctr: number | null;
+  cpc: number | null;
+  cpm: number | null;
+  cpa: number | null;
+  conversionRate: number | null;
+  roas: number | null;
+  engagementRate: number | null;
+  /** Why each null is null. Absent keys were computable. */
+  reasons: Partial<Record<RatioKey, string>>;
 }
+
+export type RatioKey = 'ctr' | 'cpc' | 'cpm' | 'cpa' | 'conversionRate' | 'roas' | 'engagementRate';
 
 const toNumber = (value: Prisma.Decimal | number): number =>
   typeof value === 'number' ? value : Number(value.toString());
@@ -58,18 +76,46 @@ export function sumSnapshots(rows: RawSnapshot[]): Totals {
   }, emptyTotals());
 }
 
-/** Ratios, with zero denominators returning 0 rather than NaN or Infinity. */
+/**
+ * Every ratio, or the reason it does not exist.
+ *
+ * A zero denominator is not an edge case to be smoothed over — it is the answer
+ * to a different question. "No conversions yet" and "conversions cost nothing"
+ * are opposite facts and they must not render identically.
+ */
 export function derive(totals: Totals): Derived {
-  const safe = (numerator: number, denominator: number) => (denominator === 0 ? 0 : numerator / denominator);
+  const reasons: Partial<Record<RatioKey, string>> = {};
+
+  const ratio = (key: RatioKey, numerator: number, denominator: number, whenZero: string): number | null => {
+    if (denominator === 0) {
+      reasons[key] = whenZero;
+      return null;
+    }
+    return numerator / denominator;
+  };
+
   return {
     ...totals,
-    ctr: safe(totals.clicks, totals.impressions),
-    cpc: safe(totals.spend, totals.clicks),
-    cpm: safe(totals.spend * 1000, totals.impressions),
-    cpa: safe(totals.spend, totals.conversions),
-    conversionRate: safe(totals.conversions, totals.clicks),
-    roas: safe(totals.revenue, totals.spend),
-    engagementRate: safe(totals.engagements, totals.impressions),
+    ctr: ratio('ctr', totals.clicks, totals.impressions, 'No impressions were served'),
+    cpc: ratio('cpc', totals.spend, totals.clicks, 'No clicks were recorded'),
+    cpm: ratio('cpm', totals.spend * 1000, totals.impressions, 'No impressions were served'),
+    cpa: ratio('cpa', totals.spend, totals.conversions, 'No conversions were recorded'),
+    conversionRate: ratio('conversionRate', totals.conversions, totals.clicks, 'No clicks were recorded'),
+    /*
+     * ROAS deserves its own note. A zero denominator means nothing was spent,
+     * but revenue of zero on real spend is *also* not a 0.00x return — it means
+     * no revenue has been attributed, which is usually a tracking gap rather
+     * than a commercial result. Both are reported as unavailable, with
+     * different reasons, because the fix for each is different.
+     */
+    roas:
+      totals.spend === 0
+        ? ((reasons.roas = 'No spend was recorded'), null)
+        : totals.revenue === 0
+          ? ((reasons.roas = 'No revenue has been attributed to this spend'), null)
+          : totals.revenue / totals.spend,
+    engagementRate: ratio('engagementRate', totals.engagements, totals.impressions, 'No impressions were served'),
+    reasons,
   };
 }
 

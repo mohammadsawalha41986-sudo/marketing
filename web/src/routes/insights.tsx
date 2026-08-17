@@ -116,10 +116,10 @@ export function AnalyticsPage({ portal = false }: { portal?: boolean }) {
             <KpiCard label={t('kpi.conversions')} value={totals.conversions} />
           </div>
           <div className="mb-4 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-            <KpiCard label={t('kpi.ctr')} value={totals.ctr} format="percent" />
-            <KpiCard label={t('kpi.cpc')} value={totals.cpc} format="money" />
-            <KpiCard label={t('kpi.cpa')} value={totals.cpa} format="money" />
-            <KpiCard label={t('kpi.roas')} value={totals.roas} format="ratio" />
+            <KpiCard label={t('kpi.ctr')} value={totals.ctr} format="percent" unavailableReason={data.totals.reasons?.ctr} />
+            <KpiCard label={t('kpi.cpc')} value={totals.cpc} format="money" unavailableReason={data.totals.reasons?.cpc} />
+            <KpiCard label={t('kpi.cpa')} value={totals.cpa} format="money" unavailableReason={data.totals.reasons?.cpa} />
+            <KpiCard label={t('kpi.roas')} value={totals.roas} format="ratio" unavailableReason={data.totals.reasons?.roas} />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">

@@ -97,7 +97,16 @@ function AnimatedNumber({ value, format }: { value: number; format: (value: numb
 
 export interface KpiCardProps {
   label: string;
-  value: number;
+  /**
+   * `null` means the figure cannot be computed — not that it is zero.
+   *
+   * The card renders "N/A" and, where the server said why, the reason. This is
+   * the whole point: CPA on a campaign with no conversions used to display
+   * 0.00, which reads as free conversions rather than none.
+   */
+  value: number | null;
+  /** The server's explanation for a null value, shown under the N/A. */
+  unavailableReason?: string;
   format?: 'money' | 'number' | 'percent' | 'ratio';
   previous?: number | null;
   icon?: LucideIcon;
@@ -110,6 +119,7 @@ export interface KpiCardProps {
 
 export function KpiCard({
   label: title, value, format = 'number', previous, icon: Icon, accent, compact, footer, invertTrend,
+  unavailableReason,
 }: KpiCardProps) {
   const { lang } = useI18n();
 
@@ -126,8 +136,11 @@ export function KpiCard({
     }
   };
 
-  const trend = previous === undefined || previous === null || previous === 0 ? null : value / previous - 1;
+  const trend =
+    value === null || previous === undefined || previous === null || previous === 0 ? null : value / previous - 1;
   const good = trend === null ? null : invertTrend ? trend < 0 : trend > 0;
+
+  const unavailable = value === null;
 
   return (
     <Card className="relative overflow-hidden p-4 sm:p-5" hover>
@@ -142,10 +155,18 @@ export function KpiCard({
           </span>
         ) : null}
       </div>
-      <p className="mt-2 text-2xl font-semibold tracking-tight text-fg sm:text-[26px]">
-        <AnimatedNumber value={value} format={formatter} />
-      </p>
-      {trend !== null ? (
+      {unavailable ? (
+        <p className="mt-2 text-2xl font-semibold tracking-tight text-muted sm:text-[26px]" title={unavailableReason}>
+          N/A
+        </p>
+      ) : (
+        <p className="mt-2 text-2xl font-semibold tracking-tight text-fg sm:text-[26px]">
+          <AnimatedNumber value={value} format={formatter} />
+        </p>
+      )}
+      {unavailable && unavailableReason ? (
+        <p className="mt-1 text-[12px] leading-snug text-muted">{unavailableReason}</p>
+      ) : trend !== null ? (
         <p className={cn('mt-1 flex items-center gap-1 text-[13px]', good ? 'text-ok' : 'text-danger')}>
           {good ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
           <span dir="ltr" className="tabular inline-block">{delta(trend)}</span>
