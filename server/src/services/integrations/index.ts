@@ -204,7 +204,7 @@ class MetaAdapter extends BaseAdapter {
     return {
       authorizeUrl: 'https://www.facebook.com/v21.0/dialog/oauth',
       scopes: ['ads_management', 'ads_read', 'pages_manage_posts', 'instagram_content_publish', 'business_management'],
-      requiredEnv: ['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI'],
+      requiredEnv: ['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI', 'META_CONFIG_ID'],
       docsUrl: 'https://developers.facebook.com/docs/marketing-apis',
     };
   }

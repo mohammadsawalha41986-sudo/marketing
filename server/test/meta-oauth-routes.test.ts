@@ -40,11 +40,12 @@ describe('Meta OAuth routes', () => {
     process.env.META_APP_ID = 'app-123';
     process.env.META_APP_SECRET = APP_SECRET;
     process.env.META_REDIRECT_URI = callbackUrl(BASE, Platform.FACEBOOK);
+    process.env.META_CONFIG_ID = 'login-config-1';
   });
 
   afterEach(() => {
     for (const key of [
-      'TOKEN_ENCRYPTION_KEY', 'META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI',
+      'TOKEN_ENCRYPTION_KEY', 'META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI', 'META_CONFIG_ID',
       'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_ADS_DEVELOPER_TOKEN', 'GOOGLE_REDIRECT_URI',
     ]) {
       if (saved[key] === undefined) delete process.env[key];

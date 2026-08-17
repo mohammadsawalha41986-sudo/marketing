@@ -69,6 +69,17 @@ export interface MetaConfig {
   appId: string;
   appSecret: string;
   redirectUri: string;
+  /**
+   * The Facebook Login for Business configuration id.
+   *
+   * Business Login does not take a scope list. The permissions *and* the
+   * asset-selection step both come from a configuration created in the app
+   * console, and `config_id` is how the dialog is told which one to run. Sending
+   * scopes instead runs classic consumer login: the operator authorises
+   * permissions but is never offered the screen that assigns a Page and an ad
+   * account to the app — which is why discovery came back empty.
+   */
+  configId: string;
 }
 
 export class ProviderApiError extends Error {
@@ -84,13 +95,25 @@ export class ProviderApiError extends Error {
 }
 
 export function metaConfig(env: NodeJS.ProcessEnv = process.env): MetaConfig {
-  const missing = (['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI'] as const).filter((key) => !env[key]);
+  const missing = (['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI', 'META_CONFIG_ID'] as const).filter(
+    (key) => !env[key]?.trim(),
+  );
   if (missing.length > 0) throw new ProviderNotConfiguredError('FACEBOOK' as Platform, 'Meta', missing);
 
+  /*
+   * Trimmed on the way in.
+   *
+   * These arrive from a hosting dashboard where a value is pasted by hand, and a
+   * trailing newline is invisible in every UI that edits them. Meta rejected an
+   * app id in exactly this way — `client_id=…%0A` is not a number to Graph, and
+   * the error it returns talks about the app id rather than the whitespace.
+   * Cheaper to normalise here than to diagnose again.
+   */
   return {
-    appId: env.META_APP_ID as string,
-    appSecret: env.META_APP_SECRET as string,
-    redirectUri: env.META_REDIRECT_URI as string,
+    appId: (env.META_APP_ID as string).trim(),
+    appSecret: (env.META_APP_SECRET as string).trim(),
+    redirectUri: (env.META_REDIRECT_URI as string).trim(),
+    configId: (env.META_CONFIG_ID as string).trim(),
   };
 }
 
@@ -105,13 +128,25 @@ export const META_SCOPES = [
   'business_management',
 ];
 
-export function authorizationUrl(input: { config: MetaConfig; state: string; scopes?: string[] }): string {
+/**
+ * Where the operator is sent to authorise.
+ *
+ * This is Facebook Login **for Business**, driven by `config_id`. The
+ * configuration in the app console owns the permission list and, critically, the
+ * asset-selection step where a specific Page and ad account are granted to the
+ * app. That step is what makes discovery return anything at all.
+ *
+ * `scope` is deliberately not sent. Business Login takes its permissions from
+ * the configuration, and passing both is contradictory — the classic
+ * scope-based dialog would run instead, which is the bug this replaces.
+ */
+export function authorizationUrl(input: { config: MetaConfig; state: string }): string {
   const url = new URL(`https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth`);
   url.searchParams.set('client_id', input.config.appId);
   url.searchParams.set('redirect_uri', input.config.redirectUri);
   url.searchParams.set('state', input.state);
   url.searchParams.set('response_type', 'code');
-  url.searchParams.set('scope', (input.scopes ?? META_SCOPES).join(','));
+  url.searchParams.set('config_id', input.config.configId);
   return url.toString();
 }
 

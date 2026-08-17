@@ -110,18 +110,22 @@ describe('provider readiness', () => {
   const saved = { ...process.env };
 
   afterEach(() => {
-    for (const key of ['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI', 'TOKEN_ENCRYPTION_KEY']) {
+    for (const key of ['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI', 'META_CONFIG_ID', 'TOKEN_ENCRYPTION_KEY']) {
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     }
   });
 
   it('names the exact missing variables rather than saying "not implemented"', () => {
-    for (const key of ['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI']) delete process.env[key];
+    // META_CONFIG_ID joins the set: Business Login cannot start without the
+    // configuration id, so a deployment missing it is not configured.
+    for (const key of ['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI', 'META_CONFIG_ID']) {
+      delete process.env[key];
+    }
 
     const report = providerReadiness(adapterFor('FACEBOOK'));
     expect(report.state).toBe('NOT_CONFIGURED');
-    expect(report.missingEnv).toEqual(['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI']);
+    expect(report.missingEnv).toEqual(['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI', 'META_CONFIG_ID']);
     expect(report.detail).toContain('META_APP_ID');
     expect(report.detail).not.toMatch(/not implemented/i);
   });
@@ -130,6 +134,7 @@ describe('provider readiness', () => {
     process.env.META_APP_ID = 'id';
     process.env.META_APP_SECRET = 'secret';
     process.env.META_REDIRECT_URI = 'https://example.com/cb';
+    process.env.META_CONFIG_ID = 'login-config-1';
     delete process.env.TOKEN_ENCRYPTION_KEY;
 
     const report = providerReadiness(adapterFor('FACEBOOK'));
@@ -141,6 +146,7 @@ describe('provider readiness', () => {
     process.env.META_APP_ID = 'id';
     process.env.META_APP_SECRET = 'secret';
     process.env.META_REDIRECT_URI = 'https://example.com/cb';
+    process.env.META_CONFIG_ID = 'login-config-1';
     process.env.TOKEN_ENCRYPTION_KEY = KEY;
 
     expect(providerReadiness(adapterFor('FACEBOOK')).state).toBe('READY');
@@ -150,6 +156,7 @@ describe('provider readiness', () => {
     process.env.META_APP_ID = 'id';
     process.env.META_APP_SECRET = 'secret';
     process.env.META_REDIRECT_URI = 'https://example.com/cb';
+    process.env.META_CONFIG_ID = 'login-config-1';
     process.env.TOKEN_ENCRYPTION_KEY = KEY;
 
     // READY is about being able to *start* OAuth. It is not a connection, and
