@@ -322,6 +322,7 @@ model Organization {
   products       Product[]
   videoCreatives VideoCreative[]
   adPublications AdPublication[]
+  creativePerformance CreativePerformance[]
 }
 
 model User {
@@ -415,6 +416,7 @@ model Client {
   integrations   Integration[]
   subscription   Subscription?
   snapshots      AnalyticsSnapshot[]
+  creativePerformance CreativePerformance[]
   aiUsages       AiUsage[]
   creatives      Creative[]
   products       Product[]
@@ -594,6 +596,8 @@ model Creative {
   campaign    Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   sourceMedia Media?    @relation("CreativeSourceMedia", fields: [sourceMediaId], references: [id], onDelete: Cascade)
   media       Media?    @relation("CreativeUploadedMedia", fields: [mediaId], references: [id], onDelete: Cascade)
+  performance CreativePerformance[]
+  campaignLinks CampaignCreative[]
 
   @@index([organizationId])
   @@index([clientId])
@@ -661,6 +665,7 @@ model Campaign {
   reports      Report[]
   costs        CampaignCost[]
   creatives    Creative[]
+  creativeLinks CampaignCreative[]
 
   @@index([organizationId])
   @@index([clientId])
@@ -883,6 +888,119 @@ model AnalyticsSnapshot {
   @@index([organizationId])
   @@index([clientId, date])
   @@index([date])
+}
+
+
+/// Performance at the grain the provider actually reports it.
+///
+/// AnalyticsSnapshot stays exactly as it is — campaign/platform/day — because
+/// every rollup, report and dashboard reads it and it is correct for that
+/// question. It simply cannot answer a different one: which *creative* is
+/// working. Its unique key has no ad or creative in it, so creative-level
+/// performance is not expressible there at any cost short of rewriting what
+/// every existing reader depends on.
+///
+/// So this sits alongside rather than replacing. One row per entity per day,
+/// where the entity is whatever depth the provider gave us — an ad, an ad set,
+/// a campaign — with the creative attached when we know which one ran.
+///
+/// A creative appears in as many rows as it has ads, which is the point: the
+/// same uploaded advertisement may run in several campaigns, and its true
+/// performance is the sum across all of them.
+model CreativePerformance {
+  id             String   @id @default(cuid())
+  organizationId String
+  clientId       String
+  platform       Platform
+  date           DateTime @db.Date
+
+  /// Our own ids, nullable because not every grain has all of them.
+  creativeId      String?
+  videoCreativeId String?
+  campaignId      String?
+  publicationId   String?
+
+  /// The provider's ids, kept separate from ours and never conflated.
+  providerAccountId  String?
+  providerCampaignId String?
+  providerAdSetId    String?
+  providerAdId       String?
+
+  /// Which depth this row was measured at, so a sum never double-counts.
+  grain PerformanceGrain @default(AD)
+
+  spend       Decimal @default(0) @db.Decimal(12, 2)
+  currency    String  @default("USD")
+  impressions Int     @default(0)
+  reach       Int     @default(0)
+  clicks      Int     @default(0)
+  linkClicks  Int     @default(0)
+  conversions Int     @default(0)
+  /// Revenue the provider attributed. First-party revenue lives in ConversionEvent.
+  revenue     Decimal @default(0) @db.Decimal(14, 2)
+  engagements Int     @default(0)
+
+  /// Video engagement, null on image creatives and where the provider omits it.
+  videoViews       Int?
+  videoThruplays   Int?
+  videoCompletions Int?
+
+  /// Frequency as the provider reported it, not impressions/reach recomputed.
+  frequency Float?
+
+  /// The provider's untouched row, for debugging a number nobody can explain.
+  raw Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  creative     Creative?    @relation(fields: [creativeId], references: [id], onDelete: SetNull)
+
+  /// One measurement per entity per day. The provider ad id is the natural key
+  /// where it exists; rows without one are keyed by publication instead.
+  @@unique([providerAdId, date, grain])
+  @@index([organizationId, date])
+  @@index([clientId, date])
+  @@index([creativeId, date])
+  @@index([campaignId, date])
+  @@index([publicationId])
+}
+
+/// The depth a performance row was measured at.
+enum PerformanceGrain {
+  ACCOUNT
+  CAMPAIGN
+  AD_SET
+  AD
+}
+
+/// Links a creative to a campaign it runs in.
+///
+/// `Creative.campaignId` stays where it is and keeps working — this is additive
+/// on purpose. A creative genuinely belongs to many campaigns once the same
+/// uploaded advertisement is reused, and a single nullable column cannot say
+/// that. Readers migrate at their own pace.
+model CampaignCreative {
+  id             String   @id @default(cuid())
+  organizationId String
+  campaignId     String
+  creativeId     String
+  /// The provider ad this pairing became, once published.
+  providerAdId   String?
+  status         String   @default("ACTIVE")
+  /// PRIMARY, VARIANT, TEST — what this creative is doing in the campaign.
+  role           String   @default("PRIMARY")
+  priority       Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  creative Creative @relation(fields: [creativeId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, creativeId])
+  @@index([organizationId])
+  @@index([creativeId])
 }
 
 // ---------------------------------------------------------------- reports

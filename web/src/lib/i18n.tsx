@@ -33,6 +33,7 @@ const en = {
   'nav.socialPosting': 'Social Posting',
   'nav.reviews': 'Reviews',
   'nav.creatives': 'Creatives',
+  'nav.creativePerformance': 'Creative Performance',
 
   'creative.dropHere': 'Drop your finished advertisement here',
   'creative.uploadNote': 'This is your ad exactly as you made it. Nothing here resizes, crops or re-encodes it — the file that runs is the file you upload.',
@@ -255,6 +256,7 @@ const ar: Record<keyof typeof en, string> = {
   'nav.socialPosting': 'النشر الاجتماعي',
   'nav.reviews': 'المراجعات',
   'nav.creatives': 'الإعلانات الجاهزة',
+  'nav.creativePerformance': 'أداء الإعلانات',
 
   'creative.dropHere': 'أفلِت إعلانك النهائي هنا',
   'creative.uploadNote': 'هذا إعلانك كما صنعته تماماً. لا شيء هنا يغيّر الحجم أو يقصّ أو يعيد الترميز — الملف الذي يُنشر هو الملف الذي ترفعه.',

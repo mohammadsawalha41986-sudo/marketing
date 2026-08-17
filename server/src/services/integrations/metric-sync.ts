@@ -25,7 +25,7 @@
  * the distinction the whole finance engine is built around.
  */
 
-import { IntegrationStatus, Platform, Prisma, type PrismaClient } from '@prisma/client';
+import { IntegrationStatus, PerformanceGrain, Platform, Prisma, type PrismaClient } from '@prisma/client';
 
 import { decryptSecret } from '../../lib/crypto.js';
 import { fetchInsights, type FetchLike } from './meta.js';
@@ -104,7 +104,10 @@ export async function syncMetaMetrics(input: {
       clientId: integration.clientId,
       providerCampaignId: { not: null },
     },
-    select: { id: true, campaignId: true, providerCampaignId: true, platform: true },
+    select: {
+      id: true, campaignId: true, providerCampaignId: true, providerAdId: true, platform: true,
+      creativeId: true, videoCreativeId: true, currency: true,
+    },
   });
 
   const skipped: Array<{ publicationId: string; reason: string }> = [];
@@ -167,6 +170,57 @@ export async function syncMetaMetrics(input: {
             conversions: insight.conversions,
             revenue: new Prisma.Decimal(insight.conversionValue),
           };
+
+          /*
+           * The same day, written twice, at two grains.
+           *
+           * AnalyticsSnapshot answers "how is this campaign doing" and every
+           * existing rollup reads it. CreativePerformance answers "which ad is
+           * working", which its unique key cannot express. Both are upserts, so
+           * neither accumulates on a re-sync.
+           *
+           * The provider campaign id is the natural key here because the
+           * insights we fetch are campaign-grained; when ad-level insights are
+           * added, the ad id takes over and the grain column says which is which.
+           */
+          if (publication.creativeId || publication.videoCreativeId) {
+            const key = `${publication.providerCampaignId}:${publication.id}`;
+            const existingPerformance = await prisma.creativePerformance.findFirst({
+              where: { publicationId: publication.id, date, grain: PerformanceGrain.CAMPAIGN },
+              select: { id: true },
+            });
+
+            const performanceData = {
+              spend: new Prisma.Decimal(insight.spend),
+              impressions: insight.impressions,
+              reach: insight.reach,
+              clicks: insight.clicks,
+              conversions: insight.conversions,
+              revenue: new Prisma.Decimal(insight.conversionValue),
+            };
+
+            if (existingPerformance) {
+              await prisma.creativePerformance.update({ where: { id: existingPerformance.id }, data: performanceData });
+            } else {
+              await prisma.creativePerformance.create({
+                data: {
+                  organizationId: input.organizationId,
+                  clientId: integration.clientId,
+                  platform: publication.platform,
+                  date,
+                  creativeId: publication.creativeId,
+                  videoCreativeId: publication.videoCreativeId,
+                  campaignId: publication.campaignId,
+                  publicationId: publication.id,
+                  providerCampaignId: publication.providerCampaignId,
+                  providerAdId: publication.providerAdId ?? key,
+                  grain: PerformanceGrain.CAMPAIGN,
+                  currency: publication.currency,
+                  ...performanceData,
+                },
+              });
+            }
+          }
 
           if (existing) {
             await prisma.analyticsSnapshot.update({ where: { id: existing.id }, data });

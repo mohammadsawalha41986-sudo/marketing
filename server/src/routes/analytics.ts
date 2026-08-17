@@ -5,11 +5,13 @@ import { ApprovalStatus, CampaignStatus, ContentStatus, Prisma } from '@prisma/c
 import { z } from 'zod';
 
 import { prisma } from '../lib/prisma.js';
+import { creativePerformance, DEFAULT_THRESHOLDS } from '../services/analytics/creative-performance.js';
+import { creativeFileUrl } from '../services/storage/objects.js';
 import { asyncHandler, notFound } from '../lib/errors.js';
 import { actorOf, requireAuth } from '../middleware/auth.js';
 import { validateQuery } from '../middleware/validate.js';
 import { dateRangeQuery, resolveRange } from '../lib/http.js';
-import { orgId, resolveClientId } from '../lib/scope.js';
+import { orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
 import { byDay, byPlatform, derive, previousWindow, sumSnapshots } from '../services/analytics.js';
 import { analyzeCampaigns, buildFacts } from '../services/ai/index.js';
 import { recordAiUsage } from '../services/audit.js';
@@ -23,6 +25,86 @@ const snapshotSelect = {
 } as const;
 
 const scopedQuery = dateRangeQuery.extend({ clientId: z.string().max(40).optional() });
+
+
+/**
+ * Which creative is working.
+ *
+ * Summed per creative across every campaign it ran in, judged against this
+ * account's own averages rather than an industry number nobody can source, and
+ * never declared a winner without enough evidence to be one.
+ */
+analyticsRouter.get(
+  '/creatives',
+  validateQuery(
+    scopedQuery.extend({
+      minImpressions: z.coerce.number().int().min(0).max(1_000_000).optional(),
+      minClicks: z.coerce.number().int().min(0).max(100_000).optional(),
+      minSpend: z.coerce.number().min(0).max(1_000_000).optional(),
+      minConversions: z.coerce.number().int().min(0).max(10_000).optional(),
+    }),
+  ),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const query = req.query as unknown as z.infer<typeof scopedQuery> & Record<string, number | undefined>;
+    const range = resolveRange(query);
+    const clientId = resolveClientId(actor, query.clientId);
+
+    const result = await creativePerformance({
+      prisma,
+      organizationId: orgId(actor),
+      clientId: clientId ?? undefined,
+      from: range.from,
+      to: range.to,
+      // Thresholds are the caller's to set: what counts as enough evidence
+      // differs between an operator spending 50 a day and one spending 5,000.
+      thresholds: {
+        minImpressions: query.minImpressions ?? DEFAULT_THRESHOLDS.minImpressions,
+        minClicks: query.minClicks ?? DEFAULT_THRESHOLDS.minClicks,
+        minSpend: query.minSpend ?? DEFAULT_THRESHOLDS.minSpend,
+        minConversions: query.minConversions ?? DEFAULT_THRESHOLDS.minConversions,
+      },
+    });
+
+    // Attach what the operator needs to recognise the creative: the picture,
+    // its shape, and which campaigns it ran in.
+    const creatives = await prisma.creative.findMany({
+      where: { id: { in: result.rows.map((row) => row.creativeId) }, ...scopeWhere(actor) },
+      select: {
+        id: true, source: true, preset: true, platform: true, width: true, height: true,
+        headline: true, status: true, createdAt: true,
+      },
+    });
+    const byId = new Map(creatives.map((creative) => [creative.id, creative]));
+
+    const campaigns = await prisma.campaign.findMany({
+      where: { id: { in: [...new Set(result.rows.flatMap((row) => row.campaignIds))] }, ...scopeWhere(actor) },
+      select: { id: true, name: true },
+    });
+    const campaignNames = new Map(campaigns.map((campaign) => [campaign.id, campaign.name]));
+
+    res.json({
+      range: { from: range.from.toISOString().slice(0, 10), to: range.to.toISOString().slice(0, 10) },
+      thresholds: result.thresholds,
+      baseline: result.baseline,
+      items: result.rows.map((row) => ({
+        ...row,
+        creative: byId.get(row.creativeId)
+          ? { ...byId.get(row.creativeId)!, url: creativeFileUrl(row.creativeId) }
+          : null,
+        campaigns: row.campaignIds.map((id) => ({ id, name: campaignNames.get(id) ?? 'Unknown campaign' })),
+      })),
+      /*
+       * Said plainly rather than left to be inferred from an empty list: these
+       * rows exist only for advertisements this system published and synced.
+       */
+      provenance:
+        result.rows.length === 0
+          ? 'No creative-level measurements yet. These appear after an advertisement is published through this system and its metrics are synced.'
+          : 'Measured from provider insights for advertisements published through this system.',
+    });
+  }),
+);
 
 /** The main dashboard payload: KPIs, series, platform split and live alerts. */
 analyticsRouter.get(
