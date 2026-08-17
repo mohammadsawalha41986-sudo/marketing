@@ -1,20 +1,21 @@
 /** /api/analytics — dashboard rollups, series, and the AI marketing analyst. */
 
 import { Router } from 'express';
-import { ApprovalStatus, CampaignStatus, ContentStatus, Prisma } from '@prisma/client';
+import { ApprovalStatus, CampaignStatus, ContentStatus, Prisma, type RecommendationStatus } from '@prisma/client';
 import { z } from 'zod';
 
 import { prisma } from '../lib/prisma.js';
 import { creativePerformance, DEFAULT_THRESHOLDS } from '../services/analytics/creative-performance.js';
+import { optimize, recordRecommendations } from '../services/campaign/optimizer.js';
 import { creativeFileUrl } from '../services/storage/objects.js';
-import { asyncHandler, notFound } from '../lib/errors.js';
-import { actorOf, requireAuth } from '../middleware/auth.js';
-import { validateQuery } from '../middleware/validate.js';
-import { dateRangeQuery, resolveRange } from '../lib/http.js';
-import { orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
+import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
+import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
+import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
+import { dateRangeQuery, idParam, resolveRange } from '../lib/http.js';
+import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
 import { byDay, byPlatform, derive, previousWindow, sumSnapshots } from '../services/analytics.js';
 import { analyzeCampaigns, buildFacts } from '../services/ai/index.js';
-import { recordAiUsage } from '../services/audit.js';
+import { recordAiUsage, recordAudit } from '../services/audit.js';
 
 export const analyticsRouter: Router = Router();
 analyticsRouter.use(requireAuth);
@@ -103,6 +104,182 @@ analyticsRouter.get(
           ? 'No creative-level measurements yet. These appear after an advertisement is published through this system and its metrics are synced.'
           : 'Measured from provider insights for advertisements published through this system.',
     });
+  }),
+);
+
+
+/**
+ * Run the optimizer and store what it proposed.
+ *
+ * Read-and-record only. Nothing here touches a provider or changes a campaign —
+ * applying a recommendation is a separate, explicitly approved step.
+ */
+analyticsRouter.post(
+  '/optimize',
+  requireAgency,
+  validateBody(
+    z.object({
+      clientId: z.string().min(1).max(40),
+      from: z.coerce.date().optional(),
+      to: z.coerce.date().optional(),
+    }),
+  ),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const body = req.body as { clientId: string; from?: Date; to?: Date };
+
+    const client = await prisma.client.findFirst({
+      where: { id: body.clientId, organizationId: orgId(actor) },
+      select: { id: true },
+    });
+    if (!client) throw notFound('Client');
+
+    const to = body.to ?? new Date();
+    const from = body.from ?? new Date(to.getTime() - 29 * 86_400_000);
+
+    const report = await optimize({
+      prisma,
+      organizationId: orgId(actor),
+      clientId: client.id,
+      from,
+      to,
+    });
+
+    const ids = await recordRecommendations({
+      prisma,
+      organizationId: orgId(actor),
+      clientId: client.id,
+      report,
+    });
+
+    await recordAudit({
+      actor, action: 'recommendation.create', entity: 'AiRecommendation',
+      meta: { count: ids.length, state: report.state }, ip: req.ip,
+    });
+
+    res.json({ ...report, recommendationIds: ids });
+  }),
+);
+
+/** The decision log: what was proposed, and what became of it. */
+analyticsRouter.get(
+  '/recommendations',
+  validateQuery(
+    z.object({
+      clientId: z.string().max(40).optional(),
+      status: z.enum(['PENDING', 'APPROVED', 'APPLIED', 'REJECTED', 'EXPIRED', 'FAILED']).optional(),
+    }),
+  ),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const query = req.query as { clientId?: string; status?: RecommendationStatus };
+    const clientId = resolveClientId(actor, query.clientId);
+
+    const items = await prisma.aiRecommendation.findMany({
+      where: {
+        organizationId: orgId(actor),
+        ...(clientId ? { clientId } : {}),
+        ...(query.status ? { status: query.status } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+
+    res.json({ items });
+  }),
+);
+
+/**
+ * Apply a recommendation.
+ *
+ * The order is the whole point: validate, check the provider surface is
+ * actually implemented, call the provider, verify what came back, and only then
+ * write locally. Updating our own row first and assuming the provider agreed is
+ * how a dashboard ends up confidently reporting a budget that was never changed.
+ *
+ * Today no provider mutation surface is implemented — Meta budget updates and
+ * pauses are not built — so this refuses with 501 rather than marking anything
+ * applied. That refusal is deliberate and is the honest state.
+ */
+analyticsRouter.post(
+  '/recommendations/:id/apply',
+  requireAgency,
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+
+    const recommendation = await prisma.aiRecommendation.findFirst({
+      where: { id: req.params.id, organizationId: orgId(actor) },
+    });
+    if (!recommendation) throw notFound('Recommendation');
+
+    if (recommendation.status === 'APPLIED') {
+      throw badRequest('This recommendation has already been applied.');
+    }
+
+    // Guardrails are consulted before anything else, and default to requiring
+    // approval for exactly the actions that cost or stop money.
+    const settings = await prisma.automationSettings.findFirst({
+      where: { organizationId: orgId(actor), clientId: recommendation.clientId },
+    });
+
+    const needsApproval =
+      recommendation.type === 'INCREASE_BUDGET' || recommendation.type === 'DECREASE_BUDGET'
+        ? settings?.requireApprovalForBudget ?? true
+        : recommendation.type.startsWith('PAUSE_')
+          ? settings?.requireApprovalForPauses ?? true
+          : false;
+
+    if (needsApproval && recommendation.status !== 'APPROVED') {
+      throw badRequest(
+        'This recommendation changes spend or stops delivery, so it must be approved before it can be applied.',
+      );
+    }
+
+    /*
+     * The provider mutation would go here. There is none: pause, resume and
+     * budget updates are not implemented against Meta, so there is nothing to
+     * call and nothing to verify. Marking this APPLIED would be a lie about
+     * somebody's ad account.
+     */
+    res.status(501).json({
+      error: {
+        code: 'PROVIDER_MUTATION_NOT_IMPLEMENTED',
+        message:
+          `Applying a ${recommendation.type.replace(/_/g, ' ').toLowerCase()} is not implemented against the provider yet, ` +
+          'so nothing was changed and this recommendation has not been marked applied. ' +
+          'Make the change in Ads Manager for now.',
+        details: { recommendationId: recommendation.id, type: recommendation.type, proposedChange: recommendation.proposedChange },
+      },
+    });
+  }),
+);
+
+/** Approve a recommendation so it becomes eligible to apply. */
+analyticsRouter.post(
+  '/recommendations/:id/approve',
+  requireAgency,
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+
+    const existing = await prisma.aiRecommendation.findFirst({
+      where: { id: req.params.id, organizationId: orgId(actor) },
+      select: { id: true, status: true },
+    });
+    if (!existing) throw notFound('Recommendation');
+
+    const recommendation = await prisma.aiRecommendation.update({
+      where: { id: existing.id },
+      data: { status: 'APPROVED' },
+    });
+
+    await recordAudit({
+      actor, action: 'recommendation.approve', entity: 'AiRecommendation', entityId: recommendation.id, ip: req.ip,
+    });
+    res.json({ recommendation });
   }),
 );
 

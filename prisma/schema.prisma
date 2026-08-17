@@ -323,6 +323,8 @@ model Organization {
   videoCreatives VideoCreative[]
   adPublications AdPublication[]
   creativePerformance CreativePerformance[]
+  recommendations AiRecommendation[]
+  automationSettings AutomationSettings[]
 }
 
 model User {
@@ -417,6 +419,7 @@ model Client {
   subscription   Subscription?
   snapshots      AnalyticsSnapshot[]
   creativePerformance CreativePerformance[]
+  recommendations AiRecommendation[]
   aiUsages       AiUsage[]
   creatives      Creative[]
   products       Product[]
@@ -1001,6 +1004,120 @@ model CampaignCreative {
   @@unique([campaignId, creativeId])
   @@index([organizationId])
   @@index([creativeId])
+}
+
+
+/// What the optimizer proposed, and what happened to it.
+///
+/// Every recommendation is stored with the exact metrics it was computed from.
+/// That snapshot is the whole point: a recommendation read three days later
+/// must be re-checkable against the numbers that produced it, and an applied
+/// one must be defensible afterwards. "Increase the budget" with no evidence
+/// attached is an opinion; with the window, the spend and the return beside it,
+/// it is a decision someone can audit.
+model AiRecommendation {
+  id             String   @id @default(cuid())
+  organizationId String
+  clientId       String
+  campaignId     String?
+  creativeId     String?
+  publicationId  String?
+
+  type       RecommendationType
+  /// PERFORMING | UNDERPERFORMING | INSUFFICIENT_DATA | AT_RISK
+  state      String
+  title      String
+  /// The reasoning, in the operator's words.
+  reason     String
+  /// The exact figures behind it — never prose alone.
+  evidence   Json               @default("[]")
+  confidence RecommendationConfidence @default(MEDIUM)
+  /// What would change, e.g. { field: 'dailyBudget', from: 100, to: 120 }.
+  proposedChange Json?
+  expectedImpact String?
+
+  /// The metrics as they stood when this was generated.
+  metricsSnapshot Json @default("{}")
+  windowFrom      DateTime?
+  windowTo        DateTime?
+
+  status      RecommendationStatus @default(PENDING)
+  appliedAt   DateTime?
+  appliedById String?
+  /// What the provider said when this was applied. Never assumed.
+  providerResult Json?
+  errorMessage   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([clientId, createdAt])
+  @@index([campaignId])
+  @@index([creativeId])
+}
+
+enum RecommendationType {
+  INCREASE_BUDGET
+  DECREASE_BUDGET
+  PAUSE_CREATIVE
+  PAUSE_AD
+  PAUSE_ADSET
+  CHANGE_SCHEDULE
+  REVIEW_AUDIENCE
+  REVIEW_LANDING_PAGE
+  REVIEW_TRACKING
+  ADD_CREATIVE_VARIANT
+  REDUCE_SPEND
+  REAUTHORIZE_ACCOUNT
+  NO_ACTION
+}
+
+enum RecommendationConfidence {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum RecommendationStatus {
+  PENDING
+  APPROVED
+  APPLIED
+  REJECTED
+  EXPIRED
+  FAILED
+}
+
+/// Guardrails for anything the system would change on its own.
+///
+/// Defaults are deliberately inert: automation off, budget changes needing
+/// approval, no destructive action permitted. An optimizer that can pause ads
+/// unattended is one bad threshold away from switching off a working campaign
+/// overnight, and nobody would know which decision did it.
+model AutomationSettings {
+  id             String  @id @default(cuid())
+  organizationId String
+  clientId       String? @unique
+
+  autoOptimizationEnabled     Boolean @default(false)
+  requireApprovalForBudget    Boolean @default(true)
+  requireApprovalForPauses    Boolean @default(true)
+  maxBudgetIncreasePercent    Int     @default(20)
+  maxBudgetDecreasePercent    Int     @default(30)
+  maxDailyBudget              Decimal? @db.Decimal(12, 2)
+  minDailyBudget              Decimal? @db.Decimal(12, 2)
+  /// Recommendation types automation may act on unattended. Empty by default.
+  allowedActions              String[] @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
 }
 
 // ---------------------------------------------------------------- reports
