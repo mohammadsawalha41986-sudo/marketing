@@ -22,6 +22,7 @@ import { approvalsRouter } from './approvals.js';
 import { analyticsRouter } from './analytics.js';
 import { reportsRouter } from './reports.js';
 import { adminRouter } from './admin.js';
+import { oauthCallbackRouter } from './oauth-callback.js';
 import { integrationsRouter, notificationsRouter, subscriptionsRouter, usersRouter } from './misc.js';
 
 export const apiRouter: Router = Router();
@@ -87,6 +88,6 @@ apiRouter.use('/approvals', approvalsRouter);
 apiRouter.use('/analytics', analyticsRouter);
 apiRouter.use('/reports', reportsRouter);
 apiRouter.use('/notifications', notificationsRouter);
-apiRouter.use('/integrations', integrationsRouter);
+apiRouter.use('/integrations', [oauthCallbackRouter, integrationsRouter]);
 apiRouter.use('/subscriptions', subscriptionsRouter);
 apiRouter.use('/admin', adminRouter);
