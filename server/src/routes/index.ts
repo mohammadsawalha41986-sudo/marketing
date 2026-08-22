@@ -88,6 +88,12 @@ apiRouter.use('/approvals', approvalsRouter);
 apiRouter.use('/analytics', analyticsRouter);
 apiRouter.use('/reports', reportsRouter);
 apiRouter.use('/notifications', notificationsRouter);
-apiRouter.use('/integrations', [oauthCallbackRouter, integrationsRouter]);
+/*
+ * Order matters. The OAuth callback is a redirect from the provider and carries
+ * no session, so it is mounted ahead of the authenticated integrations router —
+ * its authorisation is the single-use state, not a cookie.
+ */
+apiRouter.use('/integrations', oauthCallbackRouter);
+apiRouter.use('/integrations', integrationsRouter);
 apiRouter.use('/subscriptions', subscriptionsRouter);
 apiRouter.use('/admin', adminRouter);

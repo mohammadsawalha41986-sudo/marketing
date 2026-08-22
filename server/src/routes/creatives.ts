@@ -7,7 +7,7 @@
  */
 
 import { Router } from 'express';
-import { CreativeFormat, CreativeStatus, MediaType, Platform, Prisma } from '@prisma/client';
+import { CreativeFormat, CreativeSource, CreativeStatus, MediaType, Platform, Prisma } from '@prisma/client';
 import { z } from 'zod';
 
 import { prisma } from '../lib/prisma.js';
@@ -15,7 +15,7 @@ import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
 import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam } from '../lib/http.js';
-import { assertWritable, orgId, scopeWhere } from '../lib/scope.js';
+import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
 import { storage } from '../services/storage/index.js';
 import {
   creativeFileUrl,
@@ -28,6 +28,9 @@ import { recordAudit } from '../services/audit.js';
 import { PRESETS, defaultPresetFor, presetByKey, type CreativePreset } from '../services/creative/presets.js';
 import { renderCreative, type BrandTreatment } from '../services/creative/render.js';
 import { scoreCreative } from '../services/creative/match.js';
+import { inspectMedia } from '../services/creative/inspect.js';
+import { specsFor, validateCreative } from '../services/creative/specs.js';
+import { uploadAny } from '../middleware/upload.js';
 
 export const creativesRouter: Router = Router();
 creativesRouter.use(requireAuth);
@@ -163,6 +166,194 @@ function resolvePreset(input: { presetKey?: string; platform?: Platform }): Crea
   }
   return defaultPresetFor(input.platform ?? Platform.INSTAGRAM);
 }
+
+
+// ---------------------------------------------------------------- uploaded
+
+/**
+ * Bring in a finished advertisement.
+ *
+ * This is the product's primary path and the inverse of `POST /` below: the
+ * operator made the ad in Canva, Photoshop, CapCut or on their phone, and this
+ * accepts it *as the ad*. Nothing is rendered, resized, cropped or re-encoded.
+ * The bytes stored are the bytes uploaded, and the sha256 recorded is of those
+ * exact bytes, so what runs on Meta is provably what was approved here.
+ *
+ * The upload becomes two rows: a `Media` row holding the file and everything
+ * measured from it, and a `Creative` row with `source = UPLOADED` pointing at
+ * it. They are separate because a creative can later gain variants, campaign
+ * links and a performance history, while the file underneath stays untouched.
+ */
+creativesRouter.post(
+  '/upload',
+  requireAgency,
+  uploadAny.single('file'),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+
+    const file = req.file;
+    if (!file) throw badRequest('No file uploaded. Send it as multipart field "file".');
+
+    const clientId = resolveClientId(actor, typeof req.body.clientId === 'string' ? req.body.clientId : undefined);
+    if (!clientId) throw badRequest('An uploaded advertisement belongs to one restaurant. Choose one first.');
+
+    const client = await prisma.client.findFirst({
+      where: { id: clientId, organizationId: orgId(actor) },
+      select: { id: true },
+    });
+    if (!client) throw notFound('Client');
+
+    // Measured from the bytes, never from the multipart headers.
+    const inspected = await inspectMedia(file.buffer, file.mimetype);
+
+    /*
+     * The same file, uploaded twice, is one asset.
+     *
+     * Content-addressed storage already collapses the objects; without this the
+     * library would still grow a second row pointing at the same bytes every
+     * time somebody re-uploaded, and "which of these four identical thumbnails
+     * is the live one" is a question nobody should have to answer.
+     */
+    const duplicate = await prisma.media.findFirst({
+      where: { organizationId: orgId(actor), clientId, sha256: inspected.sha256 },
+      select: { id: true, originalName: true, createdAt: true },
+    });
+
+    const stored = await storage.save(file.buffer, {
+      filename: file.originalname,
+      mimeType: file.mimetype,
+      prefix: `clients/${clientId}/assets`,
+    });
+
+    const media = duplicate
+      ? await prisma.media.findUniqueOrThrow({ where: { id: duplicate.id } })
+      : await prisma.media.create({
+          data: {
+            organizationId: orgId(actor),
+            clientId,
+            type: inspected.kind === 'VIDEO' ? MediaType.VIDEO : MediaType.IMAGE,
+            filename: stored.key,
+            originalName: file.originalname.slice(0, 200),
+            mimeType: file.mimetype,
+            sizeBytes: stored.sizeBytes,
+            width: inspected.width,
+            height: inspected.height,
+            url: stored.url,
+            thumbnailUrl: inspected.kind === 'IMAGE' ? stored.url : null,
+            sha256: inspected.sha256,
+            durationSeconds: inspected.durationSeconds,
+            frameRate: inspected.frameRate,
+            videoCodec: inspected.videoCodec,
+            audioCodec: inspected.audioCodec,
+            bitrateKbps: inspected.bitrateKbps,
+            hasAudio: inspected.hasAudio,
+          },
+        });
+
+    const creative = await prisma.creative.create({
+      data: {
+        organizationId: orgId(actor),
+        clientId,
+        source: CreativeSource.UPLOADED,
+        mediaId: media.id,
+        // No source asset and no preset: the file is not derived from anything
+        // here, and it has whatever shape the operator gave it.
+        sourceMediaId: null,
+        preset: 'UPLOADED',
+        platform: (typeof req.body.platform === 'string' ? req.body.platform : Platform.FACEBOOK) as Platform,
+        width: inspected.width ?? 0,
+        height: inspected.height ?? 0,
+        format: inspected.kind === 'IMAGE' && inspected.format === 'jpeg' ? CreativeFormat.JPG : CreativeFormat.PNG,
+        storageKey: stored.key,
+        url: stored.url,
+        sizeBytes: stored.sizeBytes,
+        headline: typeof req.body.headline === 'string' ? req.body.headline.slice(0, 300) : null,
+        ctaLabel: typeof req.body.ctaLabel === 'string' ? req.body.ctaLabel.slice(0, 120) : null,
+        // Nothing was composed and nothing was scored against a preset, so both
+        // stay empty rather than carrying numbers that were never measured.
+        match: {},
+        composition: {},
+      },
+    });
+
+    await recordAudit({
+      actor,
+      action: 'creative.upload',
+      entity: 'Creative',
+      entityId: creative.id,
+      meta: { mediaId: media.id, kind: inspected.kind, duplicate: Boolean(duplicate) },
+      ip: req.ip,
+    });
+
+    res.status(201).json({
+      creative: withCreativeUrl(creative),
+      media: withMediaUrls(media),
+      inspected,
+      // Immediately useful: the operator wants to know where this can run.
+      validation: validateCreative({
+        kind: inspected.kind,
+        mimeType: file.mimetype,
+        sizeBytes: inspected.sizeBytes,
+        width: inspected.width,
+        height: inspected.height,
+        aspectRatio: inspected.aspectRatio,
+        durationSeconds: inspected.durationSeconds,
+        measured: inspected.measured,
+      }),
+      duplicateOf: duplicate ? { id: duplicate.id, originalName: duplicate.originalName, uploadedAt: duplicate.createdAt } : null,
+    });
+  }),
+);
+
+/** The placement catalogue, so nothing downstream hardcodes a platform limit. */
+creativesRouter.get('/specs', (req, res) => {
+  const platform = (req.query as { platform?: Platform }).platform;
+  res.json({ specs: specsFor(platform) });
+});
+
+/**
+ * Where can this creative actually run?
+ *
+ * Re-measured from the stored bytes rather than trusted from the row, so a
+ * creative validated today reflects the file that is in the bucket today.
+ */
+creativesRouter.get(
+  '/:id/validate',
+  validateParams(idParam),
+  validateQuery(z.object({ platform: z.nativeEnum(Platform).optional() })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+
+    const creative = await prisma.creative.findFirst({
+      where: { id: req.params.id, ...scopeWhere(actor) },
+      include: { media: true, sourceMedia: true },
+    });
+    if (!creative) throw notFound('Creative');
+
+    const asset = creative.media ?? creative.sourceMedia;
+    const bytes = await readObject(creative.storageKey);
+    const inspected = await inspectMedia(bytes, asset?.mimeType ?? 'image/png');
+
+    res.json({
+      creative: { id: creative.id, source: creative.source, platform: creative.platform },
+      inspected,
+      validation: validateCreative(
+        {
+          kind: inspected.kind,
+          mimeType: asset?.mimeType ?? 'image/png',
+          sizeBytes: inspected.sizeBytes,
+          width: inspected.width,
+          height: inspected.height,
+          aspectRatio: inspected.aspectRatio,
+          durationSeconds: inspected.durationSeconds,
+          measured: inspected.measured,
+        },
+        (req.query as { platform?: Platform }).platform,
+      ),
+    });
+  }),
+);
 
 /** Score an asset for a placement without rendering or storing anything. */
 creativesRouter.post(

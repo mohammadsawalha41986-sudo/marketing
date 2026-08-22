@@ -27,9 +27,16 @@
 
 import { Platform } from '@prisma/client';
 
-import { GRAPH_VERSION, ProviderApiError, type FetchLike } from './meta.js';
+import { MARKETING, ProviderApiError, type FetchLike } from './meta.js';
 
-const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`;
+/*
+ * Everything in this file addresses ad objects — campaigns, ad sets, ad images,
+ * ad creatives, ads — so it is the Marketing API throughout, never the Graph
+ * version. The two expire on different schedules and the Marketing one stops
+ * serving requests rather than falling back, so pointing these at the Graph
+ * constant is how a publish path dies silently.
+ */
+const GRAPH = MARKETING;
 
 /**
  * Read a Graph response, turning Meta's error envelope into something an

@@ -139,11 +139,17 @@ export interface Metrics {
   conversions: number;
   revenue: number;
   engagements: number;
-  ctr: number;
-  cpc: number;
-  cpm: number;
-  cpa: number;
-  conversionRate: number;
-  roas: number;
-  engagementRate: number;
+  /*
+   * Ratios are null when they cannot be computed, never 0. A campaign with
+   * spend and no conversions has no CPA; rendering 0.00 there would say
+   * conversions were free. `reasons` carries the explanation.
+   */
+  ctr: number | null;
+  cpc: number | null;
+  cpm: number | null;
+  cpa: number | null;
+  conversionRate: number | null;
+  roas: number | null;
+  engagementRate: number | null;
+  reasons?: Partial<Record<'ctr' | 'cpc' | 'cpm' | 'cpa' | 'conversionRate' | 'roas' | 'engagementRate', string>>;
 }

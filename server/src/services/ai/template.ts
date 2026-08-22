@@ -230,15 +230,40 @@ export function templateAnalysis(facts: CampaignFacts): Analysis {
   const recommendations: Analysis['recommendations'] = [];
   const nextActions: string[] = [];
 
-  const best = facts.platforms.filter((p) => p.conversions > 0).sort((a, b) => b.roas - a.roas)[0];
-  const worst = [...facts.platforms].sort((a, b) => a.roas - b.roas)[0];
+  /*
+   * Only platforms with a measurable return can be ranked by it.
+   *
+   * A platform whose ROAS is unavailable is not the worst performer — it is
+   * unmeasured, and sorting it to the bottom would produce the analyst's most
+   * confident sentence about its least reliable input.
+   */
+  const measurable = facts.platforms.filter(
+    (platform): platform is typeof platform & { roas: number } => platform.roas !== null,
+  );
+  const best = measurable.filter((p) => p.conversions > 0).sort((a, b) => b.roas - a.roas)[0];
+  const worst = [...measurable].sort((a, b) => a.roas - b.roas)[0];
+  const unmeasured = facts.platforms.filter((platform) => platform.roas === null && platform.spend > 0);
 
   if (best) working.push(`${best.label} has the strongest return at ${best.roas.toFixed(2)}x ROAS on ${money(best.spend)} of spend.`);
   if (facts.ctrTrend > 0.05) working.push(`Click-through rate is up ${pct(facts.ctrTrend)} against the previous period.`);
   if (facts.conversionTrend > 0.05) working.push(`Conversions are up ${pct(facts.conversionTrend)} period over period.`);
-  if (facts.totals.roas >= 1) working.push(`Overall ROAS is ${facts.totals.roas.toFixed(2)}x, above break-even.`);
+  if (facts.totals.roas !== null && facts.totals.roas >= 1) {
+    working.push(`Overall ROAS is ${facts.totals.roas.toFixed(2)}x, above break-even.`);
+  }
 
-  if (worst && facts.platforms.length > 1 && worst.roas < 1) {
+  /*
+   * Spend with no attributed revenue is a finding in its own right, and the
+   * honest one: it is almost always a tracking gap rather than a campaign that
+   * genuinely returned nothing, and saying "0.00x ROAS" would assert the latter.
+   */
+  for (const platform of unmeasured) {
+    failing.push(
+      `${platform.label} has ${money(platform.spend)} of spend with no revenue attributed to it, ` +
+        `so its return cannot be measured. ${facts.totals.reasons?.roas ?? 'Check that conversion tracking is configured.'}`,
+    );
+  }
+
+  if (worst && measurable.length > 1 && worst.roas < 1) {
     failing.push(`${worst.label} is below break-even at ${worst.roas.toFixed(2)}x ROAS on ${money(worst.spend)}.`);
   }
   if (facts.ctrTrend < -0.05) failing.push(`Click-through rate has fallen ${pct(Math.abs(facts.ctrTrend))} against the previous period.`);
@@ -296,7 +321,10 @@ export function templateAnalysis(facts: CampaignFacts): Analysis {
   const summary =
     facts.totals.spend === 0
       ? 'No spend has been recorded for this period yet, so there is nothing to analyse.'
-      : `Across ${facts.periodDays} days the campaigns spent ${money(facts.totals.spend)}, reached ${facts.totals.reach.toLocaleString('en-US')} people and recorded ${facts.totals.conversions.toLocaleString('en-US')} conversions at ${facts.totals.roas.toFixed(2)}x ROAS.`;
+      : `Across ${facts.periodDays} days the campaigns spent ${money(facts.totals.spend)}, reached ${facts.totals.reach.toLocaleString('en-US')} people and recorded ${facts.totals.conversions.toLocaleString('en-US')} conversions` +
+        (facts.totals.roas === null
+          ? `. Return on ad spend cannot be calculated: ${(facts.totals.reasons?.roas ?? 'revenue is not being measured').toLowerCase()}.`
+          : ` at ${facts.totals.roas.toFixed(2)}x ROAS.`);
 
   return { summary, working, failing, recommendations, nextActions };
 }

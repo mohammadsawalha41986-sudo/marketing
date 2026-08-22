@@ -15,6 +15,8 @@ import { CampaignDetailPage, CampaignsPage } from './routes/campaigns';
 import { ContentDetailPage, ContentPage, StudioPage } from './routes/content';
 import { BrandPage } from './routes/brand';
 import { ImageAdsPage, VideoAdsPage } from './routes/ads';
+import { CreativesPage } from './routes/creatives';
+import { CreativePerformancePage } from './routes/creative-performance';
 import { MetaCampaignsPage } from './routes/publishing';
 import {
   ApprovalsPage, CalendarPage, IntegrationsPage, MediaPage, NotificationsPage, SettingsPage,
@@ -99,6 +101,7 @@ export default function App() {
                 <Route path="media" element={<MediaPage />} />
                 <Route path="content" element={<ContentPage />} />
                 <Route path="content/:id" element={<ContentDetailPage />} />
+                <Route path="creatives" element={<CreativesPage />} />
                 <Route path="image-ads" element={<ImageAdsPage />} />
                 <Route path="video-ads" element={<VideoAdsPage />} />
                 <Route path="studio" element={<StudioPage />} />
@@ -107,6 +110,7 @@ export default function App() {
                 <Route path="campaigns/:id" element={<CampaignDetailPage />} />
                 <Route path="calendar" element={<CalendarPage />} />
                 <Route path="analytics" element={<AnalyticsPage />} />
+                <Route path="creative-performance" element={<CreativePerformancePage />} />
                 <Route path="reports" element={<ReportsPage />} />
                 <Route path="reports/:id" element={<ReportDetailPage />} />
                 <Route path="approvals" element={<ApprovalsPage />} />

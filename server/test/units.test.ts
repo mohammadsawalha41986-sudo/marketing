@@ -93,10 +93,18 @@ describe('analytics maths', () => {
     expect(totals.impressions).toBe(20000);
   });
 
-  it('returns zeroes, not NaN, for an empty set', () => {
+  it('sums an empty set to zero and leaves its ratios unavailable', () => {
     expect(sumSnapshots([])).toEqual(emptyTotals());
     const derived = derive(sumSnapshots([]));
-    for (const value of Object.values(derived)) expect(Number.isFinite(value)).toBe(true);
+
+    // Counts are genuinely zero — nothing was served, and that is a fact.
+    expect(derived.impressions).toBe(0);
+    expect(derived.spend).toBe(0);
+    // Ratios over nothing do not exist, and are null rather than 0 or NaN.
+    for (const key of ['ctr', 'cpc', 'cpm', 'cpa', 'roas', 'conversionRate'] as const) {
+      expect(derived[key]).toBeNull();
+      expect(derived.reasons[key]).toBeTruthy();
+    }
   });
 
   it('derives ratios and never divides by zero', () => {
@@ -108,8 +116,9 @@ describe('analytics maths', () => {
     expect(derived.roas).toBeCloseTo(8, 5);
 
     const empty = derive(emptyTotals());
-    expect(empty.ctr).toBe(0);
-    expect(empty.roas).toBe(0);
+    // Previously 0, which claimed a measured result where there was none.
+    expect(empty.ctr).toBeNull();
+    expect(empty.roas).toBeNull();
   });
 
   it('handles Prisma decimal-like values', () => {
@@ -290,5 +299,75 @@ describe('AI marketing analyst', () => {
       budget: 1000,
     });
     expect(templateAnalysis(steady).recommendations.length).toBeGreaterThan(0);
+  });
+});
+
+/*
+ * Zero denominators, which is where analytics used to lie.
+ *
+ * `derive()` returned 0 for every ratio it could not compute, so a campaign
+ * that spent real money and produced no conversions displayed CPA 0.00 — the
+ * most flattering possible reading of the worst possible outcome, and
+ * indistinguishable from genuinely free conversions.
+ */
+describe('derived ratios never invent a zero', () => {
+  const totals = {
+    spend: 0, reach: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0, engagements: 0,
+  };
+
+  it('reports CPA as unavailable when nothing converted', () => {
+    const result = derive({ ...totals, spend: 400, impressions: 10_000, clicks: 250 });
+
+    expect(result.cpa).toBeNull();
+    expect(result.reasons.cpa).toMatch(/no conversions/i);
+    // The spend itself is a measurement and stays a number.
+    expect(result.spend).toBe(400);
+  });
+
+  it('reports ROAS as unavailable when no revenue is attributed', () => {
+    const result = derive({ ...totals, spend: 400, impressions: 10_000, clicks: 250, conversions: 12 });
+
+    expect(result.roas).toBeNull();
+    // The reason distinguishes a tracking gap from a campaign that returned nothing.
+    expect(result.reasons.roas).toMatch(/no revenue has been attributed/i);
+  });
+
+  it('separates "nothing was spent" from "nothing came back"', () => {
+    expect(derive(totals).reasons.roas).toMatch(/no spend/i);
+    expect(derive({ ...totals, spend: 100 }).reasons.roas).toMatch(/no revenue/i);
+  });
+
+  it('reports CTR, CPC, CPM and conversion rate as unavailable rather than zero', () => {
+    const result = derive(totals);
+
+    expect(result.ctr).toBeNull();
+    expect(result.cpc).toBeNull();
+    expect(result.cpm).toBeNull();
+    expect(result.conversionRate).toBeNull();
+    expect(result.engagementRate).toBeNull();
+    expect(result.reasons.ctr).toMatch(/no impressions/i);
+    expect(result.reasons.cpc).toMatch(/no clicks/i);
+  });
+
+  it('never returns Infinity or NaN', () => {
+    for (const value of Object.values(derive({ ...totals, spend: 50 }))) {
+      if (typeof value === 'number') expect(Number.isFinite(value)).toBe(true);
+    }
+  });
+
+  it('still computes every ratio when the data is there', () => {
+    const result = derive({
+      spend: 400, reach: 8_000, impressions: 10_000, clicks: 250,
+      conversions: 20, revenue: 1_600, engagements: 500,
+    });
+
+    expect(result.ctr).toBeCloseTo(0.025, 4);
+    expect(result.cpc).toBeCloseTo(1.6, 4);
+    expect(result.cpm).toBeCloseTo(40, 4);
+    expect(result.cpa).toBeCloseTo(20, 4);
+    expect(result.roas).toBeCloseTo(4, 4);
+    expect(result.conversionRate).toBeCloseTo(0.08, 4);
+    // Nothing was unavailable, so nothing needed a reason.
+    expect(Object.keys(result.reasons)).toHaveLength(0);
   });
 });

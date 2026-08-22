@@ -198,6 +198,17 @@ enum CreativeFormat {
   JPG
 }
 
+/// Where a creative came from, which decides what may be done to it.
+///
+/// UPLOADED is the product's primary path: the operator made the ad somewhere
+/// else and this is the finished file. It is never re-rendered, resized or
+/// overwritten — a variant is always a new row.
+enum CreativeSource {
+  UPLOADED
+  RENDERED
+  GENERATED
+}
+
 enum CreativeStatus {
   DRAFT
   SAVED
@@ -311,6 +322,9 @@ model Organization {
   products       Product[]
   videoCreatives VideoCreative[]
   adPublications AdPublication[]
+  creativePerformance CreativePerformance[]
+  recommendations AiRecommendation[]
+  automationSettings AutomationSettings[]
 }
 
 model User {
@@ -404,6 +418,8 @@ model Client {
   integrations   Integration[]
   subscription   Subscription?
   snapshots      AnalyticsSnapshot[]
+  creativePerformance CreativePerformance[]
+  recommendations AiRecommendation[]
   aiUsages       AiUsage[]
   creatives      Creative[]
   products       Product[]
@@ -493,6 +509,23 @@ model Media {
   thumbnailUrl   String?
   category       String?
   tags           String[]  @default([])
+
+  /// Content hash of the bytes, hex SHA-256.
+  ///
+  /// Nullable because rows predating it were never hashed, and backfilling
+  /// would mean reading every object out of the bucket. Two uploads of the same
+  /// file share a digest, which is what makes "you already have this" possible
+  /// without comparing pixels.
+  sha256         String?
+  /// Probed from the file itself, never from what the browser claimed.
+  /// Video only; null on images and on rows uploaded before probing existed.
+  durationSeconds Float?
+  frameRate       Float?
+  videoCodec      String?
+  audioCodec      String?
+  bitrateKbps     Int?
+  hasAudio        Boolean?
+
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -500,12 +533,16 @@ model Media {
   client       Client?        @relation(fields: [clientId], references: [id], onDelete: SetNull)
   campaign     Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   contentLinks ContentMedia[]
-  creatives    Creative[]
+  creatives    Creative[]     @relation("CreativeSourceMedia")
+  uploadedAs   Creative[]     @relation("CreativeUploadedMedia")
 
   @@index([organizationId])
   @@index([clientId])
   @@index([campaignId])
   @@index([type])
+  /// Duplicate detection is per tenant: two organizations uploading the same
+  /// stock photo is not a duplicate, it is two businesses using one photo.
+  @@index([organizationId, sha256])
 }
 
 /// A rendered post creative: the finished artwork, not the photograph it was
@@ -523,9 +560,19 @@ model Creative {
   contentId      String?
   campaignId     String?
   /// The untouched asset this was rendered from.
-  sourceMediaId  String
+  ///
+  /// Nullable since uploaded creatives: a finished ad brought in from Canva or
+  /// CapCut has no separate source inside this system — the upload *is* the
+  /// creative. Rendered rows still always carry one.
+  sourceMediaId  String?
+  /// How this creative came to exist. Defaults to RENDERED so every row that
+  /// existed before this column keeps its original meaning.
+  source         CreativeSource @default(RENDERED)
+  /// The uploaded file itself, for source = UPLOADED.
+  mediaId        String?
   platform       Platform
   /// Named preset, e.g. `INSTAGRAM_PORTRAIT` — the aspect the platform wants.
+  /// Uploaded creatives have no preset; they have whatever dimensions they have.
   preset         String
   width          Int
   height         Int
@@ -550,12 +597,17 @@ model Creative {
   client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   content     Content?  @relation(fields: [contentId], references: [id], onDelete: SetNull)
   campaign    Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  sourceMedia Media     @relation(fields: [sourceMediaId], references: [id], onDelete: Cascade)
+  sourceMedia Media?    @relation("CreativeSourceMedia", fields: [sourceMediaId], references: [id], onDelete: Cascade)
+  media       Media?    @relation("CreativeUploadedMedia", fields: [mediaId], references: [id], onDelete: Cascade)
+  performance CreativePerformance[]
+  campaignLinks CampaignCreative[]
 
   @@index([organizationId])
   @@index([clientId])
   @@index([contentId])
   @@index([sourceMediaId])
+  @@index([mediaId])
+  @@index([source])
 }
 
 // ---------------------------------------------------------------- campaigns
@@ -616,6 +668,7 @@ model Campaign {
   reports      Report[]
   costs        CampaignCost[]
   creatives    Creative[]
+  creativeLinks CampaignCreative[]
 
   @@index([organizationId])
   @@index([clientId])
@@ -838,6 +891,233 @@ model AnalyticsSnapshot {
   @@index([organizationId])
   @@index([clientId, date])
   @@index([date])
+}
+
+
+/// Performance at the grain the provider actually reports it.
+///
+/// AnalyticsSnapshot stays exactly as it is — campaign/platform/day — because
+/// every rollup, report and dashboard reads it and it is correct for that
+/// question. It simply cannot answer a different one: which *creative* is
+/// working. Its unique key has no ad or creative in it, so creative-level
+/// performance is not expressible there at any cost short of rewriting what
+/// every existing reader depends on.
+///
+/// So this sits alongside rather than replacing. One row per entity per day,
+/// where the entity is whatever depth the provider gave us — an ad, an ad set,
+/// a campaign — with the creative attached when we know which one ran.
+///
+/// A creative appears in as many rows as it has ads, which is the point: the
+/// same uploaded advertisement may run in several campaigns, and its true
+/// performance is the sum across all of them.
+model CreativePerformance {
+  id             String   @id @default(cuid())
+  organizationId String
+  clientId       String
+  platform       Platform
+  date           DateTime @db.Date
+
+  /// Our own ids, nullable because not every grain has all of them.
+  creativeId      String?
+  videoCreativeId String?
+  campaignId      String?
+  publicationId   String?
+
+  /// The provider's ids, kept separate from ours and never conflated.
+  providerAccountId  String?
+  providerCampaignId String?
+  providerAdSetId    String?
+  providerAdId       String?
+
+  /// Which depth this row was measured at, so a sum never double-counts.
+  grain PerformanceGrain @default(AD)
+
+  spend       Decimal @default(0) @db.Decimal(12, 2)
+  currency    String  @default("USD")
+  impressions Int     @default(0)
+  reach       Int     @default(0)
+  clicks      Int     @default(0)
+  linkClicks  Int     @default(0)
+  conversions Int     @default(0)
+  /// Revenue the provider attributed. First-party revenue lives in ConversionEvent.
+  revenue     Decimal @default(0) @db.Decimal(14, 2)
+  engagements Int     @default(0)
+
+  /// Video engagement, null on image creatives and where the provider omits it.
+  videoViews       Int?
+  videoThruplays   Int?
+  videoCompletions Int?
+
+  /// Frequency as the provider reported it, not impressions/reach recomputed.
+  frequency Float?
+
+  /// The provider's untouched row, for debugging a number nobody can explain.
+  raw Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  creative     Creative?    @relation(fields: [creativeId], references: [id], onDelete: SetNull)
+
+  /// One measurement per entity per day. The provider ad id is the natural key
+  /// where it exists; rows without one are keyed by publication instead.
+  @@unique([providerAdId, date, grain])
+  @@index([organizationId, date])
+  @@index([clientId, date])
+  @@index([creativeId, date])
+  @@index([campaignId, date])
+  @@index([publicationId])
+}
+
+/// The depth a performance row was measured at.
+enum PerformanceGrain {
+  ACCOUNT
+  CAMPAIGN
+  AD_SET
+  AD
+}
+
+/// Links a creative to a campaign it runs in.
+///
+/// `Creative.campaignId` stays where it is and keeps working — this is additive
+/// on purpose. A creative genuinely belongs to many campaigns once the same
+/// uploaded advertisement is reused, and a single nullable column cannot say
+/// that. Readers migrate at their own pace.
+model CampaignCreative {
+  id             String   @id @default(cuid())
+  organizationId String
+  campaignId     String
+  creativeId     String
+  /// The provider ad this pairing became, once published.
+  providerAdId   String?
+  status         String   @default("ACTIVE")
+  /// PRIMARY, VARIANT, TEST — what this creative is doing in the campaign.
+  role           String   @default("PRIMARY")
+  priority       Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  creative Creative @relation(fields: [creativeId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, creativeId])
+  @@index([organizationId])
+  @@index([creativeId])
+}
+
+
+/// What the optimizer proposed, and what happened to it.
+///
+/// Every recommendation is stored with the exact metrics it was computed from.
+/// That snapshot is the whole point: a recommendation read three days later
+/// must be re-checkable against the numbers that produced it, and an applied
+/// one must be defensible afterwards. "Increase the budget" with no evidence
+/// attached is an opinion; with the window, the spend and the return beside it,
+/// it is a decision someone can audit.
+model AiRecommendation {
+  id             String   @id @default(cuid())
+  organizationId String
+  clientId       String
+  campaignId     String?
+  creativeId     String?
+  publicationId  String?
+
+  type       RecommendationType
+  /// PERFORMING | UNDERPERFORMING | INSUFFICIENT_DATA | AT_RISK
+  state      String
+  title      String
+  /// The reasoning, in the operator's words.
+  reason     String
+  /// The exact figures behind it — never prose alone.
+  evidence   Json               @default("[]")
+  confidence RecommendationConfidence @default(MEDIUM)
+  /// What would change, e.g. { field: 'dailyBudget', from: 100, to: 120 }.
+  proposedChange Json?
+  expectedImpact String?
+
+  /// The metrics as they stood when this was generated.
+  metricsSnapshot Json @default("{}")
+  windowFrom      DateTime?
+  windowTo        DateTime?
+
+  status      RecommendationStatus @default(PENDING)
+  appliedAt   DateTime?
+  appliedById String?
+  /// What the provider said when this was applied. Never assumed.
+  providerResult Json?
+  errorMessage   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([clientId, createdAt])
+  @@index([campaignId])
+  @@index([creativeId])
+}
+
+enum RecommendationType {
+  INCREASE_BUDGET
+  DECREASE_BUDGET
+  PAUSE_CREATIVE
+  PAUSE_AD
+  PAUSE_ADSET
+  CHANGE_SCHEDULE
+  REVIEW_AUDIENCE
+  REVIEW_LANDING_PAGE
+  REVIEW_TRACKING
+  ADD_CREATIVE_VARIANT
+  REDUCE_SPEND
+  REAUTHORIZE_ACCOUNT
+  NO_ACTION
+}
+
+enum RecommendationConfidence {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum RecommendationStatus {
+  PENDING
+  APPROVED
+  APPLIED
+  REJECTED
+  EXPIRED
+  FAILED
+}
+
+/// Guardrails for anything the system would change on its own.
+///
+/// Defaults are deliberately inert: automation off, budget changes needing
+/// approval, no destructive action permitted. An optimizer that can pause ads
+/// unattended is one bad threshold away from switching off a working campaign
+/// overnight, and nobody would know which decision did it.
+model AutomationSettings {
+  id             String  @id @default(cuid())
+  organizationId String
+  clientId       String? @unique
+
+  autoOptimizationEnabled     Boolean @default(false)
+  requireApprovalForBudget    Boolean @default(true)
+  requireApprovalForPauses    Boolean @default(true)
+  maxBudgetIncreasePercent    Int     @default(20)
+  maxBudgetDecreasePercent    Int     @default(30)
+  maxDailyBudget              Decimal? @db.Decimal(12, 2)
+  minDailyBudget              Decimal? @db.Decimal(12, 2)
+  /// Recommendation types automation may act on unattended. Empty by default.
+  allowedActions              String[] @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
 }
 
 // ---------------------------------------------------------------- reports

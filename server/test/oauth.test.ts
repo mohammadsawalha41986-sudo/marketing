@@ -193,9 +193,10 @@ describe('Meta adapter', () => {
     process.env.META_APP_ID = 'app-123';
     process.env.META_APP_SECRET = 'secret-456';
     process.env.META_REDIRECT_URI = 'https://example.com/api/integrations/meta/callback';
+    process.env.META_CONFIG_ID = 'login-config-1';
   });
   afterEach(() => {
-    for (const key of ['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI']) {
+    for (const key of ['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI', 'META_CONFIG_ID']) {
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     }
@@ -206,7 +207,7 @@ describe('Meta adapter', () => {
     expect(() => metaConfig()).toThrow(/META_APP_SECRET/);
   });
 
-  it('builds a real authorization URL carrying the state and scopes', () => {
+  it('builds a real authorization URL carrying the state', () => {
     const url = new URL(authorizationUrl({ config: metaConfig(), state: 'the-state' }));
 
     expect(url.origin).toBe('https://www.facebook.com');
@@ -214,9 +215,54 @@ describe('Meta adapter', () => {
     expect(url.searchParams.get('client_id')).toBe('app-123');
     expect(url.searchParams.get('state')).toBe('the-state');
     expect(url.searchParams.get('response_type')).toBe('code');
-    expect(url.searchParams.get('scope')).toContain('ads_read');
     // The secret must never appear in a URL the browser will follow.
     expect(url.toString()).not.toContain('secret-456');
+  });
+
+  /*
+   * Facebook Login for Business. The configuration in the app console owns both
+   * the permission list and the asset-selection step that grants a specific Page
+   * and ad account to the app; `config_id` is what runs it. Without this the
+   * classic scope dialog ran, the operator authorised permissions, no assets
+   * were ever assigned, and discovery returned nothing.
+   */
+  it('drives the Business Login configuration rather than a scope list', () => {
+    const url = new URL(authorizationUrl({ config: metaConfig(), state: 'the-state' }));
+
+    expect(url.searchParams.get('config_id')).toBe('login-config-1');
+    // Business Login takes permissions from the configuration; sending both is
+    // contradictory and falls back to classic consumer login.
+    expect(url.searchParams.get('scope')).toBeNull();
+    expect(url.searchParams.get('response_type')).toBe('code');
+    expect(url.searchParams.get('redirect_uri')).toBe('https://example.com/api/integrations/meta/callback');
+  });
+
+  it('refuses to build a config without the login configuration id, naming it', () => {
+    delete process.env.META_CONFIG_ID;
+    expect(() => metaConfig()).toThrow(/META_CONFIG_ID/);
+  });
+
+  it('treats a whitespace-only configuration id as missing', () => {
+    process.env.META_CONFIG_ID = '   ';
+    expect(() => metaConfig()).toThrow(/META_CONFIG_ID/);
+  });
+
+  /*
+   * A trailing newline is invisible in every hosting dashboard that edits these
+   * values, and Meta rejected an app id for exactly this reason — percent-encoded
+   * into client_id, `1821…%0A` is not a number to Graph.
+   */
+  it('strips whitespace pasted around the credentials', () => {
+    process.env.META_APP_ID = ' 1821333942563322\n';
+    process.env.META_CONFIG_ID = '\t login-config-1 ';
+
+    const config = metaConfig();
+    expect(config.appId).toBe('1821333942563322');
+    expect(config.configId).toBe('login-config-1');
+
+    const url = new URL(authorizationUrl({ config, state: 's' }));
+    expect(url.searchParams.get('client_id')).toBe('1821333942563322');
+    expect(url.toString()).not.toContain('%0A');
   });
 
   it('exchanges the code and trades up to a long-lived token', async () => {

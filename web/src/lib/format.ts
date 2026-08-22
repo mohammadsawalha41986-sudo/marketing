@@ -12,7 +12,8 @@ const locales: Record<Lang, string> = { en: 'en-US', ar: 'ar-JO-u-nu-latn' };
  * a budget of 10,000 SAR rendered as $10,000 is not a formatting nit, it is a
  * wrong number on a financial dashboard.
  */
-export function money(value: number, lang: Lang = 'en', compact = false, currency = 'USD'): string {
+export function money(value: number | null | undefined, lang: Lang = 'en', compact = false, currency = 'USD'): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return 'N/A';
   const abs = Math.abs(value);
 
   if (compact && abs >= 1000) {
@@ -35,20 +36,29 @@ export function money(value: number, lang: Lang = 'en', compact = false, currenc
   }).format(value);
 }
 
-export function num(value: number, lang: Lang = 'en', compact = false): string {
+export function num(value: number | null | undefined, lang: Lang = 'en', compact = false): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return 'N/A';
   if (compact && Math.abs(value) >= 1000) {
     return new Intl.NumberFormat(locales[lang], { notation: 'compact', maximumFractionDigits: 1 }).format(value);
   }
   return new Intl.NumberFormat(locales[lang], { maximumFractionDigits: 0 }).format(value);
 }
 
-export function pct(value: number, digits = 2): string {
-  if (!Number.isFinite(value)) return '—';
+/*
+ * `null` is not zero.
+ *
+ * The API sends null for a ratio that cannot be computed — CPA with no
+ * conversions, ROAS with no attributed revenue — and these render N/A rather
+ * than a number nobody measured. An em dash is used inside dense tables where
+ * "N/A" would be noise; both mean the same thing and neither means zero.
+ */
+export function pct(value: number | null | undefined, digits = 2): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return 'N/A';
   return `${(value * 100).toFixed(digits)}%`;
 }
 
-export function ratio(value: number): string {
-  if (!Number.isFinite(value)) return '—';
+export function ratio(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return 'N/A';
   return `${value.toFixed(2)}x`;
 }
 

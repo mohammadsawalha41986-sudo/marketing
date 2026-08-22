@@ -23,9 +23,40 @@ import { Platform } from '@prisma/client';
 
 import { ProviderNotConfiguredError } from './index.js';
 
-/** Pinned: Graph is versioned and an unpinned call breaks on Meta's schedule. */
-export const GRAPH_VERSION = 'v21.0';
+/*
+ * Pinned versions — two of them, because Meta runs two clocks.
+ *
+ * The Graph API and the Marketing API share a host and a version *number* but
+ * not a lifecycle. A Graph version lives about two years and, once expired,
+ * degrades by falling back. A Marketing version lives roughly a year and, once
+ * expired, **fails outright** — ad-account calls stop being served rather than
+ * quietly answering from an older version.
+ *
+ * This file previously pinned one constant at v21.0 for both. v21.0 was
+ * released 2 October 2024: still inside the Graph window (it expires
+ * 21 January 2027), but far outside the Marketing one, so every campaign, ad
+ * set, image, creative, ad and insights call in meta-publish.ts was aimed at an
+ * expired Marketing API. Publishing could not have worked in production
+ * regardless of credentials.
+ *
+ * Verified 2026-08-16 against secondary sources — developers.facebook.com is
+ * unreachable from this build environment (egress proxy), so these values are
+ * documented as *needing confirmation against Meta's own changelog* before a
+ * production publish:
+ *   - v25.0 is the current version (released 18 February 2026)
+ *   - Marketing API v23.0 reached end of life 9 June 2026
+ *   - v26.0 expected around September 2026
+ * See docs/PLATFORM_INTEGRATIONS.md for the sources and the re-check date.
+ *
+ * Both are environment-overridable so a version bump is a variable change
+ * rather than a deploy — Meta's schedule does not wait for our release cycle.
+ */
+export const GRAPH_VERSION = process.env.META_GRAPH_VERSION ?? 'v25.0';
+export const MARKETING_VERSION = process.env.META_MARKETING_VERSION ?? 'v25.0';
+
 const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`;
+/** Ad-account surfaces. Same host, different expiry clock. */
+export const MARKETING = `https://graph.facebook.com/${MARKETING_VERSION}`;
 
 export type FetchLike = (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{
   ok: boolean;
@@ -38,6 +69,17 @@ export interface MetaConfig {
   appId: string;
   appSecret: string;
   redirectUri: string;
+  /**
+   * The Facebook Login for Business configuration id.
+   *
+   * Business Login does not take a scope list. The permissions *and* the
+   * asset-selection step both come from a configuration created in the app
+   * console, and `config_id` is how the dialog is told which one to run. Sending
+   * scopes instead runs classic consumer login: the operator authorises
+   * permissions but is never offered the screen that assigns a Page and an ad
+   * account to the app — which is why discovery came back empty.
+   */
+  configId: string;
 }
 
 export class ProviderApiError extends Error {
@@ -53,13 +95,25 @@ export class ProviderApiError extends Error {
 }
 
 export function metaConfig(env: NodeJS.ProcessEnv = process.env): MetaConfig {
-  const missing = (['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI'] as const).filter((key) => !env[key]);
+  const missing = (['META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI', 'META_CONFIG_ID'] as const).filter(
+    (key) => !env[key]?.trim(),
+  );
   if (missing.length > 0) throw new ProviderNotConfiguredError('FACEBOOK' as Platform, 'Meta', missing);
 
+  /*
+   * Trimmed on the way in.
+   *
+   * These arrive from a hosting dashboard where a value is pasted by hand, and a
+   * trailing newline is invisible in every UI that edits them. Meta rejected an
+   * app id in exactly this way — `client_id=…%0A` is not a number to Graph, and
+   * the error it returns talks about the app id rather than the whitespace.
+   * Cheaper to normalise here than to diagnose again.
+   */
   return {
-    appId: env.META_APP_ID as string,
-    appSecret: env.META_APP_SECRET as string,
-    redirectUri: env.META_REDIRECT_URI as string,
+    appId: (env.META_APP_ID as string).trim(),
+    appSecret: (env.META_APP_SECRET as string).trim(),
+    redirectUri: (env.META_REDIRECT_URI as string).trim(),
+    configId: (env.META_CONFIG_ID as string).trim(),
   };
 }
 
@@ -74,13 +128,25 @@ export const META_SCOPES = [
   'business_management',
 ];
 
-export function authorizationUrl(input: { config: MetaConfig; state: string; scopes?: string[] }): string {
+/**
+ * Where the operator is sent to authorise.
+ *
+ * This is Facebook Login **for Business**, driven by `config_id`. The
+ * configuration in the app console owns the permission list and, critically, the
+ * asset-selection step where a specific Page and ad account are granted to the
+ * app. That step is what makes discovery return anything at all.
+ *
+ * `scope` is deliberately not sent. Business Login takes its permissions from
+ * the configuration, and passing both is contradictory — the classic
+ * scope-based dialog would run instead, which is the bug this replaces.
+ */
+export function authorizationUrl(input: { config: MetaConfig; state: string }): string {
   const url = new URL(`https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth`);
   url.searchParams.set('client_id', input.config.appId);
   url.searchParams.set('redirect_uri', input.config.redirectUri);
   url.searchParams.set('state', input.state);
   url.searchParams.set('response_type', 'code');
-  url.searchParams.set('scope', (input.scopes ?? META_SCOPES).join(','));
+  url.searchParams.set('config_id', input.config.configId);
   return url.toString();
 }
 
@@ -260,7 +326,8 @@ export async function fetchCampaigns(input: {
   accessToken: string;
   fetchImpl: FetchLike;
 }): Promise<NormalizedCampaign[]> {
-  const url = new URL(`${GRAPH}/${input.adAccountId}/campaigns`);
+  // Ad-account edge: Marketing API, which expires on its own faster clock.
+  const url = new URL(`${MARKETING}/${input.adAccountId}/campaigns`);
   url.searchParams.set('fields', 'id,name,status,objective,daily_budget,lifetime_budget,start_time,stop_time');
   url.searchParams.set('limit', '200');
   url.searchParams.set('access_token', input.accessToken);
@@ -340,7 +407,8 @@ export async function fetchInsights(input: {
   until: string;
   fetchImpl: FetchLike;
 }): Promise<{ insights: NormalizedInsight[]; hasConversionTracking: boolean }> {
-  const url = new URL(`${GRAPH}/${input.campaignId}/insights`);
+  // Insights is a Marketing API surface, not a Graph one.
+  const url = new URL(`${MARKETING}/${input.campaignId}/insights`);
   url.searchParams.set('fields', 'spend,impressions,reach,clicks,actions,action_values,date_start');
   url.searchParams.set('time_increment', '1');
   url.searchParams.set('time_range', JSON.stringify({ since: input.since, until: input.until }));

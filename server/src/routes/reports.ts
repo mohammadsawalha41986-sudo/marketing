@@ -141,7 +141,12 @@ reportsRouter.post(
         reach: changeRatio(totals.reach, previousTotals.reach),
         clicks: changeRatio(totals.clicks, previousTotals.clicks),
         conversions: changeRatio(totals.conversions, previousTotals.conversions),
-        roas: changeRatio(totals.roas, previousTotals.roas),
+        // Null when either period had no measurable ROAS: a change from
+        // "unavailable" to a number is not a percentage movement.
+        roas:
+          totals.roas === null || previousTotals.roas === null
+            ? null
+            : changeRatio(totals.roas, previousTotals.roas),
       },
       series: byDay(current, range.from, range.to),
       platforms: byPlatform(current),
