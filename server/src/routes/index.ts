@@ -22,7 +22,8 @@ import { approvalsRouter } from './approvals.js';
 import { analyticsRouter } from './analytics.js';
 import { reportsRouter } from './reports.js';
 import { adminRouter } from './admin.js';
-import { integrationsRouter, notificationsRouter, oauthCallbackRouter, subscriptionsRouter, usersRouter } from './misc.js';
+import { oauthCallbackRouter } from './oauth-callback.js';
+import { integrationsRouter, notificationsRouter, subscriptionsRouter, usersRouter } from './misc.js';
 
 export const apiRouter: Router = Router();
 
