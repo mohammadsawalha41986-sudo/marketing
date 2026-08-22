@@ -14,6 +14,7 @@ import { validateBody, validateParams, validateQuery } from '../middleware/valid
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
 import { assertWritable, orgId, resolveClientId } from '../lib/scope.js';
 import { adapterFor, providerReadiness, allAdapters, ProviderNotConfiguredError } from '../services/integrations/index.js';
+import { selectAccounts } from '../services/integrations/connect-flow.js';
 import { hashPassword, passwordProblems } from '../lib/password.js';
 import { recordAudit } from '../services/audit.js';
 import { aiStatus } from '../services/ai/index.js';
@@ -128,6 +129,105 @@ integrationsRouter.get(
 );
 
 /**
+ * Get discovered accounts for an integration (before selection).
+ *
+ * GET /api/integrations/:integrationId/accounts
+ *
+ * Returns the integration and all discovered accounts with their selection status.
+ * Tokens are never exposed in the response. Used by the account-selection UI.
+ */
+integrationsRouter.get(
+  '/:integrationId/accounts',
+  requireAgency,
+  validateParams(z.object({ integrationId: z.string().min(1).max(40) })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const { integrationId } = req.params as { integrationId: string };
+
+    const integration = await prisma.integration.findFirst({
+      where: { id: integrationId, organizationId: orgId(actor) },
+      select: {
+        id: true,
+        platform: true,
+        status: true,
+        accountName: true,
+        accountId: true,
+        clientId: true,
+        client: { select: { id: true, name: true } },
+        accounts: {
+          select: {
+            id: true,
+            kind: true,
+            externalId: true,
+            name: true,
+            username: true,
+            currency: true,
+            timezone: true,
+            parentExternalId: true,
+            selected: true,
+          },
+        },
+      },
+    });
+
+    if (!integration) throw notFound('Integration');
+    res.json(integration);
+  }),
+);
+
+/**
+ * Select which accounts to attach to this integration.
+ *
+ * POST /api/integrations/:integrationId/select
+ *
+ * Request body:
+ * {
+ *   "accountIds": ["...", "..."]
+ * }
+ *
+ * Updates the `selected` flag on IntegrationAccount rows.
+ * Transitions the Integration to CONNECTED if any accounts are selected,
+ * or to DISCONNECTED if none are selected.
+ * Only accounts belonging to this integration can be selected (enforced in service).
+ */
+integrationsRouter.post(
+  '/:integrationId/select',
+  requireAgency,
+  validateParams(z.object({ integrationId: z.string().min(1).max(40) })),
+  validateBody(z.object({ accountIds: z.array(z.string().min(1).max(40)) })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const { integrationId } = req.params as { integrationId: string };
+    const { accountIds } = req.body as { accountIds: string[] };
+
+    // Verify the integration belongs to this organization
+    const integration = await prisma.integration.findFirst({
+      where: { id: integrationId, organizationId: orgId(actor) },
+      select: { id: true, clientId: true, platform: true },
+    });
+    if (!integration) throw notFound('Integration');
+
+    assertWritable(actor);
+
+    const result = await selectAccounts({
+      integrationId,
+      organizationId: orgId(actor),
+      accountIds,
+    });
+
+    await recordAudit({
+      actor,
+      action: 'integration.select-accounts',
+      entity: 'Integration',
+      entityId: integrationId,
+      ip: req.ip,
+    });
+
+    res.json(result);
+  }),
+);
+
+/**
  * Begin a connection. Every adapter currently refuses, and says exactly which
  * environment variables and adapter work are missing — no fake "connected".
  */
@@ -156,7 +256,7 @@ integrationsRouter.post(
     });
 
     try {
-      const { redirectTo } = await adapter.connect({ redirectUri: `${req.protocol}://${req.get('host')}/api/integrations/callback` });
+      const { redirectTo } = await adapter.connect({ redirectUri: `${req.protocol}://${req.get('host')}/api/integrations/meta/callback` });
       res.json({ redirectTo });
     } catch (error) {
       // A missing credential is a configuration problem with a known fix, not a
@@ -198,7 +298,17 @@ integrationsRouter.post(
 
     await prisma.integration.update({
       where: { id: existing.id },
-      data: { status: IntegrationStatus.DISCONNECTED, credentials: Prisma.DbNull, accountName: null, accountId: null, lastError: null },
+      data: {
+        status: IntegrationStatus.DISCONNECTED,
+        credentials: Prisma.DbNull,
+        accountName: null,
+        accountId: null,
+        lastError: null,
+        accessTokenEnc: null,
+        refreshTokenEnc: null,
+        tokenExpiresAt: null,
+        tokenFingerprint: null,
+      },
     });
 
     await recordAudit({ actor, action: 'integration.disconnect', entity: 'Integration', entityId: existing.id, ip: req.ip });
