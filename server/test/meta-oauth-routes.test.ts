@@ -19,6 +19,7 @@ import request from 'supertest';
 
 import { agent, app, createTenant, prisma, resetDatabase, type Tenant } from './helpers.js';
 import { callbackUrl } from '../src/services/integrations/connect-flow.js';
+import { STATE_TTL_MS, issueState } from '../src/services/integrations/oauth-state.js';
 
 const KEY = 'Zm9yLXRlc3Rpbmctb25seS0zMi1ieXRlLWtleS0hIQ==';
 const BASE = 'https://marketing-osserver-production.up.railway.app';
@@ -308,5 +309,194 @@ describe('Meta OAuth routes', () => {
     const tiktok = response.body.adapters.find((row: { platform: string }) => row.platform === 'TIKTOK');
     expect(tiktok.implementation.oauth).toBe('ARCHITECTURE_ONLY');
     expect(tiktok.canConnect).toBe(false);
+  });
+
+  // ------------------------------------------------------- state rejection
+  //
+  // Every one of these is a redirect, never a 4xx or a stack trace: the caller
+  // is a browser that Meta navigated here, and an error page it cannot act on
+  // is indistinguishable from the product being broken.
+
+  const callbackError = async (query: string) => {
+    const response = await request(app).get(`/api/integrations/meta/callback${query}`);
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.location as string);
+    expect(location.pathname).toBe('/app/integrations');
+    return location.searchParams.get('error');
+  };
+
+  it('sends the operator back with a message when the code is missing', async () => {
+    expect(await callbackError('?state=some-state')).toMatch(/no authorization code/i);
+  });
+
+  it('sends the operator back with a message when the state is missing', async () => {
+    expect(await callbackError('?code=abc')).toMatch(/no authorization code/i);
+  });
+
+  it('refuses a state that was never issued', async () => {
+    expect(await callbackError('?code=abc&state=never-issued')).toMatch(/could not be verified/i);
+  });
+
+  it('refuses an expired state', async () => {
+    // Issued far enough in the past that its TTL has already elapsed.
+    const issued = await issueState({
+      organizationId: alpha.organizationId,
+      clientId: alpha.clientId,
+      platform: Platform.FACEBOOK,
+      redirectUri: callbackUrl(BASE, Platform.FACEBOOK),
+      now: new Date(Date.now() - STATE_TTL_MS - 60_000),
+    });
+
+    expect(await callbackError(`?code=abc&state=${issued.state}`)).toMatch(/could not be verified/i);
+  });
+
+  it('refuses a state issued for a different provider', async () => {
+    const issued = await issueState({
+      organizationId: alpha.organizationId,
+      clientId: alpha.clientId,
+      platform: Platform.GOOGLE_ADS,
+      redirectUri: callbackUrl(BASE, Platform.FACEBOOK),
+    });
+
+    expect(await callbackError(`?code=abc&state=${issued.state}`)).toMatch(/could not be verified/i);
+  });
+
+  it('rejects every state rejection with the same sentence', async () => {
+    // The callback must not become an oracle: "no such state" and "expired"
+    // have to be indistinguishable to anyone probing it from outside.
+    const unknown = await callbackError('?code=abc&state=definitely-not-real');
+    const expired = await issueState({
+      organizationId: alpha.organizationId,
+      clientId: alpha.clientId,
+      platform: Platform.FACEBOOK,
+      redirectUri: callbackUrl(BASE, Platform.FACEBOOK),
+      now: new Date(Date.now() - STATE_TTL_MS - 60_000),
+    });
+
+    expect(await callbackError(`?code=abc&state=${expired.state}`)).toBe(unknown);
+  });
+
+  it('consumes a state exactly once, so a replayed callback is refused', async () => {
+    const issued = await issueState({
+      organizationId: alpha.organizationId,
+      clientId: alpha.clientId,
+      platform: Platform.FACEBOOK,
+      redirectUri: callbackUrl(BASE, Platform.FACEBOOK),
+    });
+
+    // The first use fails at the token exchange (there is no Meta to talk to
+    // here), but it still consumes the state — which is the point.
+    await request(app).get(`/api/integrations/meta/callback?code=abc&state=${issued.state}`);
+
+    // The second use must be refused as unverifiable, not retried against Meta.
+    expect(await callbackError(`?code=abc&state=${issued.state}`)).toMatch(/could not be verified/i);
+  });
+
+  it('never leaks the state or the app secret in the redirect back', async () => {
+    const response = await request(app).get('/api/integrations/meta/callback?code=abc&state=SENSITIVE-STATE');
+    const location = response.headers.location as string;
+
+    expect(location).not.toContain('SENSITIVE-STATE');
+    expect(location).not.toContain(APP_SECRET);
+  });
+
+  // ------------------------------------------------- cross-integration guard
+
+  it('cannot select an account belonging to a different integration', async () => {
+    // Two integrations, same tenant. Ids from one must not attach to the other,
+    // or a request body becomes an authorisation to wire up somebody else's Page.
+    const target = await prisma.integration.create({
+      data: {
+        organizationId: beta.organizationId,
+        clientId: beta.clientId,
+        platform: Platform.GOOGLE_ADS,
+        status: IntegrationStatus.CONNECTING,
+        accounts: {
+          create: [{ clientId: beta.clientId, kind: 'PAGE', externalId: 'page-own', name: 'Own page' }],
+        },
+      },
+      include: { accounts: true },
+    });
+
+    const stranger = await prisma.integration.create({
+      data: {
+        organizationId: beta.organizationId,
+        clientId: beta.clientId,
+        platform: Platform.SNAPCHAT,
+        status: IntegrationStatus.CONNECTING,
+        accounts: {
+          create: [{ clientId: beta.clientId, kind: 'PAGE', externalId: 'page-other', name: 'Other page' }],
+        },
+      },
+      include: { accounts: true },
+    });
+
+    const client = await admin(beta);
+    const response = await client.post(`/api/integrations/${target.id}/select`, {
+      accountIds: [stranger.accounts[0]!.id],
+    });
+
+    // The foreign id is dropped rather than honoured, so nothing is attached.
+    expect(response.status).toBe(200);
+    expect(response.body.selected).toBe(0);
+
+    const untouched = await prisma.integrationAccount.findUniqueOrThrow({
+      where: { id: stranger.accounts[0]!.id },
+    });
+    expect(untouched.selected).toBe(false);
+  });
+
+  // ------------------------------------------------------------ disconnect
+
+  it('destroys the stored tokens on disconnect', async () => {
+    const integration = await prisma.integration.create({
+      data: {
+        organizationId: beta.organizationId,
+        clientId: beta.clientId,
+        platform: Platform.X,
+        status: IntegrationStatus.CONNECTED,
+        accountName: 'Pawse',
+        accountId: 'act_1',
+        accessTokenEnc: 'encrypted-access-token',
+        refreshTokenEnc: 'encrypted-refresh-token',
+        tokenExpiresAt: new Date(Date.now() + 86_400_000),
+        tokenFingerprint: 'fingerprint',
+      },
+    });
+
+    const client = await admin(beta);
+    const response = await client.post(`/api/integrations/${integration.id}/disconnect`);
+    expect(response.status).toBe(200);
+
+    const after = await prisma.integration.findUniqueOrThrow({ where: { id: integration.id } });
+
+    // A disconnected row that still holds a usable credential is the bug this
+    // guards: status alone is not revocation.
+    expect(after.status).toBe(IntegrationStatus.DISCONNECTED);
+    expect(after.accessTokenEnc).toBeNull();
+    expect(after.refreshTokenEnc).toBeNull();
+    expect(after.tokenExpiresAt).toBeNull();
+    expect(after.tokenFingerprint).toBeNull();
+    expect(after.accountName).toBeNull();
+    expect(after.accountId).toBeNull();
+  });
+
+  it('cannot disconnect another tenant\'s integration', async () => {
+    const integration = await prisma.integration.create({
+      data: {
+        organizationId: alpha.organizationId,
+        clientId: alpha.clientId,
+        platform: Platform.TIKTOK,
+        status: IntegrationStatus.CONNECTED,
+        accessTokenEnc: 'alpha-token',
+      },
+    });
+
+    const intruder = await admin(beta);
+    expect((await intruder.post(`/api/integrations/${integration.id}/disconnect`)).status).toBe(404);
+
+    // And the credential is still there, untouched.
+    const after = await prisma.integration.findUniqueOrThrow({ where: { id: integration.id } });
+    expect(after.accessTokenEnc).toBe('alpha-token');
   });
 });

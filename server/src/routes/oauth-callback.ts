@@ -1,138 +1,85 @@
 /**
- * OAuth callback routes for ad platform integrations.
+ * The provider's redirect back, on its own unauthenticated router.
  *
- * Each platform's callback lands here after the user authorizes on the
- * provider's login page. The route validates the OAuth state (bound to one
- * client and one provider, single-use, time-limited), exchanges the
- * authorization code for tokens, validates those tokens with a real API call,
- * and discovers the accounts the user can manage. Nothing is marked CONNECTED
- * yet; the operator selects which accounts to attach on the next screen.
+ * This is the one integration route the browser reaches without a session:
+ * Meta redirects here directly, carrying no cookie of ours. Everything that
+ * identifies the tenant therefore comes out of the signed, single-use OAuth
+ * state, never out of the query string — a callback is not a place to be told
+ * whose connection this is.
+ *
+ * Mounted at /api/integrations, ahead of the authenticated router, so
+ * /api/integrations/meta/callback resolves here rather than being challenged
+ * for a session it cannot have.
  */
 
 import { Router } from 'express';
 import { Platform } from '@prisma/client';
+import { z } from 'zod';
 
-import { asyncHandler, badRequest } from '../lib/errors.js';
+import { asyncHandler } from '../lib/errors.js';
+import { validateQuery } from '../middleware/validate.js';
 import { completeCallback } from '../services/integrations/connect-flow.js';
-import { InvalidOAuthStateError } from '../services/integrations/oauth-state.js';
+import { env } from '../env.js';
 
 export const oauthCallbackRouter: Router = Router();
 
 /**
- * Meta (Facebook, Instagram) OAuth callback.
+ * Where the browser is sent afterwards.
  *
- * GET /api/integrations/meta/callback?state=...&code=...&error=...
- *
- * Meta redirects here after the user authorizes (or denies) the application.
- * The state proves which client and provider this callback belongs to.
- * The code is exchanged for an access token. The token is validated with a
- * real API call (/me), and all accessible accounts are discovered. None are
- * attached yet; the browser is redirected to a screen where the operator
- * selects which to use.
- *
- * If anything fails, the user is redirected to an error screen naming the
- * reason in plain language.
+ * The result is carried as query parameters, never the code or the token. A
+ * failure sends the operator back to the same screen with the provider's own
+ * message rather than to a dead end.
  */
+function callbackRedirect(outcome: { ok: true; integrationId: string } | { ok: false; reason: string }): string {
+  const url = new URL('/app/integrations', env.APP_URL);
+  if (outcome.ok) {
+    url.searchParams.set('connected', 'meta');
+    url.searchParams.set('integration', outcome.integrationId);
+  } else {
+    url.searchParams.set('error', outcome.reason.slice(0, 300));
+  }
+  return url.toString();
+}
+
 oauthCallbackRouter.get(
   '/meta/callback',
+  validateQuery(
+    z.object({
+      // Meta sends either (code, state) or its own error triple.
+      code: z.string().min(1).max(2000).optional(),
+      state: z.string().min(1).max(200).optional(),
+      error: z.string().max(200).optional(),
+      error_reason: z.string().max(200).optional(),
+      error_description: z.string().max(500).optional(),
+    }),
+  ),
   asyncHandler(async (req, res) => {
-    const { state, code, error, error_description } = req.query as {
-      state?: string;
-      code?: string;
-      error?: string;
-      error_description?: string;
+    const query = req.query as {
+      code?: string; state?: string; error?: string; error_description?: string;
     };
 
-    // Meta rejected the authorization request
-    if (error) {
-      const reason = error_description ? ` (${error_description})` : '';
-      return res.redirect(
-        `/integrations/connect-error?provider=meta&reason=${encodeURIComponent(`${error}${reason}`)}`
-      );
+    // The operator pressed Cancel on Meta's dialog. Not an error worth a 500.
+    if (query.error) {
+      res.redirect(callbackRedirect({ ok: false, reason: query.error_description ?? query.error }));
+      return;
     }
-
-    // Missing required parameters
-    if (!state) throw badRequest('Meta callback missing state parameter');
-    if (!code) throw badRequest('Meta callback missing code parameter');
+    if (!query.code || !query.state) {
+      res.redirect(callbackRedirect({ ok: false, reason: 'Meta returned no authorization code' }));
+      return;
+    }
 
     try {
       const result = await completeCallback({
         platform: Platform.FACEBOOK,
-        state: String(state),
-        code: String(code),
-        fetchImpl: fetch,
+        state: query.state,
+        code: query.code,
+        fetchImpl: fetch as unknown as Parameters<typeof completeCallback>[0]['fetchImpl'],
       });
-
-      // Discovery succeeded. Redirect to account selection.
-      // The frontend will fetch discovered accounts and let the operator choose.
-      res.redirect(
-        `/integrations/account-selection?integrationId=${encodeURIComponent(result.integrationId)}&clientId=${encodeURIComponent(result.clientId)}`
-      );
-    } catch (err) {
-      if (err instanceof InvalidOAuthStateError) {
-        // State validation failed: unknown, expired, replayed, or mismatched client/provider.
-        // The error message is deliberately vague to the user so the callback endpoint
-        // is not an oracle that reveals whether a state was issued or not.
-        return res.redirect(
-          `/integrations/connect-error?provider=meta&reason=${encodeURIComponent('The authorization could not be verified. Please start again.')}`
-        );
-      }
-
-      // Provider API error (token exchange failed, validation failed, discovery failed)
-      const message = (err as Error).message.slice(0, 200); // Truncate for URL safety
-      res.redirect(
-        `/integrations/connect-error?provider=meta&reason=${encodeURIComponent(`Connection failed: ${message}`)}`
-      );
+      res.redirect(callbackRedirect({ ok: true, integrationId: result.integrationId }));
+    } catch (error) {
+      // completeCallback has already parked the integration in ERROR with the
+      // reason. Provider messages never carry the code or the token.
+      res.redirect(callbackRedirect({ ok: false, reason: (error as Error).message }));
     }
-  })
-);
-
-/**
- * Placeholder routes for other providers (Phase 2+).
- * These will follow the same pattern once each provider adapter is implemented.
- */
-
-oauthCallbackRouter.get(
-  '/google/callback',
-  asyncHandler(async (_req, res) => {
-    res.redirect(
-      `/integrations/connect-error?provider=google&reason=${encodeURIComponent('Google Ads integration is not yet available. Check back soon.')}`
-    );
-  })
-);
-
-oauthCallbackRouter.get(
-  '/tiktok/callback',
-  asyncHandler(async (_req, res) => {
-    res.redirect(
-      `/integrations/connect-error?provider=tiktok&reason=${encodeURIComponent('TikTok integration is not yet available. Check back soon.')}`
-    );
-  })
-);
-
-oauthCallbackRouter.get(
-  '/snapchat/callback',
-  asyncHandler(async (_req, res) => {
-    res.redirect(
-      `/integrations/connect-error?provider=snapchat&reason=${encodeURIComponent('Snapchat integration is not yet available. Check back soon.')}`
-    );
-  })
-);
-
-oauthCallbackRouter.get(
-  '/linkedin/callback',
-  asyncHandler(async (_req, res) => {
-    res.redirect(
-      `/integrations/connect-error?provider=linkedin&reason=${encodeURIComponent('LinkedIn integration is not yet available. Check back soon.')}`
-    );
-  })
-);
-
-oauthCallbackRouter.get(
-  '/x/callback',
-  asyncHandler(async (_req, res) => {
-    res.redirect(
-      `/integrations/connect-error?provider=x&reason=${encodeURIComponent('X (Twitter) integration is not yet available. Check back soon.')}`
-    );
-  })
+  }),
 );
