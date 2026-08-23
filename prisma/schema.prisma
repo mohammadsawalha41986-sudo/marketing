@@ -173,7 +173,19 @@ enum ContentStatus {
   CHANGES_REQUESTED
   SCHEDULED
   PUBLISHED
+  /// Legacy. Kept because PostgreSQL enum values cannot be dropped without
+  /// rewriting every column that references them, and existing rows hold it.
+  /// New publishing failures use PUBLISH_FAILED, which says which step failed.
   FAILED
+
+  /// Picked up by the scheduler and waiting for a worker.
+  QUEUED
+  /// A worker is talking to the provider right now. Never a resting state.
+  PUBLISHING
+  /// The provider refused or the attempt failed. Carries a reason.
+  PUBLISH_FAILED
+  /// Withdrawn before publication. Not a failure.
+  CANCELLED
 }
 
 enum ApprovalStatus {
@@ -760,6 +772,7 @@ model Content {
   comments      Comment[]
   calendarEvent CalendarEvent?
   creatives     Creative[]
+  publishingJobs PublishingJob[]
 
   @@index([organizationId])
   @@index([clientId])
@@ -1227,10 +1240,27 @@ model IntegrationAccount {
   parentExternalId String?
   selected         Boolean             @default(false)
   metadata         Json                @default("{}")
+
+  /// The account's own publishing credential, encrypted at rest.
+  ///
+  /// A Facebook Page is published to with a *Page* access token, not the user
+  /// token on the parent Integration — the user token cannot post as the Page.
+  /// Nullable because accounts discovered before this column existed have none,
+  /// and there is no way to derive one without the operator authorising again.
+  accessTokenEnc String?
+  tokenExpiresAt DateTime?
+  /// Defaults to REAUTH_REQUIRED on purpose: every row that existed before Page
+  /// tokens were captured is, correctly, unable to publish. Assuming otherwise
+  /// would mean discovering it at the moment of publication.
+  tokenStatus    AccountTokenStatus @default(REAUTH_REQUIRED)
+  /// When the token was last proven to work against the provider.
+  tokenCheckedAt DateTime?
+
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
 
-  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  integration    Integration     @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  publishingJobs PublishingJob[]
 
   /// Re-running discovery must update rows, never duplicate them.
   @@unique([integrationId, kind, externalId])
@@ -1549,4 +1579,116 @@ model AdPublication {
   @@index([clientId])
   @@index([campaignId])
   @@index([status])
+}
+
+// ---------------------------------------------------------------- organic publishing
+//
+// Deliberately separate from AdPublication. Paid advertising publishes a
+// campaign/ad-set/ad structure to an ad account and is billed; organic
+// publishing puts one post on one Page. Sharing a table would mean every query
+// on either side had to remember which kind of row it was looking at, and the
+// two lifecycles would drift into each other's states.
+
+/// Whether an account's stored credential can currently be used to publish.
+///
+/// Distinct from IntegrationStatus, which describes the connection as a whole.
+/// A connection can be CONNECTED while one of its Pages needs reauthorising —
+/// that is exactly the case this enum exists to express.
+enum AccountTokenStatus {
+  /// Never verified, or verified and working is not yet known.
+  UNKNOWN
+  /// A real API call succeeded with this token.
+  TOKEN_VALID
+  /// The provider said the token has expired.
+  TOKEN_EXPIRED
+  /// No usable stored token. Includes accounts connected before Page tokens
+  /// were captured at all — those cannot publish and must not be assumed to.
+  REAUTH_REQUIRED
+  /// The token works but the app lacks a permission publishing needs.
+  MISSING_PERMISSION
+}
+
+enum PublishingJobStatus {
+  QUEUED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+/// How a single attempt ended, and whether trying again could help.
+enum PublishingAttemptResult {
+  SUCCESS
+  RETRYABLE_FAILURE
+  PERMANENT_FAILURE
+}
+
+/// One piece of content's journey to one platform account.
+///
+/// The job is the unit of idempotency: `externalPostId` is written once, and a
+/// job that already carries one is never sent to the provider again no matter
+/// how many times a worker picks it up.
+model PublishingJob {
+  id             String              @id @default(cuid())
+  organizationId String
+  clientId       String
+  contentId      String
+  /// The IntegrationAccount being published to — the Page, not the connection.
+  accountId      String?
+  platform       Platform
+  status         PublishingJobStatus @default(QUEUED)
+
+  scheduledAt   DateTime?
+  attempts      Int       @default(0)
+  lastAttemptAt DateTime?
+  /// When the next automatic retry becomes due. Null means no retry pending.
+  nextAttemptAt DateTime?
+
+  publishedAt DateTime?
+  /// The provider's own id for the post. Never ours, never invented.
+  externalPostId String?
+  permalink      String?
+
+  /// The provider's error, kept in full for debugging. Surfaced to operators
+  /// as a readable sentence; stored here verbatim.
+  errorCode    String?
+  errorMessage String?
+  failedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  content  Content             @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  account  IntegrationAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  attemptLog PublishingAttempt[]
+
+  /// One live job per content per platform. Makes double-enqueueing impossible
+  /// rather than merely unlikely.
+  @@unique([contentId, platform])
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([status])
+  @@index([nextAttemptAt])
+}
+
+/// What happened on one try. Kept even when a later try succeeds, because
+/// "it worked eventually" and "it worked first time" are different facts.
+model PublishingAttempt {
+  id       String                  @id @default(cuid())
+  jobId    String
+  platform Platform
+  result   PublishingAttemptResult
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  externalPostId String?
+  errorCode      String?
+  errorMessage   String?
+  /// HTTP status from the provider, when there was one.
+  httpStatus     Int?
+
+  job PublishingJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
 }

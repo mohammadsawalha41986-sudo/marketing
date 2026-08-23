@@ -190,7 +190,7 @@ describe('Meta adapter', () => {
   const saved = { ...process.env };
 
   beforeEach(() => {
-    process.env.META_APP_ID = 'app-123';
+    process.env.META_APP_ID = '1821333942563322';
     process.env.META_APP_SECRET = 'secret-456';
     process.env.META_REDIRECT_URI = 'https://example.com/api/integrations/meta/callback';
     process.env.META_CONFIG_ID = 'login-config-1';
@@ -212,7 +212,7 @@ describe('Meta adapter', () => {
 
     expect(url.origin).toBe('https://www.facebook.com');
     expect(url.pathname).toContain('/dialog/oauth');
-    expect(url.searchParams.get('client_id')).toBe('app-123');
+    expect(url.searchParams.get('client_id')).toBe('1821333942563322');
     expect(url.searchParams.get('state')).toBe('the-state');
     expect(url.searchParams.get('response_type')).toBe('code');
     // The secret must never appear in a URL the browser will follow.

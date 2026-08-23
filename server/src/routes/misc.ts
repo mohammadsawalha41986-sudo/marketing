@@ -279,9 +279,16 @@ integrationsRouter.get(
         id: true, clientId: true, platform: true, status: true, accountName: true, lastError: true,
         accounts: {
           orderBy: [{ kind: 'asc' }, { name: 'asc' }],
+          /*
+           * An explicit allowlist, and it stays that way. `accessTokenEnc` lives
+           * on this row; `tokenStatus` is the verdict about it and is the only
+           * part a browser may see. Selecting the whole model here would put a
+           * Page's publishing credential in an API response.
+           */
           select: {
             id: true, kind: true, externalId: true, name: true, username: true,
             currency: true, timezone: true, parentExternalId: true, selected: true,
+            tokenStatus: true, tokenExpiresAt: true, tokenCheckedAt: true,
           },
         },
       },

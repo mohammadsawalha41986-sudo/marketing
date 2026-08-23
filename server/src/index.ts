@@ -26,6 +26,8 @@ import { cookieSecure, env, hasOpenAi, isProd, REPO_ROOT, uploadDir } from './en
 import { startDatabaseProbe } from './lib/db-health.js';
 import { prisma } from './lib/prisma.js';
 import { runtimeReport } from './lib/runtime-report.js';
+import { metaConfigDiagnostics } from './services/integrations/meta.js';
+import { publishingTick } from './services/publishing/scheduler.js';
 import { pruneExpiredSessions } from './lib/session.js';
 
 const LINE = '='.repeat(72);
@@ -85,6 +87,30 @@ function preflight(): { hasWebBuild: boolean } {
 
 const { hasWebBuild } = preflight();
 
+/**
+ * The Meta app id, described rather than shown.
+ *
+ * Facebook answers a malformed app id with PLATFORM_INVALID_APP_ID on its own
+ * error page, which names the app id but not which of our variables carries it —
+ * and appears only after the operator has already been redirected away. This
+ * line puts the verdict in our own logs at boot, where it can be read without a
+ * browser and without ever printing the value.
+ */
+function metaAppIdSummary(): string {
+  const meta = metaConfigDiagnostics();
+  if (!meta.appIdConfigured) return 'not configured (META_APP_ID unset)';
+
+  const faults = [
+    meta.appIdNumeric ? null : 'not numeric',
+    meta.appIdEqualsConfigId ? 'same value as META_CONFIG_ID' : null,
+  ].filter(Boolean);
+
+  const shape = `${meta.appIdLength} chars, numeric=${meta.appIdNumeric}`;
+  return faults.length === 0
+    ? `configured (${shape})`
+    : `INVALID — ${faults.join('; ')} (${shape}). Facebook will reject this.`;
+}
+
 const app = createApp();
 
 /*
@@ -107,6 +133,9 @@ const server = app.listen(env.PORT, '0.0.0.0', () => {
       `  ai provider    ${hasOpenAi ? `openai:${env.OPENAI_MODEL}` : 'built-in template engine (no OPENAI_API_KEY)'}`,
       `  secure cookies ${cookieSecure ? 'on' : 'off'}`,
       `  trust proxy    ${env.TRUST_PROXY}`,
+      // Shape only, never the value. This line is what turns a Facebook-side
+      // PLATFORM_INVALID_APP_ID into something diagnosable from our own logs.
+      `  meta app id    ${metaAppIdSummary()}`,
       `  database       checking in the background…`,
       // The engine panics on a constrained host when it cannot spawn a thread,
       // and the Prisma error never names the budget that caused it.
@@ -141,9 +170,34 @@ const pruneTimer = setInterval(() => {
 }, 60 * 60 * 1000);
 pruneTimer.unref();
 
+/*
+ * The publishing worker.
+ *
+ * In-process and on an interval, which is the honest shape for a single-service
+ * deployment: there is no Redis and no separate worker container, and inventing
+ * a queue that needs both would mean scheduled posts stop going out the moment
+ * this is deployed as it actually is. The safety properties that matter under
+ * concurrency — the unique job per (content, platform), the claim-by-status
+ * update, and the idempotency checks before any provider call — are in the
+ * service rather than in the timer, so moving this to a real worker later is a
+ * change of caller, not of logic.
+ *
+ * `PUBLISHING_INTERVAL_MS` allows a deployment to slow this down; 60s means a
+ * post goes out within a minute of its scheduled time.
+ */
+const publishIntervalMs = Number(process.env.PUBLISHING_INTERVAL_MS ?? 60_000);
+const publishTimer = setInterval(() => {
+  void publishingTick({ prisma, fetchImpl: fetch as never }).catch((error: Error) =>
+    // Never fatal: a failed tick must not take the web process down with it.
+    process.stderr.write(`[marketing-os] publishing tick failed: ${error.message}\n`),
+  );
+}, Math.max(15_000, publishIntervalMs));
+publishTimer.unref();
+
 function shutdown(signal: string): void {
   process.stdout.write(`[marketing-os] ${signal} received, shutting down\n`);
   clearInterval(pruneTimer);
+  clearInterval(publishTimer);
   server.close(() => {
     void prisma.$disconnect().finally(() => process.exit(0));
   });

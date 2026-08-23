@@ -1,0 +1,61 @@
+/**
+ * Which platforms can actually publish, and which only have a seat reserved.
+ *
+ * Every platform the product names appears here. The ones without an adapter
+ * are present as explicit refusals rather than absent, because "TikTok is not
+ * built" and "TikTok was forgotten" look identical from a missing map entry —
+ * and the first is something the UI can tell an operator honestly.
+ *
+ * Adding a platform is: write an adapter against `PlatformPublisher`, swap its
+ * entry here. Nothing in the service, scheduler, worker or state machine
+ * changes, which is the property this indirection exists to buy.
+ */
+
+import { Platform } from '@prisma/client';
+
+import type { PlatformPublisher, PublishRequest, PublishResult } from './contract.js';
+import { facebookPublisher } from './facebook.js';
+
+/** A publisher that refuses, and says why, for a platform with no adapter yet. */
+function notImplemented(platform: Platform, label: string): PlatformPublisher {
+  return {
+    platform,
+    label,
+    canPublish: false,
+    async publish(_request: PublishRequest): Promise<PublishResult> {
+      return {
+        success: false,
+        platform,
+        error: {
+          kind: 'NOT_CONFIGURED',
+          code: null,
+          message: `${label} publishing is not implemented yet.`,
+          httpStatus: null,
+        },
+      };
+    },
+  };
+}
+
+const PUBLISHERS: Partial<Record<Platform, PlatformPublisher>> = {
+  [Platform.FACEBOOK]: facebookPublisher,
+
+  // Reserved, and honest about it. Instagram is closest: it already has account
+  // discovery and a Page relationship, and needs the two-step container/publish
+  // sequence rather than a new architecture.
+  [Platform.INSTAGRAM]: notImplemented(Platform.INSTAGRAM, 'Instagram'),
+  [Platform.TIKTOK]: notImplemented(Platform.TIKTOK, 'TikTok'),
+  [Platform.LINKEDIN]: notImplemented(Platform.LINKEDIN, 'LinkedIn'),
+  [Platform.X]: notImplemented(Platform.X, 'X'),
+};
+
+export function publisherFor(platform: Platform): PlatformPublisher | null {
+  return PUBLISHERS[platform] ?? null;
+}
+
+/** The platforms an operator can actually schedule organic content to today. */
+export function publishablePlatforms(): Platform[] {
+  return Object.values(PUBLISHERS)
+    .filter((publisher): publisher is PlatformPublisher => Boolean(publisher?.canPublish))
+    .map((publisher) => publisher.platform);
+}

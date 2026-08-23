@@ -101,10 +101,19 @@ export class ProviderNotConfiguredError extends Error {
   readonly platform: Platform;
   readonly missingEnv: string[];
 
-  constructor(platform: Platform, label: string, missingEnv: string[]) {
+  /**
+   * `detail` is for a variable that is present but wrong.
+   *
+   * "Missing: META_APP_ID" is misleading when the variable is set and merely
+   * malformed — the operator looks at the dashboard, sees a value, and concludes
+   * the server is broken. A supplied detail replaces the missing-variable
+   * sentence and says what is actually wrong with it.
+   */
+  constructor(platform: Platform, label: string, missingEnv: string[], options?: { detail?: string }) {
     super(
-      `${label} is not configured on this deployment. Missing: ${missingEnv.join(', ')}. ` +
-        'Set these on the server and restart before connecting.',
+      options?.detail ??
+        `${label} is not configured on this deployment. Missing: ${missingEnv.join(', ')}. ` +
+          'Set these on the server and restart before connecting.',
     );
     this.name = 'ProviderNotConfiguredError';
     this.platform = platform;
