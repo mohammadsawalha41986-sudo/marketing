@@ -5,7 +5,7 @@ import { ApprovalStatus, ContentStatus, NotificationType, Prisma, Role } from '@
 import { z } from 'zod';
 
 import { prisma } from '../lib/prisma.js';
-import { asyncHandler, forbidden, notFound } from '../lib/errors.js';
+import { asyncHandler, conflict, forbidden, notFound } from '../lib/errors.js';
 import { actorOf, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
@@ -105,6 +105,21 @@ approvalsRouter.post(
       include: { content: { select: { id: true, name: true, clientId: true } } },
     });
     if (!approval) throw notFound('Approval');
+
+    /*
+     * A decision is made once.
+     *
+     * Re-deciding used to overwrite `decidedById` and `decidedAt` in place, so a
+     * rejection could quietly become an approval attributed to whoever pressed
+     * last, with nothing left to show a reversal had happened. If the reviewer
+     * changed their mind the content goes back through submission, which leaves
+     * both decisions in the history where they belong.
+     */
+    if (approval.status !== ApprovalStatus.PENDING) {
+      throw conflict(
+        `This has already been ${approval.status.toLowerCase().replace('_', ' ')}. Send the content back for changes to review it again.`,
+      );
+    }
 
     const [updated] = await prisma.$transaction([
       prisma.approval.update({

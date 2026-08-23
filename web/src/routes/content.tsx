@@ -20,6 +20,7 @@ import { AiBadge, AiNotice, PlatformChip, StatusBadge } from '../components/doma
 import { ContentPreview } from '../components/content-preview';
 import { CreativeStudio } from '../components/creative-studio';
 import { MediaPicker } from '../components/media-picker';
+import { cn } from '../lib/utils';
 
 /**
  * The statuses whose creative the author may still change.
@@ -507,6 +508,100 @@ export function StudioPage() {
   );
 }
 
+// -------------------------------------------------------------- timeline
+
+type TimelineKind =
+  | 'CREATED' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'CHANGES_REQUESTED'
+  | 'COMMENTED' | 'SCHEDULED' | 'PUBLISHED' | 'FAILED';
+
+interface TimelineEvent {
+  kind: TimelineKind;
+  at: string;
+  actor: string | null;
+  note: string | null;
+}
+
+/** What each event is called, and the colour that carries its meaning. */
+const TIMELINE_LABEL: Record<TimelineKind, string> = {
+  CREATED: 'Created',
+  SUBMITTED: 'Submitted for approval',
+  APPROVED: 'Approved',
+  REJECTED: 'Rejected',
+  CHANGES_REQUESTED: 'Changes requested',
+  COMMENTED: 'Comment',
+  SCHEDULED: 'Scheduled',
+  PUBLISHED: 'Published',
+  FAILED: 'Publishing failed',
+};
+
+const TIMELINE_TONE: Record<TimelineKind, string> = {
+  CREATED: 'bg-muted/40',
+  SUBMITTED: 'bg-brand',
+  APPROVED: 'bg-ok',
+  REJECTED: 'bg-danger',
+  CHANGES_REQUESTED: 'bg-warn',
+  COMMENTED: 'bg-muted/40',
+  SCHEDULED: 'bg-brand',
+  PUBLISHED: 'bg-ok',
+  FAILED: 'bg-danger',
+};
+
+/**
+ * The whole history of one piece of content, in order.
+ *
+ * Approvals and comments used to be two lists side by side, which left the
+ * reader to merge them by eye and left scheduling out entirely — so the gap
+ * between "approved" and "why has this not gone out" had nothing to consult.
+ */
+function ContentTimeline({ contentId }: { contentId: string }) {
+  const { lang } = useI18n();
+  const { data, loading, error } = useQuery<{ events: TimelineEvent[] }>(
+    `/content/${contentId}/timeline`,
+    [contentId],
+  );
+
+  const events = data?.events ?? [];
+
+  return (
+    <Card>
+      <CardHeader title="History" subtitle="Every decision on this content, in the order it happened." />
+      {loading ? (
+        <div className="p-5"><CardSkeleton rows={3} /></div>
+      ) : error ? (
+        <div className="p-5"><ErrorState message={error} /></div>
+      ) : events.length === 0 ? (
+        <p className="px-5 py-10 text-center text-sm text-muted">Nothing has happened to this content yet.</p>
+      ) : (
+        <ol className="relative px-5 py-4">
+          {events.map((event, index) => (
+            <li key={`${event.kind}-${event.at}-${index}`} className="relative flex gap-3 pb-5 last:pb-0">
+              {/* The thread joining one event to the next, stopping at the last. */}
+              {index < events.length - 1 ? (
+                <span className="absolute start-[5px] top-4 h-full w-px bg-line" aria-hidden />
+              ) : null}
+
+              <span className={cn('relative mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full', TIMELINE_TONE[event.kind])} />
+
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-medium text-fg">
+                  {TIMELINE_LABEL[event.kind]}
+                  {event.actor ? <span className="font-normal text-muted"> by {event.actor}</span> : null}
+                </p>
+                <p className="mt-0.5 text-[12px] text-muted">{date(event.at, lang)}</p>
+                {event.note ? (
+                  <p className="mt-1.5 rounded-lg border border-line bg-elevated px-3 py-2 text-[13px] text-fg">
+                    {event.note}
+                  </p>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </Card>
+  );
+}
+
 // ---------------------------------------------------------------- detail
 
 interface ContentDetail extends ContentRow {
@@ -711,35 +806,7 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
         </div>
       ) : null}
 
-      {tab === 'history' ? (
-        <Card>
-          <CardHeader title="Approvals and comments" />
-          <div className="divide-y divide-line/60">
-            {content.approvals.map((approval) => (
-              <div key={approval.id} className="flex items-start gap-3 px-5 py-3.5">
-                <span className="mt-0.5"><StatusBadge status={approval.status} kind="approval" /></span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-[13px] text-fg">
-                    {approval.decidedBy?.name ?? 'Pending review'}
-                    {approval.decidedAt ? ` · ${date(approval.decidedAt, lang)}` : ''}
-                  </p>
-                  {approval.note ? <p className="mt-0.5 text-[13px] text-muted">{approval.note}</p> : null}
-                </div>
-              </div>
-            ))}
-            {content.comments.map((comment) => (
-              <div key={comment.id} className="px-5 py-3.5">
-                <p className="text-[13px] font-medium text-fg">{comment.author?.name ?? 'Unknown'}</p>
-                <p className="mt-0.5 text-[13px] text-muted">{comment.body}</p>
-                <p className="mt-1 text-[12px] text-muted/80">{date(comment.createdAt, lang)}</p>
-              </div>
-            ))}
-            {content.approvals.length === 0 && content.comments.length === 0 ? (
-              <p className="px-5 py-10 text-center text-sm text-muted">Nothing yet.</p>
-            ) : null}
-          </div>
-        </Card>
-      ) : null}
+      {tab === 'history' ? <ContentTimeline contentId={id} /> : null}
 
       <Modal
         open={scheduling}
