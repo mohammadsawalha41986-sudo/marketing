@@ -134,6 +134,7 @@ export const PLATFORM_LABELS: Record<Platform, string> = {
   GOOGLE_BUSINESS: 'Google Business',
   X: 'X',
   LINKEDIN: 'LinkedIn',
+  YOUTUBE: 'YouTube',
 };
 
 export function byPlatform(rows: RawSnapshot[]): PlatformBreakdown[] {

@@ -22,6 +22,7 @@ import { approvalsRouter } from './approvals.js';
 import { analyticsRouter } from './analytics.js';
 import { reportsRouter } from './reports.js';
 import { adminRouter } from './admin.js';
+import { socialRouter } from './social.js';
 import { oauthCallbackRouter } from './oauth-callback.js';
 import { integrationsRouter, notificationsRouter, subscriptionsRouter, usersRouter } from './misc.js';
 
@@ -83,6 +84,7 @@ apiRouter.use('/campaigns', campaignsRouter);
 apiRouter.use('/ceo', ceoRouter);
 apiRouter.use('/creatives', creativesRouter);
 apiRouter.use('/content', contentRouter);
+apiRouter.use('/social', socialRouter);
 apiRouter.use('/calendar', calendarRouter);
 apiRouter.use('/approvals', approvalsRouter);
 apiRouter.use('/analytics', analyticsRouter);
