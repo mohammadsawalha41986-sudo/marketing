@@ -20,6 +20,7 @@ import request from 'supertest';
 import { agent, app, createTenant, prisma, resetDatabase, type Tenant } from './helpers.js';
 import { callbackUrl } from '../src/services/integrations/connect-flow.js';
 import { STATE_TTL_MS, issueState } from '../src/services/integrations/oauth-state.js';
+import { encryptSecret } from '../src/lib/crypto.js';
 
 const KEY = 'Zm9yLXRlc3Rpbmctb25seS0zMi1ieXRlLWtleS0hIQ==';
 const BASE = 'https://marketing-osserver-production.up.railway.app';
@@ -180,7 +181,13 @@ describe('Meta OAuth routes', () => {
         status: IntegrationStatus.CONNECTING,
         accounts: {
           create: [
-            { clientId: beta.clientId, kind: 'PAGE', externalId: 'page-100', name: 'Pawse' },
+            {
+              clientId: beta.clientId, kind: 'PAGE', externalId: 'page-100', name: 'Pawse',
+              // A Page with a usable publishing credential, because CONNECTED
+              // now means "this can publish" rather than "a box was ticked".
+              accessTokenEnc: encryptSecret('page-token'),
+              tokenStatus: 'UNKNOWN',
+            },
             {
               clientId: beta.clientId, kind: 'AD_ACCOUNT', externalId: 'act_26743867',
               name: 'Pawse Ads', currency: 'SAR', timezone: 'Asia/Riyadh',

@@ -27,9 +27,11 @@ import { prisma } from '../../lib/prisma.js';
 import { encryptSecret, secretFingerprint } from '../../lib/crypto.js';
 import { consumeState, issueState } from './oauth-state.js';
 import {
+  PAGE_PUBLISH_PERMISSION,
   authorizationUrl,
   discoverAccounts,
   exchangeCode,
+  grantedPermissions,
   metaConfig,
   validateToken,
   type DiscoveredAccount,
@@ -170,6 +172,17 @@ export async function completeCallback(input: {
 
     // The connection is only real if the provider answers with this token.
     const identity = await validateToken({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
+    /*
+     * What Meta granted, asked as its own question.
+     *
+     * Meta grants per-permission, so this login may have allowed everything
+     * except publishing. Recording the request instead of the grant is how a
+     * connection reads CONNECTED and then fails at the first post with an error
+     * nobody saw coming.
+     */
+    const granted = await grantedPermissions({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
+    const canPublishPages = granted.includes(PAGE_PUBLISH_PERMISSION);
+
     const discovered = await discoverAccounts({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
 
     await prisma.$transaction(async (tx) => {
@@ -181,7 +194,8 @@ export async function completeCallback(input: {
           status: IntegrationStatus.CONNECTING,
           accountName: identity.name,
           accountId: identity.id,
-          scopes: tokens.scopes,
+          // The grant, not the request.
+          scopes: granted,
           accessTokenEnc: encryptSecret(tokens.accessToken),
           refreshTokenEnc: tokens.refreshToken ? encryptSecret(tokens.refreshToken) : null,
           tokenExpiresAt: tokens.expiresAt,
@@ -200,16 +214,32 @@ export async function completeCallback(input: {
          * The plaintext exists only inside this loop.
          */
         const pageToken = account.accessToken?.trim();
-        const tokenFields = pageToken
+
+        /*
+         * Three distinguishable states, because they need three different
+         * actions from the operator:
+         *
+         *   no token          reconnect — the login did not cover this Page
+         *   token, no grant   the app is missing pages_manage_posts; App Review
+         *   token and grant   nothing to do; verified on first use
+         *
+         * Collapsing the middle case into "reauthorise" would send someone to
+         * reconnect repeatedly against a permission the app has never held.
+         */
+        const tokenFields = !pageToken
           ? {
-              accessTokenEnc: encryptSecret(pageToken),
-              // Discovery proved the user token works, not this one. It is
-              // verified against the provider before the first publish.
-              tokenStatus: AccountTokenStatus.UNKNOWN,
-            }
-          : {
               accessTokenEnc: null,
               tokenStatus: AccountTokenStatus.REAUTH_REQUIRED,
+              grantedScopes: granted,
+            }
+          : {
+              accessTokenEnc: encryptSecret(pageToken),
+              grantedScopes: granted,
+              // Discovery proved the *user* token works, not this one, so the
+              // best that can be claimed is that nothing is known against it.
+              tokenStatus: canPublishPages
+                ? AccountTokenStatus.UNKNOWN
+                : AccountTokenStatus.MISSING_PERMISSION,
             };
 
         // Upsert on (integration, kind, externalId): re-running discovery after
@@ -315,8 +345,54 @@ export async function selectAccounts(input: {
       : []),
   ]);
 
-  const status = chosen.length > 0 ? IntegrationStatus.CONNECTED : IntegrationStatus.DISCONNECTED;
-  await prisma.integration.update({ where: { id: integration.id }, data: { status } });
+  /*
+   * CONNECTED means "this can publish", not "a box was ticked".
+   *
+   * Selecting a Page whose token never arrived used to mark the whole
+   * integration CONNECTED, so the Integrations screen showed a healthy green
+   * connection whose first publish would fail with a permissions error. A
+   * connection is only live once at least one attached account holds a
+   * credential that could actually be used.
+   *
+   * ERROR rather than DISCONNECTED for the half-connected case: the operator
+   * *did* connect something, and telling them nothing is attached would send
+   * them to repeat a step they already completed. `lastError` names the real
+   * next action.
+   */
+  const attached = chosen.length === 0 ? [] : await prisma.integrationAccount.findMany({
+    where: { id: { in: chosen } },
+    select: { accessTokenEnc: true, tokenStatus: true },
+  });
+
+  const usable = attached.filter(
+    (account) =>
+      account.accessTokenEnc !== null &&
+      account.tokenStatus !== AccountTokenStatus.REAUTH_REQUIRED &&
+      account.tokenStatus !== AccountTokenStatus.TOKEN_EXPIRED,
+  );
+
+  const missingPermission = attached.some(
+    (account) => account.tokenStatus === AccountTokenStatus.MISSING_PERMISSION,
+  );
+
+  const status = chosen.length === 0
+    ? IntegrationStatus.DISCONNECTED
+    : usable.length > 0
+      ? IntegrationStatus.CONNECTED
+      : IntegrationStatus.ERROR;
+
+  await prisma.integration.update({
+    where: { id: integration.id },
+    data: {
+      status,
+      lastError:
+        status === IntegrationStatus.ERROR
+          ? 'The selected account has no usable publishing token. Reconnect Facebook and grant access to this Page.'
+          : missingPermission
+            ? `Connected, but the Meta app has not been granted ${PAGE_PUBLISH_PERMISSION}, so posts cannot be published to this Page yet.`
+            : null,
+    },
+  });
 
   return { status, selected: chosen.length };
 }

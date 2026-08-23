@@ -36,6 +36,16 @@ function metaFetch(overrides: Partial<Record<string, unknown>> = {}): FetchLike 
   const routes: Array<{ match: string; body: unknown; status?: number }> = [
     { match: 'fb_exchange_token', body: { access_token: 'LONG-LIVED-TOKEN', expires_in: 5184000 } },
     { match: 'oauth/access_token', body: { access_token: 'SHORT-TOKEN', expires_in: 3600 } },
+    {
+      match: '/me/permissions',
+      body: overrides.permissions ?? {
+        data: [
+          { permission: 'pages_show_list', status: 'granted' },
+          { permission: 'pages_manage_posts', status: 'granted' },
+          { permission: 'pages_read_engagement', status: 'granted' },
+        ],
+      },
+    },
     { match: '/me?', body: overrides.me ?? { id: 'user-1', name: 'Pawse Operator' } },
     {
       match: '/me/accounts',
@@ -45,6 +55,8 @@ function metaFetch(overrides: Partial<Record<string, unknown>> = {}): FetchLike 
             id: 'page-100',
             name: 'Pawse',
             username: 'pawse',
+            // The Page's own publishing credential, as Meta really returns it.
+            access_token: 'PAGE-TOKEN-100',
             instagram_business_account: { id: 'ig-200', username: 'pawse', name: 'Pawse' },
           },
         ],

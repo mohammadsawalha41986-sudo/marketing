@@ -238,6 +238,89 @@ export async function enqueue(input: {
 }
 
 /**
+ * Publish a one-off message straight to a connected account.
+ *
+ * The escape hatch for the one question no test can answer: does this
+ * deployment, with these credentials and this Page, actually publish? It
+ * deliberately touches no Content and creates no job — it cannot mark anything
+ * PUBLISHED — but it does put a real post on a real Page, so its caller is
+ * responsible for authorisation.
+ *
+ * `fetchImpl` is a parameter rather than a global so this is testable at all.
+ * The route passes the real fetch; tests pass a fake with Meta's response shape.
+ */
+export async function testPublish(input: {
+  prisma: PrismaClient;
+  accountId: string;
+  message: string;
+  platform: Platform;
+  fetchImpl: FetchLike;
+}): Promise<
+  | { published: true; externalPostId: string; permalink: string | null; publishedAt: Date }
+  | { published: false; code: string; message: string; providerCode: string | null }
+> {
+  const { prisma, accountId } = input;
+
+  const publisher = publisherFor(input.platform);
+  if (!publisher?.canPublish) {
+    return {
+      published: false,
+      code: 'NOT_CONFIGURED',
+      message: `Publishing to ${input.platform} is not implemented yet.`,
+      providerCode: null,
+    };
+  }
+
+  const account = await prisma.integrationAccount.findUniqueOrThrow({
+    where: { id: accountId },
+    select: { id: true, externalId: true, name: true, accessTokenEnc: true },
+  });
+
+  if (!account.accessTokenEnc) {
+    return {
+      published: false,
+      code: 'ACCOUNT_NEEDS_REAUTH',
+      message: READINESS_MESSAGE.ACCOUNT_NEEDS_REAUTH,
+      providerCode: null,
+    };
+  }
+
+  const result = await publisher.publish({
+    caption: input.message,
+    media: [],
+    account: {
+      externalId: account.externalId,
+      name: account.name,
+      // Decrypted here, used once, never returned to the caller.
+      accessToken: decryptSecret(account.accessTokenEnc),
+    },
+    fetchImpl: input.fetchImpl,
+  });
+
+  if (!result.success) {
+    return {
+      published: false,
+      code: result.error.kind,
+      message: result.error.message,
+      providerCode: result.error.code,
+    };
+  }
+
+  // A successful call is the only real proof the credential works.
+  await prisma.integrationAccount.update({
+    where: { id: account.id },
+    data: { tokenStatus: AccountTokenStatus.TOKEN_VALID, tokenCheckedAt: new Date() },
+  });
+
+  return {
+    published: true,
+    externalPostId: result.externalPostId,
+    permalink: result.permalink,
+    publishedAt: result.publishedAt,
+  };
+}
+
+/**
  * Attempt one job.
  *
  * The order here is the safety property. Idempotency is checked first, against
