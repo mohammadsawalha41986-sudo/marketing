@@ -63,6 +63,29 @@ async function assertRefs(organizationId: string, clientId: string, campaignId?:
   }
 }
 
+/**
+ * Every attached media row must belong to this tenant.
+ *
+ * `mediaIds` arrives from a request body, and until this existed it was written
+ * straight into ContentMedia unchecked — so quoting another organisation's media
+ * id was enough to attach their file, have it rendered in this tenant's preview,
+ * and eventually publish it. An id in a payload is a claim, not a permission.
+ *
+ * Media may be attached to the client that owns it, or be unassigned
+ * organisation-level stock; anything else is refused.
+ */
+async function assertMedia(organizationId: string, clientId: string, mediaIds: string[]) {
+  if (mediaIds.length === 0) return;
+
+  const unique = [...new Set(mediaIds)];
+  const found = await prisma.media.findMany({
+    where: { id: { in: unique }, organizationId, OR: [{ clientId }, { clientId: null }] },
+    select: { id: true },
+  });
+
+  if (found.length !== unique.length) throw notFound('Media');
+}
+
 const contentInclude = {
   client: { select: { id: true, name: true, businessName: true, logoUrl: true } },
   campaign: { select: { id: true, name: true } },
@@ -134,6 +157,7 @@ contentRouter.post(
     assertWritable(actor);
     const body = req.body as z.infer<typeof createSchema>;
     await assertRefs(orgId(actor), body.clientId, body.campaignId);
+    await assertMedia(orgId(actor), body.clientId, body.mediaIds);
 
     const { mediaIds, hashtags, ...data } = body;
 
@@ -185,6 +209,7 @@ contentRouter.patch(
 
     const body = req.body as z.infer<typeof updateSchema>;
     if (body.campaignId) await assertRefs(orgId(actor), existing.clientId, body.campaignId);
+    if (body.mediaIds) await assertMedia(orgId(actor), existing.clientId, body.mediaIds);
 
     const { mediaIds, hashtags, clientId: _pinned, ...data } = body;
 

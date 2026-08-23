@@ -19,6 +19,16 @@ import {
 import { AiBadge, AiNotice, PlatformChip, StatusBadge } from '../components/domain';
 import { ContentPreview } from '../components/content-preview';
 import { CreativeStudio } from '../components/creative-studio';
+import { MediaPicker } from '../components/media-picker';
+
+/**
+ * The statuses whose creative the author may still change.
+ *
+ * Approval is approval *of a specific creative*. Once someone has signed off,
+ * swapping the image without a new review would make the approval a record of
+ * something that no longer exists.
+ */
+const MEDIA_EDITABLE = new Set<ContentStatus>(['DRAFT', 'CHANGES_REQUESTED', 'REJECTED']);
 
 const PLATFORMS: Platform[] = ['INSTAGRAM', 'FACEBOOK', 'TIKTOK', 'SNAPCHAT', 'GOOGLE_ADS', 'GOOGLE_BUSINESS', 'LINKEDIN', 'X'];
 const TYPES = ['POST', 'STORY', 'REEL', 'VIDEO', 'CAROUSEL', 'AD', 'ARTICLE', 'EMAIL'];
@@ -192,6 +202,16 @@ export function StudioPage() {
   const [previewPlatform, setPreviewPlatform] = useState<Platform>('INSTAGRAM');
   // Lifted so the live preview shows the same source the creative renders from.
   const [studioMediaUrl, setStudioMediaUrl] = useState<string | null>(null);
+  /*
+   * Attached media, as ids.
+   *
+   * `studioMediaUrl` above is a rendering source that exists only in this
+   * component — useful for the preview, worthless to the database. These ids are
+   * what get written to ContentMedia, which is why the preview prefers them: what
+   * the operator sees before saving is then what every later screen reads back.
+   */
+  const [mediaIds, setMediaIds] = useState<string[]>([]);
+  const [mediaPreviewUrl, setMediaPreviewUrl] = useState<string | null>(null);
 
   const campaigns = useQuery<Paginated<{ id: string; name: string }>>(
     brief.clientId ? `/campaigns${qs({ clientId: brief.clientId, pageSize: 100 })}` : null,
@@ -284,8 +304,15 @@ export function StudioPage() {
         slogan: copy.slogan || null,
         cta: copy.cta || null,
         hashtags: copy.hashtags,
+        // The attachment, not a preview URL. Without this the row saves clean and
+        // every screen downstream reports it has no creative.
+        mediaIds,
       });
-      push({ tone: 'success', title: 'Saved as a draft' });
+      push({
+        tone: 'success',
+        title: 'Saved as a draft',
+        body: mediaIds.length === 0 ? 'No media attached yet — add one before scheduling.' : undefined,
+      });
       navigate(`/app/content/${response.content.id}`);
     } catch (err) {
       push({ tone: 'error', title: 'Could not save', body: err instanceof Error ? err.message : undefined });
@@ -415,7 +442,12 @@ export function StudioPage() {
             <CardHeader title="Live preview" />
             <div className="p-4">
               <div className="mb-3 flex flex-wrap gap-1.5">
-                {(['INSTAGRAM', 'FACEBOOK', 'TIKTOK', 'SNAPCHAT', 'GOOGLE_ADS'] as Platform[]).map((value) => (
+                {/*
+                  Every platform the preview can actually render, rather than a
+                  hardcoded five — ContentPreview has surface specs for all of
+                  these, so leaving LinkedIn and X out only hid working previews.
+                 */}
+                {PLATFORMS.map((value) => (
                   <button
                     key={value}
                     onClick={() => setPreviewPlatform(value)}
@@ -435,10 +467,24 @@ export function StudioPage() {
                 caption={copy.caption}
                 cta={copy.cta}
                 hashtags={copy.hashtags}
-                mediaUrl={studioMediaUrl}
+                /*
+                 * Attached media wins over the studio's render source: it is the
+                 * one that will still be there after the save.
+                 */
+                mediaUrl={mediaPreviewUrl ?? studioMediaUrl}
               />
             </div>
           </Card>
+
+          <MediaPicker
+            clientId={brief.clientId}
+            campaignId={brief.campaignId || undefined}
+            value={mediaIds}
+            onChange={(ids, picked) => {
+              setMediaIds(ids);
+              setMediaPreviewUrl(picked[0]?.url ?? null);
+            }}
+          />
 
           <CreativeStudio
             clientId={brief.clientId}
@@ -487,6 +533,22 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
   const [scheduledAt, setScheduledAt] = useState('');
 
   const { data, loading, error, refetch } = useQuery<{ content: ContentDetail }>(`/content/${id}`, [id]);
+
+  /**
+   * Change what is attached to an existing piece of content.
+   *
+   * PATCH replaces the whole set rather than merging, which is what makes
+   * "remove the last image" expressible at all — an empty array is a real
+   * instruction here, not a missing field.
+   */
+  const saveMedia = async (mediaIds: string[]) => {
+    try {
+      await api.patch(`/content/${id}`, { mediaIds });
+      refetch();
+    } catch (err) {
+      push({ tone: 'error', title: 'Could not update the media', body: err instanceof Error ? err.message : undefined });
+    }
+  };
 
   const submit = async () => {
     try {
@@ -594,7 +656,31 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
       ) : null}
 
       {tab === 'preview' ? (
-        <div className="mx-auto max-w-md">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
+          {/*
+            Editable while the content is still the author's to change. Once it is
+            approved or later, the creative is part of what was approved, so
+            swapping it silently would invalidate the approval.
+           */}
+          {isAgency && MEDIA_EDITABLE.has(content.status) ? (
+            <MediaPicker
+              clientId={content.client.id}
+              value={content.mediaLinks.map((link) => link.media.id)}
+              onChange={(ids) => void saveMedia(ids)}
+              title="Media / Creative"
+              subtitle="Attach, replace or remove what gets published."
+            />
+          ) : (
+            <Card className="p-4">
+              <p className="text-[13px] leading-relaxed text-muted">
+                {content.mediaLinks.length === 0
+                  ? 'No media is attached to this content.'
+                  : 'The creative is locked because this content has already been approved or published. Request changes to edit it.'}
+              </p>
+            </Card>
+          )}
+
+          <div className="mx-auto w-full max-w-md">
           <ContentPreview
             platform={content.platform}
             // The content's own type decides the surface, so a Reel is never
@@ -621,6 +707,7 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
             scheduledAt={content.scheduledAt}
             safeZones
           />
+          </div>
         </div>
       ) : null}
 
