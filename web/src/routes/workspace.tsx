@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Film, FileText, Image as ImageIcon,
-  Link2, MessageSquare, Plug, Search, ThumbsUp, Trash2, Upload, X,
+  Link2, MessageSquare, Plug, Search, Send, ThumbsUp, Trash2, Upload, X,
 } from 'lucide-react';
 
 import { api, qs, type ApprovalStatus, type MediaType, type Paginated, type Platform } from '../lib/api';
@@ -683,6 +683,20 @@ export function ApprovalsPage({ portal = false }: { portal?: boolean }) {
 
 // ---------------------------------------------------------------- integrations
 
+/** What the dialog starts with, and what the operator can edit before sending. */
+const TEST_POST_DEFAULT = 'Marketing OS test post';
+
+/**
+ * The outcome of one test publish, as the dialog shows it.
+ *
+ * Success carries the provider's own post id — the only thing that proves a post
+ * exists. Failure carries the provider's own words, because a generic apology
+ * would leave the operator no better off than the silence this replaces.
+ */
+type TestPublishResult =
+  | { ok: true; externalPostId: string; permalink: string | null; pageName: string }
+  | { ok: false; message: string };
+
 interface AdapterInfo {
   platform: Platform;
   label: string;
@@ -997,6 +1011,17 @@ export function IntegrationsPage() {
 
   const [selecting, setSelecting] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  /*
+   * The test-publish dialog.
+   *
+   * `result` is kept in the dialog rather than fired off as a toast because the
+   * useful part is the provider's post id, and a toast that disappears is no
+   * good to someone who needs to copy it into Facebook to check the post.
+   */
+  const [testing, setTesting] = useState<{ id: string; label: string } | null>(null);
+  const [testMessage, setTestMessage] = useState(TEST_POST_DEFAULT);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testResult, setTestResult] = useState<TestPublishResult | null>(null);
 
   const catalog = useQuery<{ ai: { provider: string; model: string; configured: boolean }; adapters: AdapterInfo[] }>('/integrations/catalog');
   const { data, loading, refetch } = useQuery<{ items: IntegrationRow[] }>(
@@ -1052,6 +1077,51 @@ export function IntegrationsPage() {
     } finally {
       setDisconnecting(null);
     }
+  };
+
+  /**
+   * Put one real post on the connected Page.
+   *
+   * This is not a dry run: it exists to answer the question no automated test
+   * can, which is whether this deployment's credentials actually publish. The
+   * post is real and stays on the Page until someone deletes it there.
+   *
+   * The Page token is never involved on this side — the request carries a
+   * message and nothing else, and the server decrypts the credential, uses it
+   * once, and returns only the provider's post id.
+   */
+  const runTestPublish = async () => {
+    if (!testing) return;
+    setTestBusy(true);
+    setTestResult(null);
+    try {
+      const response = await api.post<{
+        externalPostId: string; permalink: string | null; pageName: string;
+      }>(`/integrations/${testing.id}/test-publish`, { message: testMessage.trim() });
+
+      setTestResult({
+        ok: true,
+        externalPostId: response.externalPostId,
+        permalink: response.permalink,
+        pageName: response.pageName,
+      });
+      refetch();
+    } catch (err) {
+      // The 502 body carries Meta's own reason. Showing anything else would
+      // hide the one piece of information worth having.
+      setTestResult({
+        ok: false,
+        message: err instanceof Error ? err.message : 'The publish failed for an unknown reason.',
+      });
+    } finally {
+      setTestBusy(false);
+    }
+  };
+
+  const closeTest = () => {
+    setTesting(null);
+    setTestResult(null);
+    setTestMessage(TEST_POST_DEFAULT);
   };
 
   /*
@@ -1190,6 +1260,21 @@ export function IntegrationsPage() {
                       {awaitingSelection ? t('integration.chooseAccounts') : t('integration.accounts')}
                     </Button>
                   ) : null}
+                  {/*
+                    Only on a live connection that can actually publish. Offering
+                    this on a half-connected provider would put a real post on a
+                    customer's Page behind a button that looks diagnostic.
+                   */}
+                  {integration && connected && adapter.capabilities.publish ? (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon={Send}
+                      onClick={() => setTesting({ id: integration.id, label: adapter.label })}
+                    >
+                      Test publish
+                    </Button>
+                  ) : null}
                   {integration && (connected || awaitingSelection) ? (
                     <Button
                       size="sm"
@@ -1216,6 +1301,75 @@ export function IntegrationsPage() {
       )}
 
       <AccountSelection id={selecting} onClose={() => setSelecting(null)} onSaved={refetch} />
+
+      <Modal
+        open={Boolean(testing)}
+        onClose={closeTest}
+        title={`Test publish to ${testing?.label ?? ''}`}
+        size="sm"
+        footer={
+          testResult?.ok ? (
+            <Button className="w-full" onClick={closeTest}>Done</Button>
+          ) : (
+            <>
+              <Button variant="secondary" onClick={closeTest}>Cancel</Button>
+              <Button
+                icon={Send}
+                loading={testBusy}
+                disabled={testMessage.trim().length === 0}
+                onClick={runTestPublish}
+              >
+                {testResult ? 'Try again' : 'Publish test post'}
+              </Button>
+            </>
+          )
+        }
+      >
+        <div className="space-y-4">
+          {/* Said plainly, before the button rather than after it. */}
+          <p className="rounded-lg border border-warn/25 bg-warn/10 p-3 text-[13px] text-fg">
+            This publishes a real post to the connected Page. It stays there until
+            you delete it on the platform.
+          </p>
+
+          <Field label="Message" hint="Sent as the post's text.">
+            <Textarea
+              value={testMessage}
+              onChange={(event) => setTestMessage(event.target.value)}
+              rows={3}
+              disabled={testBusy || testResult?.ok}
+            />
+          </Field>
+
+          {testResult?.ok ? (
+            <div className="space-y-2 rounded-lg border border-ok/25 bg-ok/10 p-3">
+              <p className="text-[13px] font-medium text-ok">
+                Published to {testResult.pageName}
+              </p>
+              <p className="text-[13px] text-fg">
+                <span className="text-muted">Post ID </span>
+                {/* Selectable: this is the value worth checking on Facebook. */}
+                <span className="select-all font-mono text-[12px]">{testResult.externalPostId}</span>
+              </p>
+              {testResult.permalink ? (
+                <a
+                  href={testResult.permalink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-3 text-[13px] text-muted transition-colors hover:text-fg"
+                >
+                  <Link2 className="h-3.5 w-3.5" />View the post
+                </a>
+              ) : null}
+            </div>
+          ) : testResult ? (
+            <div className="rounded-lg border border-danger/25 bg-danger/10 p-3">
+              <p className="text-[13px] font-medium text-danger">The platform refused the post</p>
+              <p className="mt-1 text-[13px] text-fg">{testResult.message}</p>
+            </div>
+          ) : null}
+        </div>
+      </Modal>
 
       <Card className="mt-4 p-5">
         <p className="text-[13px] leading-relaxed text-muted">
