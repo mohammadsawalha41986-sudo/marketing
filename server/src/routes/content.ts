@@ -1,11 +1,13 @@
 /** /api/content — the content studio: CRUD, AI generation, scheduling, submission. */
 
 import { Router } from 'express';
-import { ContentStatus, ContentType, Language, NotificationType, Platform, Prisma } from '@prisma/client';
+import {
+  ApprovalStatus, ContentStatus, ContentType, Language, NotificationType, Platform, Prisma,
+} from '@prisma/client';
 import { z } from 'zod';
 
 import { prisma } from '../lib/prisma.js';
-import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
+import { asyncHandler, badRequest, conflict, notFound } from '../lib/errors.js';
 import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
@@ -13,9 +15,22 @@ import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope
 import { brandContext, generateCopy, generateHashtags, platformRule } from '../services/ai/index.js';
 import { recordAiUsage, recordAudit } from '../services/audit.js';
 import { notify } from '../services/notify.js';
+import { contentTimeline } from '../services/content/timeline.js';
 
 export const contentRouter: Router = Router();
 contentRouter.use(requireAuth);
+
+/**
+ * The statuses a piece of content may be submitted for approval from.
+ *
+ * Everything else is either already with a reviewer, already decided, or out
+ * in the world — none of which is a thing you send for review.
+ */
+const SUBMITTABLE = new Set<ContentStatus>([
+  ContentStatus.DRAFT,
+  ContentStatus.CHANGES_REQUESTED,
+  ContentStatus.REJECTED,
+]);
 
 const copyFields = {
   headline: z.string().trim().max(300).nullish(),
@@ -61,6 +76,29 @@ async function assertRefs(organizationId: string, clientId: string, campaignId?:
     });
     if (!campaign) throw notFound('Campaign');
   }
+}
+
+/**
+ * Every attached media row must belong to this tenant.
+ *
+ * `mediaIds` arrives from a request body, and until this existed it was written
+ * straight into ContentMedia unchecked — so quoting another organisation's media
+ * id was enough to attach their file, have it rendered in this tenant's preview,
+ * and eventually publish it. An id in a payload is a claim, not a permission.
+ *
+ * Media may be attached to the client that owns it, or be unassigned
+ * organisation-level stock; anything else is refused.
+ */
+async function assertMedia(organizationId: string, clientId: string, mediaIds: string[]) {
+  if (mediaIds.length === 0) return;
+
+  const unique = [...new Set(mediaIds)];
+  const found = await prisma.media.findMany({
+    where: { id: { in: unique }, organizationId, OR: [{ clientId }, { clientId: null }] },
+    select: { id: true },
+  });
+
+  if (found.length !== unique.length) throw notFound('Media');
 }
 
 const contentInclude = {
@@ -134,6 +172,7 @@ contentRouter.post(
     assertWritable(actor);
     const body = req.body as z.infer<typeof createSchema>;
     await assertRefs(orgId(actor), body.clientId, body.campaignId);
+    await assertMedia(orgId(actor), body.clientId, body.mediaIds);
 
     const { mediaIds, hashtags, ...data } = body;
 
@@ -168,6 +207,34 @@ contentRouter.get(
   }),
 );
 
+/**
+ * What happened to this content, in order.
+ *
+ * Readable by anyone who can read the content itself — a client reviewer needs
+ * the history of their own approvals more than anyone.
+ */
+contentRouter.get(
+  '/:id/timeline',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+
+    const content = await prisma.content.findFirst({
+      where: { id: req.params.id, ...scopeWhere(actor) },
+      select: { id: true },
+    });
+    if (!content) throw notFound('Content');
+
+    const events = await contentTimeline({
+      prisma,
+      contentId: content.id,
+      organizationId: orgId(actor),
+    });
+
+    res.json({ events });
+  }),
+);
+
 contentRouter.patch(
   '/:id',
   requireAgency,
@@ -185,6 +252,7 @@ contentRouter.patch(
 
     const body = req.body as z.infer<typeof updateSchema>;
     if (body.campaignId) await assertRefs(orgId(actor), existing.clientId, body.campaignId);
+    if (body.mediaIds) await assertMedia(orgId(actor), existing.clientId, body.mediaIds);
 
     const { mediaIds, hashtags, clientId: _pinned, ...data } = body;
 
@@ -322,6 +390,28 @@ contentRouter.post(
       include: { client: { select: { id: true, name: true } } },
     });
     if (!existing) throw notFound('Content');
+
+    /*
+     * Only work that is actually the author's to send may be sent.
+     *
+     * Without this, submitting was accepted from any status at all: approved
+     * content could be pushed back into review, published content could be
+     * "submitted" again, and each call stacked another PENDING approval on the
+     * same piece. A reviewer then saw the same post several times and the
+     * history could no longer say which decision belonged to which submission.
+     */
+    if (!SUBMITTABLE.has(existing.status)) {
+      throw badRequest(
+        `Content in ${existing.status} cannot be submitted for approval. Only a draft, or one sent back for changes, can be.`,
+      );
+    }
+
+    // Belt and braces: a pending approval means it is already with a reviewer,
+    // even if the content status somehow disagrees.
+    const pending = await prisma.approval.count({
+      where: { contentId: existing.id, status: ApprovalStatus.PENDING },
+    });
+    if (pending > 0) throw conflict('This content is already waiting for a decision');
 
     const content = await prisma.content.update({
       where: { id: existing.id },
