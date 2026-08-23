@@ -295,9 +295,50 @@ export async function exchangeCode(input: {
     // Meta has no refresh token; a long-lived token is re-exchanged instead.
     refreshToken: null,
     expiresAt: expiresIn > 0 ? new Date(now.getTime() + expiresIn * 1000) : null,
+    /*
+     * What we asked for, not what we were given.
+     *
+     * The token response does not report granted permissions, and Meta grants
+     * per-permission: a login can succeed with pages_manage_posts declined and
+     * everything else allowed. `grantedPermissions` below asks the question
+     * properly, and is what the connection actually records.
+     */
     scopes: META_SCOPES,
   };
 }
+
+/**
+ * The permissions Meta actually granted, as opposed to the ones we requested.
+ *
+ * Storing the request as though it were the answer is how a connection ends up
+ * looking healthy and failing at the first publish with a permissions error
+ * nobody predicted. `/me/permissions` returns one row per permission with
+ * status `granted` or `declined`, and only the granted ones are the truth.
+ */
+export async function grantedPermissions(input: {
+  accessToken: string;
+  fetchImpl: FetchLike;
+}): Promise<string[]> {
+  const url = new URL(`${GRAPH}/me/permissions`);
+  url.searchParams.set('access_token', input.accessToken);
+
+  const payload = await readJson(await input.fetchImpl(url.toString()), 'Meta permission check');
+  const rows = (payload.data as Array<Record<string, unknown>> | undefined) ?? [];
+
+  return rows
+    .filter((row) => row.status === 'granted')
+    .map((row) => String(row.permission))
+    .sort();
+}
+
+/**
+ * The permission a Page post requires.
+ *
+ * Publishing to a Page needs `pages_manage_posts`. `pages_read_engagement` is
+ * what lets us read the post back afterwards, so it matters for analytics but
+ * not for getting the post out — which is why only the first is a blocker.
+ */
+export const PAGE_PUBLISH_PERMISSION = 'pages_manage_posts';
 
 export interface DiscoveredAccount {
   kind: 'BUSINESS' | 'PAGE' | 'INSTAGRAM' | 'AD_ACCOUNT';

@@ -1249,6 +1249,13 @@ model IntegrationAccount {
   /// and there is no way to derive one without the operator authorising again.
   accessTokenEnc String?
   tokenExpiresAt DateTime?
+  /// The permissions Meta actually granted for this connection.
+  ///
+  /// Distinct from the permissions the app requests: Meta grants per-permission,
+  /// so a login can succeed with publishing declined and everything else
+  /// allowed. Recording the request instead of the grant is how a connection
+  /// looks healthy right up until the first publish.
+  grantedScopes  String[]           @default([])
   /// Defaults to REAUTH_REQUIRED on purpose: every row that existed before Page
   /// tokens were captured is, correctly, unable to publish. Assuming otherwise
   /// would mean discovering it at the moment of publication.

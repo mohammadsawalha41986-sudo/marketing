@@ -4,7 +4,9 @@
  */
 
 import { Router } from 'express';
-import { IntegrationStatus, Language, Platform, Prisma, Role } from '@prisma/client';
+import {
+  ExternalAccountKind, IntegrationStatus, Language, Platform, Prisma, Role,
+} from '@prisma/client';
 import { z } from 'zod';
 
 import { prisma } from '../lib/prisma.js';
@@ -25,6 +27,7 @@ import { env } from '../env.js';
 import { hashPassword, passwordProblems } from '../lib/password.js';
 import { recordAudit } from '../services/audit.js';
 import { aiStatus } from '../services/ai/index.js';
+import { testPublish } from '../services/publishing/service.js';
 
 // ------------------------------------------------------------------ notifications
 
@@ -333,6 +336,96 @@ integrationsRouter.post(
     });
 
     res.json(result);
+  }),
+);
+
+/**
+ * Publish a one-off message to a connected Page, against the real provider.
+ *
+ * This exists to answer one question that no test can: does this deployment,
+ * with these credentials and this Page, actually publish? Every automated test
+ * uses a fake `fetch` with a real response shape, which proves the workflow
+ * handles each answer and proves nothing about whether Meta gives that answer.
+ *
+ * It is deliberately not a shortcut around the content workflow. It publishes
+ * the caller's message and returns the provider's post id; it does not touch
+ * Content, does not create a PublishingJob, and cannot mark anything PUBLISHED.
+ * A real post does appear on the Page, so it is agency-only, writable-actor
+ * only, and audited.
+ *
+ * The token appears nowhere: not in the request, not in the response, not in
+ * the audit entry, and not in the error path.
+ */
+integrationsRouter.post(
+  '/:id/test-publish',
+  requireAgency,
+  validateParams(idParam),
+  validateBody(z.object({ message: z.string().trim().min(1).max(2000) })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+
+    const { message } = req.body as { message: string };
+
+    const integration = await prisma.integration.findFirst({
+      where: { id: req.params.id, organizationId: orgId(actor) },
+      select: {
+        id: true,
+        platform: true,
+        accounts: {
+          where: { selected: true, kind: ExternalAccountKind.PAGE },
+          select: { id: true, externalId: true, name: true, accessTokenEnc: true, tokenStatus: true },
+        },
+      },
+    });
+    if (!integration) throw notFound('Integration');
+
+    const account = integration.accounts[0];
+    if (!account) throw badRequest('No Page is attached to this connection. Choose one first.');
+
+    const result = await testPublish({
+      prisma,
+      accountId: account.id,
+      message,
+      platform: integration.platform,
+      fetchImpl: fetch as never,
+    });
+
+    await recordAudit({
+      actor,
+      action: 'integration.test-publish',
+      entity: 'Integration',
+      entityId: integration.id,
+      // The Page and the outcome, never the credential or the message body.
+      meta: {
+        platform: integration.platform,
+        pageId: account.externalId,
+        success: result.published,
+        externalPostId: result.published ? result.externalPostId : null,
+      },
+      ip: req.ip,
+    });
+
+    if (!result.published) {
+      /*
+       * The provider's real reason, surfaced rather than flattened into a 500.
+       * 502: the request was fine and the upstream refused it.
+       */
+      res.status(502).json({
+        error: { code: result.code, message: result.message, providerCode: result.providerCode },
+      });
+      return;
+    }
+
+    // A real post now exists on the Page. The id is the provider's.
+    res.json({
+      published: true,
+      pageId: account.externalId,
+      pageName: account.name,
+      externalPostId: result.externalPostId,
+      permalink: result.permalink,
+      publishedAt: result.publishedAt,
+    });
   }),
 );
 
