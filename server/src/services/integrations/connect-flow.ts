@@ -19,7 +19,9 @@
  *   wired into another client.
  */
 
-import { ExternalAccountKind, IntegrationStatus, Platform, Prisma, SyncStatus } from '@prisma/client';
+import {
+  AccountTokenStatus, ExternalAccountKind, IntegrationStatus, Platform, Prisma, SyncStatus,
+} from '@prisma/client';
 
 import { prisma } from '../../lib/prisma.js';
 import { encryptSecret, secretFingerprint } from '../../lib/crypto.js';
@@ -189,6 +191,27 @@ export async function completeCallback(input: {
       });
 
       for (const account of discovered) {
+        /*
+         * The Page's own publishing credential, encrypted before it is stored.
+         *
+         * A Page that came back without one cannot publish — the granted
+         * permissions did not extend to managing it — and is recorded as
+         * REAUTH_REQUIRED rather than left to fail at the moment of publication.
+         * The plaintext exists only inside this loop.
+         */
+        const pageToken = account.accessToken?.trim();
+        const tokenFields = pageToken
+          ? {
+              accessTokenEnc: encryptSecret(pageToken),
+              // Discovery proved the user token works, not this one. It is
+              // verified against the provider before the first publish.
+              tokenStatus: AccountTokenStatus.UNKNOWN,
+            }
+          : {
+              accessTokenEnc: null,
+              tokenStatus: AccountTokenStatus.REAUTH_REQUIRED,
+            };
+
         // Upsert on (integration, kind, externalId): re-running discovery after
         // a reconnect refreshes names and never duplicates rows.
         await tx.integrationAccount.upsert({
@@ -210,6 +233,7 @@ export async function completeCallback(input: {
             timezone: account.timezone ?? null,
             parentExternalId: account.parentExternalId ?? null,
             metadata: (account.metadata ?? {}) as Prisma.InputJsonValue,
+            ...tokenFields,
           },
           // `selected` is deliberately not updated: a reconnect must not silently
           // re-attach something the operator previously removed.
@@ -218,6 +242,10 @@ export async function completeCallback(input: {
             username: account.username ?? null,
             currency: account.currency ?? null,
             timezone: account.timezone ?? null,
+            // A reconnect is how a REAUTH_REQUIRED account gets its token, so
+            // this must overwrite — including back to null if the permission was
+            // withdrawn, which is a downgrade the operator needs to see.
+            ...tokenFields,
           },
         });
       }

@@ -109,11 +109,99 @@ export function metaConfig(env: NodeJS.ProcessEnv = process.env): MetaConfig {
    * the error it returns talks about the app id rather than the whitespace.
    * Cheaper to normalise here than to diagnose again.
    */
+  const appId = (env.META_APP_ID as string).trim();
+  const configId = (env.META_CONFIG_ID as string).trim();
+
+  /*
+   * Refuse a malformed app id here rather than at Facebook.
+   *
+   * A Meta App ID is a decimal number. Sending anything else produces
+   * PLATFORM_INVALID_APP_ID on Facebook's own error page — an error that names
+   * the app id but says nothing about which of our variables carries it, and
+   * that appears only after the operator has already been redirected away. The
+   * common way to get here is pasting the wrong value into the right box:
+   * META_CONFIG_ID, an app secret, or a URL.
+   *
+   * The value never appears in the message. It is not a secret, but the id and
+   * the secret sit next to each other in the same dashboard and echoing either
+   * one trains everybody to expect credentials in error text.
+   */
+  if (!APP_ID_FORMAT.test(appId)) {
+    throw new ProviderNotConfiguredError('FACEBOOK' as Platform, 'Meta', ['META_APP_ID'], {
+      detail:
+        'META_APP_ID configuration is invalid: a Meta App ID is a number, 13 to 20 digits long. ' +
+        'Copy it from the Meta app dashboard — it is not the configuration id, the app secret, or a URL.',
+    });
+  }
+
+  if (appId === configId) {
+    throw new ProviderNotConfiguredError('FACEBOOK' as Platform, 'Meta', ['META_APP_ID'], {
+      detail:
+        'META_APP_ID and META_CONFIG_ID hold the same value. The app id identifies the Meta app; ' +
+        'the configuration id identifies the Facebook Login for Business configuration inside it. They are never equal.',
+    });
+  }
+
   return {
-    appId: (env.META_APP_ID as string).trim(),
+    appId,
     appSecret: (env.META_APP_SECRET as string).trim(),
     redirectUri: (env.META_REDIRECT_URI as string).trim(),
-    configId: (env.META_CONFIG_ID as string).trim(),
+    configId,
+  };
+}
+
+/**
+ * What a Meta App ID looks like.
+ *
+ * Decimal digits only. The length band is deliberately wide — Meta has issued
+ * ids of different lengths over the years and a rule tighter than the format
+ * warrants would reject a legitimate new app.
+ */
+const APP_ID_FORMAT = /^\d{13,20}$/;
+
+/**
+ * What can be said about the Meta configuration without saying any of it.
+ *
+ * Every field here is a shape or a verdict. This is what makes it safe to log
+ * at startup and to return from a diagnostics endpoint: an operator debugging a
+ * rejected app id needs to know whether the value is numeric and how long it is,
+ * and never needs the value itself.
+ */
+export interface MetaConfigDiagnostics {
+  appIdConfigured: boolean;
+  appIdLength: number;
+  appIdNumeric: boolean;
+  appIdEqualsConfigId: boolean;
+  appSecretConfigured: boolean;
+  redirectUriConfigured: boolean;
+  configIdConfigured: boolean;
+  /** True when every check passes and an authorization URL can be built. */
+  valid: boolean;
+}
+
+export function metaConfigDiagnostics(env: NodeJS.ProcessEnv = process.env): MetaConfigDiagnostics {
+  const appId = env.META_APP_ID?.trim() ?? '';
+  const configId = env.META_CONFIG_ID?.trim() ?? '';
+  const appIdNumeric = APP_ID_FORMAT.test(appId);
+
+  const appIdConfigured = appId.length > 0;
+  const appSecretConfigured = (env.META_APP_SECRET?.trim().length ?? 0) > 0;
+  const redirectUriConfigured = (env.META_REDIRECT_URI?.trim().length ?? 0) > 0;
+  const configIdConfigured = configId.length > 0;
+
+  return {
+    appIdConfigured,
+    // A length is not a value. It is the one number that distinguishes "pasted
+    // the config id" from "pasted a URL" without revealing either.
+    appIdLength: appId.length,
+    appIdNumeric,
+    appIdEqualsConfigId: appIdConfigured && appId === configId,
+    appSecretConfigured,
+    redirectUriConfigured,
+    configIdConfigured,
+    valid:
+      appIdConfigured && appIdNumeric && appId !== configId &&
+      appSecretConfigured && redirectUriConfigured && configIdConfigured,
   };
 }
 
@@ -220,6 +308,18 @@ export interface DiscoveredAccount {
   timezone?: string;
   parentExternalId?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * The Page's own publishing credential, in plaintext, for the caller to
+   * encrypt before it touches the database.
+   *
+   * Present only for Pages. A Facebook Page is posted to with a Page access
+   * token — the user token that discovered it cannot publish as the Page, which
+   * is why discovery has to ask for this and not merely note the Page exists.
+   *
+   * Never logged, never serialised into an API response, never put in an error.
+   * `connect-flow` encrypts it on arrival and nothing else reads it.
+   */
+  accessToken?: string;
 }
 
 /**
@@ -245,7 +345,17 @@ export async function discoverAccounts(input: { accessToken: string; fetchImpl: 
 
   // --- Pages, and the Instagram account attached to each -----------------
   const pagesUrl = new URL(`${GRAPH}/me/accounts`);
-  pagesUrl.searchParams.set('fields', 'id,name,username,instagram_business_account{id,username,name}');
+  /*
+   * `access_token` here is the Page token, and it is the reason this call has to
+   * request it rather than settle for names and ids. Publishing to a Page uses
+   * the Page's own token; the user token is only good for discovering that the
+   * Page exists. Without this field the connection completes, looks healthy, and
+   * cannot publish anything.
+   */
+  pagesUrl.searchParams.set(
+    'fields',
+    'id,name,username,access_token,instagram_business_account{id,username,name}',
+  );
   pagesUrl.searchParams.set('access_token', input.accessToken);
 
   const pages = await readJson(await input.fetchImpl(pagesUrl.toString()), 'Meta page discovery');
@@ -256,6 +366,9 @@ export async function discoverAccounts(input: { accessToken: string; fetchImpl: 
       externalId: pageId,
       name: (page.name as string) ?? 'Facebook Page',
       username: page.username as string | undefined,
+      // Absent when the granted permissions do not extend to managing the Page.
+      // The account is still recorded — it just cannot publish, and says so.
+      accessToken: (page.access_token as string | undefined) ?? undefined,
     });
 
     const instagram = page.instagram_business_account as Record<string, unknown> | undefined;

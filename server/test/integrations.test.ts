@@ -131,7 +131,7 @@ describe('provider readiness', () => {
   });
 
   it('distinguishes a missing encryption key from missing credentials', () => {
-    process.env.META_APP_ID = 'id';
+    process.env.META_APP_ID = '1821333942563322';
     process.env.META_APP_SECRET = 'secret';
     process.env.META_REDIRECT_URI = 'https://example.com/cb';
     process.env.META_CONFIG_ID = 'login-config-1';
@@ -143,7 +143,7 @@ describe('provider readiness', () => {
   });
 
   it('reports READY only when credentials and encryption are both present', () => {
-    process.env.META_APP_ID = 'id';
+    process.env.META_APP_ID = '1821333942563322';
     process.env.META_APP_SECRET = 'secret';
     process.env.META_REDIRECT_URI = 'https://example.com/cb';
     process.env.META_CONFIG_ID = 'login-config-1';
@@ -153,7 +153,7 @@ describe('provider readiness', () => {
   });
 
   it('never claims a provider is connected merely because it is configured', () => {
-    process.env.META_APP_ID = 'id';
+    process.env.META_APP_ID = '1821333942563322';
     process.env.META_APP_SECRET = 'secret';
     process.env.META_REDIRECT_URI = 'https://example.com/cb';
     process.env.META_CONFIG_ID = 'login-config-1';

@@ -92,7 +92,11 @@ export type Platform =
 export type CampaignStatus = 'DRAFT' | 'SCHEDULED' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'CANCELLED';
 export type ContentStatus =
   | 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED'
-  | 'CHANGES_REQUESTED' | 'SCHEDULED' | 'PUBLISHED' | 'FAILED';
+  | 'CHANGES_REQUESTED' | 'SCHEDULED' | 'PUBLISHED'
+  // FAILED is legacy and still held by older rows; PUBLISH_FAILED is what the
+  // publishing pipeline sets, and says which step failed.
+  | 'FAILED'
+  | 'QUEUED' | 'PUBLISHING' | 'PUBLISH_FAILED' | 'CANCELLED';
 export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CHANGES_REQUESTED';
 export type MediaType = 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'LOGO';
 

@@ -38,7 +38,7 @@ describe('Meta OAuth routes', () => {
 
   beforeEach(() => {
     process.env.TOKEN_ENCRYPTION_KEY = KEY;
-    process.env.META_APP_ID = 'app-123';
+    process.env.META_APP_ID = '1821333942563322';
     process.env.META_APP_SECRET = APP_SECRET;
     process.env.META_REDIRECT_URI = callbackUrl(BASE, Platform.FACEBOOK);
     process.env.META_CONFIG_ID = 'login-config-1';

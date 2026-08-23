@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
-  Check, Hash, Image as ImageIcon, PenLine, Plus, Save, Search, Send, Sparkles, Wand2,
+  Check, Hash, Image as ImageIcon, Link2, PenLine, Plus, Save, Search, Send, Sparkles, Wand2,
 } from 'lucide-react';
 
 import { api, qs, type ContentStatus, type Language, type Paginated, type Platform } from '../lib/api';
@@ -508,6 +508,208 @@ export function StudioPage() {
   );
 }
 
+// ------------------------------------------------------------ publishing
+
+interface PublishingJobRow {
+  id: string;
+  platform: Platform;
+  status: 'QUEUED' | 'PUBLISHING' | 'PUBLISHED' | 'FAILED' | 'CANCELLED';
+  attempts: number;
+  scheduledAt: string | null;
+  lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
+  publishedAt: string | null;
+  externalPostId: string | null;
+  permalink: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  failedAt: string | null;
+  account: { name: string; externalId: string; tokenStatus: string } | null;
+  attemptLog: Array<{
+    id: string;
+    result: 'SUCCESS' | 'RETRYABLE_FAILURE' | 'PERMANENT_FAILURE';
+    startedAt: string;
+    completedAt: string | null;
+    externalPostId: string | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+    httpStatus: number | null;
+  }>;
+}
+
+/**
+ * Where the post actually got to, and what the provider said about it.
+ *
+ * The panel exists because the failure mode it replaces was silence: content
+ * sat at APPROVED or SCHEDULED forever with nothing on screen to say whether
+ * anything had been attempted, let alone why it had not worked. Every state
+ * here is either evidence from the provider — an external id, a permalink — or
+ * an explicit statement that there is none.
+ */
+function PublishingPanel({
+  contentId, status, onChanged,
+}: { contentId: string; status: ContentStatus; onChanged: () => void }) {
+  const { lang } = useI18n();
+  const { push } = useToast();
+  const [busy, setBusy] = useState(false);
+  const [version, setVersion] = useState(0);
+
+  const { data, loading } = useQuery<{ job: PublishingJobRow | null }>(
+    `/content/${contentId}/publishing`,
+    [contentId, version],
+  );
+  const readiness = useQuery<{ ready: boolean; problems: Array<{ problem: string; message: string }> }>(
+    `/content/${contentId}/readiness`,
+    [contentId, version],
+  );
+
+  const job = data?.job ?? null;
+  const canPublish = ['APPROVED', 'SCHEDULED', 'PUBLISH_FAILED'].includes(status);
+
+  const publish = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/content/${contentId}/publish`);
+      push({
+        tone: 'success',
+        title: 'Queued for publishing',
+        body: 'The worker picks it up within a minute. This page shows the result.',
+      });
+      setVersion((n) => n + 1);
+      onChanged();
+    } catch (err) {
+      // Includes the 422 listing exactly what is missing.
+      push({ tone: 'error', title: 'Cannot publish yet', body: err instanceof Error ? err.message : undefined });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader
+          title="Publishing"
+          subtitle="Nothing here is set by this app — PUBLISHED means the platform returned a post id."
+          icon={Send}
+          action={
+            canPublish ? (
+              <Button size="sm" icon={Send} loading={busy} onClick={publish}>
+                {status === 'PUBLISH_FAILED' ? 'Retry publish' : 'Publish now'}
+              </Button>
+            ) : null
+          }
+        />
+
+        <div className="space-y-4 p-5">
+          {loading ? (
+            <CardSkeleton rows={2} />
+          ) : !job ? (
+            <p className="text-[13px] text-muted">
+              This content has not been queued for publishing yet.
+            </p>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusBadge status={job.status} kind="content" />
+                <span className="text-[13px] text-muted">
+                  {job.account ? `${job.platform} · ${job.account.name}` : job.platform}
+                </span>
+              </div>
+
+              <div className="space-y-1.5 text-[13px]">
+                {[
+                  { label: 'Attempts', value: String(job.attempts) },
+                  { label: 'Last attempt', value: job.lastAttemptAt ? date(job.lastAttemptAt, lang) : '—' },
+                  {
+                    label: 'Next retry',
+                    value: job.nextAttemptAt ? date(job.nextAttemptAt, lang) : '—',
+                  },
+                  { label: 'Published', value: job.publishedAt ? date(job.publishedAt, lang) : '—' },
+                  // The proof. Without it the status would be an assertion.
+                  { label: 'External post ID', value: job.externalPostId ?? '—' },
+                ].map((row) => (
+                  <p key={row.label} className="flex justify-between gap-3">
+                    <span className="text-muted">{row.label}</span>
+                    <span className="text-end text-fg">{row.value}</span>
+                  </p>
+                ))}
+              </div>
+
+              {job.permalink ? (
+                <a
+                  href={job.permalink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-3 text-[13px] text-muted transition-colors hover:text-fg"
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                  View on {humanize(job.platform)}
+                </a>
+              ) : null}
+
+              {job.errorMessage ? (
+                <div className="rounded-lg border border-danger/25 bg-danger/10 p-3">
+                  <p className="text-[13px] font-medium text-danger">Publishing failed</p>
+                  {/* The provider's real reason, not a generic apology. */}
+                  <p className="mt-1 text-[13px] text-fg">{job.errorMessage}</p>
+                  {job.errorCode ? (
+                    <p className="mt-1 text-[12px] text-muted">Code: {job.errorCode}</p>
+                  ) : null}
+                </div>
+              ) : null}
+            </>
+          )}
+
+          {/* What is stopping it, before anyone presses the button. */}
+          {readiness.data && !readiness.data.ready && readiness.data.problems.length > 0 ? (
+            <div className="rounded-lg border border-warn/25 bg-warn/10 p-3">
+              <p className="text-[13px] font-medium text-warn">Not ready to publish</p>
+              <ul className="mt-1 space-y-1">
+                {readiness.data.problems.map((row) => (
+                  <li key={row.problem} className="text-[13px] text-fg">{row.message}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      </Card>
+
+      {job && job.attemptLog.length > 0 ? (
+        <Card>
+          <CardHeader title="Attempts" subtitle="Every try, kept even after a later one succeeds." />
+          <div className="divide-y divide-line/60">
+            {job.attemptLog.map((attempt) => (
+              <div key={attempt.id} className="px-5 py-3">
+                <p className="flex flex-wrap items-center gap-2 text-[13px]">
+                  <span
+                    className={cn(
+                      'h-2 w-2 rounded-full',
+                      attempt.result === 'SUCCESS' ? 'bg-ok'
+                        : attempt.result === 'RETRYABLE_FAILURE' ? 'bg-warn' : 'bg-danger',
+                    )}
+                  />
+                  <span className="text-fg">{humanize(attempt.result)}</span>
+                  <span className="text-muted">{date(attempt.startedAt, lang)}</span>
+                  {attempt.httpStatus ? (
+                    <span className="text-muted">HTTP {attempt.httpStatus}</span>
+                  ) : null}
+                </p>
+                {attempt.errorMessage ? (
+                  <p className="mt-1 text-[13px] text-muted">{attempt.errorMessage}</p>
+                ) : null}
+                {attempt.externalPostId ? (
+                  <p className="mt-1 text-[12px] text-muted">Post ID: {attempt.externalPostId}</p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
 // -------------------------------------------------------------- timeline
 
 type TimelineKind =
@@ -623,7 +825,7 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
   const { t, lang } = useI18n();
   const { isAgency } = useAuth();
   const { push } = useToast();
-  const [tab, setTab] = useState<'copy' | 'preview' | 'history'>('copy');
+  const [tab, setTab] = useState<'copy' | 'preview' | 'publishing' | 'history'>('copy');
   const [scheduling, setScheduling] = useState(false);
   const [scheduledAt, setScheduledAt] = useState('');
 
@@ -695,6 +897,7 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
         tabs={[
           { value: 'copy', label: 'Copy' },
           { value: 'preview', label: 'Preview' },
+          { value: 'publishing', label: 'Publishing' },
           { value: 'history', label: 'History', count: content.approvals.length + content.comments.length },
         ]}
       />
@@ -804,6 +1007,10 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
           />
           </div>
         </div>
+      ) : null}
+
+      {tab === 'publishing' ? (
+        <PublishingPanel contentId={id} status={content.status} onChanged={refetch} />
       ) : null}
 
       {tab === 'history' ? <ContentTimeline contentId={id} /> : null}

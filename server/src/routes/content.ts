@@ -16,6 +16,7 @@ import { brandContext, generateCopy, generateHashtags, platformRule } from '../s
 import { recordAiUsage, recordAudit } from '../services/audit.js';
 import { notify } from '../services/notify.js';
 import { contentTimeline } from '../services/content/timeline.js';
+import { checkReadiness, enqueue } from '../services/publishing/service.js';
 
 export const contentRouter: Router = Router();
 contentRouter.use(requireAuth);
@@ -30,6 +31,20 @@ const SUBMITTABLE = new Set<ContentStatus>([
   ContentStatus.DRAFT,
   ContentStatus.CHANGES_REQUESTED,
   ContentStatus.REJECTED,
+]);
+
+/**
+ * The statuses from which publishing is a legitimate next step.
+ *
+ * APPROVED and SCHEDULED are the ordinary path. PUBLISH_FAILED is here because
+ * retrying is the whole point of recording a failure rather than discarding it —
+ * and the approval that authorised the post is still valid, so sending it back
+ * through review to try again would be ceremony, not safety.
+ */
+const PUBLISHABLE_FROM = new Set<ContentStatus>([
+  ContentStatus.APPROVED,
+  ContentStatus.SCHEDULED,
+  ContentStatus.PUBLISH_FAILED,
 ]);
 
 const copyFields = {
@@ -336,6 +351,119 @@ contentRouter.post(
 
     await recordAudit({ actor, action: 'content.schedule', entity: 'Content', entityId: content.id, ip: req.ip });
     res.json({ content });
+  }),
+);
+
+/**
+ * Whether this content could publish right now, and what is stopping it.
+ *
+ * The composer and the schedule dialog both ask before offering the action, so
+ * a missing Page or an unreadable creative is a sentence on screen rather than
+ * a failure at 7pm on a Saturday.
+ */
+contentRouter.get(
+  '/:id/readiness',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+
+    const content = await prisma.content.findFirst({
+      where: { id: req.params.id, ...scopeWhere(actor) },
+      select: { id: true },
+    });
+    if (!content) throw notFound('Content');
+
+    res.json(await checkReadiness({ prisma, contentId: content.id, organizationId: orgId(actor) }));
+  }),
+);
+
+/**
+ * Publish now, or retry after a failure.
+ *
+ * Both are the same operation: put the job in the queue and let the worker run
+ * it. Publishing inline would mean the HTTP request's lifetime decided whether
+ * a post survived, and a client that hung up mid-publish would leave a job
+ * nobody owns.
+ */
+contentRouter.post(
+  '/:id/publish',
+  requireAgency,
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+
+    const existing = await prisma.content.findFirst({
+      where: { id: req.params.id, ...scopeWhere(actor) },
+      select: { id: true, status: true },
+    });
+    if (!existing) throw notFound('Content');
+
+    // Approval is not optional, and neither is it re-checked here loosely:
+    // these are the only states from which publishing is a legitimate next step.
+    if (!PUBLISHABLE_FROM.has(existing.status)) {
+      throw badRequest(
+        `Content in ${existing.status} cannot be published. It must be approved first.`,
+      );
+    }
+
+    const result = await enqueue({ prisma, contentId: existing.id, organizationId: orgId(actor) });
+
+    if ('refused' in result) {
+      // 422: the request was understood and the content is genuinely not ready.
+      res.status(422).json({
+        error: {
+          code: 'CONTENT_NOT_READY',
+          message: 'This content cannot be published yet.',
+          problems: result.refused.problems,
+        },
+      });
+      return;
+    }
+
+    await recordAudit({
+      actor, action: 'content.publish.enqueue', entity: 'Content', entityId: existing.id, ip: req.ip,
+    });
+
+    res.status(202).json({ jobId: result.jobId, status: 'QUEUED' });
+  }),
+);
+
+/** The publishing record: where it got to, and what the provider said. */
+contentRouter.get(
+  '/:id/publishing',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+
+    const content = await prisma.content.findFirst({
+      where: { id: req.params.id, ...scopeWhere(actor) },
+      select: { id: true },
+    });
+    if (!content) throw notFound('Content');
+
+    const job = await prisma.publishingJob.findFirst({
+      where: { contentId: content.id },
+      // An explicit projection: the job carries no credential, but the account
+      // relation does, and selecting it wholesale would put a Page token in an
+      // API response.
+      select: {
+        id: true, platform: true, status: true, attempts: true, scheduledAt: true,
+        lastAttemptAt: true, nextAttemptAt: true, publishedAt: true,
+        externalPostId: true, permalink: true, errorCode: true, errorMessage: true, failedAt: true,
+        account: { select: { name: true, externalId: true, tokenStatus: true } },
+        attemptLog: {
+          orderBy: { startedAt: 'desc' },
+          take: 10,
+          select: {
+            id: true, result: true, startedAt: true, completedAt: true,
+            externalPostId: true, errorCode: true, errorMessage: true, httpStatus: true,
+          },
+        },
+      },
+    });
+
+    res.json({ job });
   }),
 );
 

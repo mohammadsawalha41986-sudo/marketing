@@ -30,6 +30,14 @@ const CONTENT_TONES: Record<ContentStatus, BadgeTone> = {
   CHANGES_REQUESTED: 'warn',
   SCHEDULED: 'brand',
   PUBLISHED: 'accent',
+
+  // In flight. Brand rather than ok: nothing has succeeded yet, and colouring
+  // "on its way" the same as "published" is how a dashboard starts lying.
+  QUEUED: 'brand',
+  PUBLISHING: 'brand',
+  PUBLISH_FAILED: 'danger',
+  // Withdrawn on purpose. Not a failure, and not worth alarming anyone.
+  CANCELLED: 'neutral',
   FAILED: 'danger',
 };
 
