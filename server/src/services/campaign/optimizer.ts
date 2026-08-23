@@ -96,7 +96,6 @@ const num = (value: Prisma.Decimal | number | null): number =>
 export async function optimize(input: OptimizerInput): Promise<OptimizerReport> {
   const { prisma } = input;
   const thresholds = input.thresholds ?? DEFAULT_THRESHOLDS;
-  const now = input.now ?? new Date();
   const windowDays = Math.max(1, Math.round((input.to.getTime() - input.from.getTime()) / 86_400_000));
 
   const snapshots = await prisma.analyticsSnapshot.findMany({

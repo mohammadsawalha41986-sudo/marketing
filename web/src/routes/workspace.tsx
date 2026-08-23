@@ -719,7 +719,82 @@ interface DiscoveredAccountRow {
   username: string | null;
   currency: string | null;
   timezone: string | null;
+  /**
+   * For an Instagram Professional account this is the id of the Facebook Page
+   * it is linked through — Meta only ever exposes Instagram as a property of a
+   * Page, and attaching one without the other publishes nothing.
+   */
+  parentExternalId: string | null;
   selected: boolean;
+}
+
+/**
+ * What each kind is called on screen.
+ *
+ * Meta's own vocabulary, not the enum's. An operator looking for their
+ * "Instagram Professional account" should not have to guess that we call it
+ * INSTAGRAM.
+ */
+const ACCOUNT_KIND_LABEL: Record<string, string> = {
+  PAGE: 'Facebook Page',
+  INSTAGRAM: 'Instagram Professional',
+  AD_ACCOUNT: 'Ad account',
+  BUSINESS: 'Business',
+  CUSTOMER: 'Customer',
+  LOCATION: 'Location',
+  ORGANIZATION: 'Organization',
+  PROFILE: 'Profile',
+};
+
+/** Pages first, then the Instagram accounts hanging off them, then the money. */
+const ACCOUNT_KIND_ORDER = ['PAGE', 'INSTAGRAM', 'AD_ACCOUNT', 'BUSINESS'];
+
+const accountKindLabel = (kind: string) =>
+  ACCOUNT_KIND_LABEL[kind] ?? kind.replace(/_/g, ' ').toLowerCase();
+
+/**
+ * Turn the callback's `?error=` into something worth reading.
+ *
+ * Every one of these is a dead end for the operator unless it says what to do
+ * next, so each case pairs the provider's own words with the one action that
+ * resolves it.
+ *
+ * Note that invalid, expired and already-used states deliberately arrive as the
+ * same sentence. `oauth-state.ts` refuses to distinguish them so that the
+ * callback cannot be used to probe which states exist — so this cannot tell
+ * them apart either, and does not pretend to. The precise reason is recorded
+ * server-side.
+ */
+function describeCallbackFailure(reason: string): { title: string; body: string } {
+  const text = reason.toLowerCase();
+
+  if (/denied|cancel|not authorized|access_denied/.test(text)) {
+    return {
+      title: 'Authorization was declined',
+      body: 'Meta reported that the request was not approved. Press Connect again and accept the permissions to continue.',
+    };
+  }
+
+  if (/could not be verified/.test(text)) {
+    return {
+      title: 'The connection attempt could not be verified',
+      body: 'It may have expired, already been used, or been started in another tab. Start the connection again from this page.',
+    };
+  }
+
+  if (/no authorization code/.test(text)) {
+    return {
+      title: 'Meta returned no authorization code',
+      body: 'The login finished without the code we need. Press Connect again — if it repeats, the app configuration on Meta needs checking.',
+    };
+  }
+
+  // Token exchange and Graph API failures: the provider's message is the most
+  // useful thing we have, and it never carries the code or the token.
+  return {
+    title: 'Meta did not connect',
+    body: reason,
+  };
 }
 
 interface IntegrationRow {
@@ -797,13 +872,31 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
     }
   };
 
+  const accounts = useMemo(() => data?.integration.accounts ?? [], [data]);
+
+  /**
+   * Which Page an Instagram account belongs to, by the Page's *external* id.
+   *
+   * `parentExternalId` carries Meta's id, not ours, because that is the only
+   * identifier that survives re-running discovery.
+   */
+  const pageByExternalId = useMemo(() => {
+    const map = new Map<string, DiscoveredAccountRow>();
+    for (const row of accounts) if (row.kind === 'PAGE') map.set(row.externalId, row);
+    return map;
+  }, [accounts]);
+
   const byKind = useMemo(() => {
     const map = new Map<string, DiscoveredAccountRow[]>();
-    for (const row of data?.integration.accounts ?? []) {
+    for (const row of accounts) {
       map.set(row.kind, [...(map.get(row.kind) ?? []), row]);
     }
-    return [...map.entries()];
-  }, [data]);
+    return [...map.entries()].sort(([a], [b]) => {
+      const ai = ACCOUNT_KIND_ORDER.indexOf(a);
+      const bi = ACCOUNT_KIND_ORDER.indexOf(b);
+      return (ai === -1 ? ACCOUNT_KIND_ORDER.length : ai) - (bi === -1 ? ACCOUNT_KIND_ORDER.length : bi);
+    });
+  }, [accounts]);
 
   return (
     <Drawer
@@ -830,7 +923,7 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
           {byKind.map(([kind, rows]) => (
             <div key={kind}>
               <p className="mb-1.5 text-[11px] uppercase tracking-wide text-muted">
-                {kind.replace(/_/g, ' ').toLowerCase()}
+                {accountKindLabel(kind)}
               </p>
               <div className="space-y-1.5">
                 {rows.map((row) => (
@@ -852,12 +945,31 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
                       {chosen.has(row.id) ? <Check className="h-3 w-3" /> : null}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px] font-medium text-fg">{row.name}</span>
+                      <span className="flex items-baseline gap-2">
+                        <span className="truncate text-[13px] font-medium text-fg">{row.name}</span>
+                        {row.username ? (
+                          <span className="truncate text-[11px] text-muted">@{row.username}</span>
+                        ) : null}
+                      </span>
                       <span className="block truncate text-[11px] text-muted">
+                        {accountKindLabel(row.kind)}
+                        {' · '}
                         {row.externalId}
                         {row.currency ? ` · ${row.currency}` : ''}
                         {row.timezone ? ` · ${row.timezone}` : ''}
                       </span>
+                      {/*
+                        Meta exposes Instagram only through the Page it is linked to.
+                        Naming that Page here is what stops someone attaching an
+                        Instagram account whose Page they never selected.
+                      */}
+                      {row.parentExternalId ? (
+                        <span className="block truncate text-[11px] text-muted">
+                          via{' '}
+                          {pageByExternalId.get(row.parentExternalId)?.name ??
+                            `Page ${row.parentExternalId}`}
+                        </span>
+                      ) : null}
                     </span>
                   </button>
                 ))}
@@ -884,6 +996,7 @@ export function IntegrationsPage() {
   const { currentId: clientId, current } = useRestaurant();
 
   const [selecting, setSelecting] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
 
   const catalog = useQuery<{ ai: { provider: string; model: string; configured: boolean }; adapters: AdapterInfo[] }>('/integrations/catalog');
   const { data, loading, refetch } = useQuery<{ items: IntegrationRow[] }>(
@@ -918,6 +1031,29 @@ export function IntegrationsPage() {
     }
   };
 
+  /**
+   * Drop the connection.
+   *
+   * This discards the stored tokens on the server, so it is not undoable by
+   * pressing the button again — reconnecting means going back through Meta.
+   * That is worth one confirmation.
+   */
+  const disconnect = async (integrationId: string, label: string) => {
+    if (!window.confirm(`Disconnect ${label}? The stored credentials are deleted and reconnecting needs a new Meta login.`)) {
+      return;
+    }
+    setDisconnecting(integrationId);
+    try {
+      await api.post(`/integrations/${integrationId}/disconnect`);
+      push({ tone: 'success', title: `${label} disconnected`, body: 'The stored credentials were deleted.' });
+      refetch();
+    } catch (err) {
+      push({ tone: 'error', title: 'Could not disconnect', body: err instanceof Error ? err.message : undefined });
+    } finally {
+      setDisconnecting(null);
+    }
+  };
+
   /*
    * Coming back from the provider.
    *
@@ -931,7 +1067,10 @@ export function IntegrationsPage() {
     const integrationId = params.get('integration');
     const failure = params.get('error');
 
-    if (failure) push({ tone: 'error', title: 'Meta did not connect', body: failure });
+    if (failure) {
+      const { title, body } = describeCallbackFailure(failure);
+      push({ tone: 'error', title, body });
+    }
     if (integrationId) setSelecting(integrationId);
     if (failure || integrationId) {
       // Clear the query so a refresh does not replay the toast.
@@ -1049,6 +1188,16 @@ export function IntegrationsPage() {
                   {integration && (connected || awaitingSelection) ? (
                     <Button size="sm" variant="secondary" onClick={() => setSelecting(integration.id)}>
                       {awaitingSelection ? t('integration.chooseAccounts') : t('integration.accounts')}
+                    </Button>
+                  ) : null}
+                  {integration && (connected || awaitingSelection) ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      loading={disconnecting === integration.id}
+                      onClick={() => disconnect(integration.id, adapter.label)}
+                    >
+                      {t('integration.disconnect')}
                     </Button>
                   ) : null}
                   <a

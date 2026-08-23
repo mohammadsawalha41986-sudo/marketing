@@ -17,7 +17,7 @@ import {
   adapterFor, providerReadiness, allAdapters, supportsOAuth,
   ProviderNotConfiguredError, ProviderNotImplementedError,
 } from '../services/integrations/index.js';
-import { beginAuthorization, completeCallback, selectAccounts } from '../services/integrations/connect-flow.js';
+import { beginAuthorization, selectAccounts } from '../services/integrations/connect-flow.js';
 import { validateToken } from '../services/integrations/meta.js';
 import { METRIC_SYNC_PLATFORMS, syncMetaMetrics } from '../services/integrations/metric-sync.js';
 import { decryptSecret } from '../lib/crypto.js';
@@ -83,80 +83,10 @@ notificationsRouter.post(
 // ------------------------------------------------------------------ integrations
 
 /**
- * The provider's redirect back, on its own unauthenticated router.
- *
- * Mounted *before* `requireAuth` deliberately. This request is a top-level
- * browser navigation initiated by Meta, and depending on the cookie's SameSite
- * policy the session may not travel with it — gating it on a session would
- * break the flow for a subset of users in a way that is miserable to diagnose.
- *
- * It is not unprotected. The `state` parameter is the authorisation: minted
- * against one organization, one client and one platform, hashed at rest,
- * single-use and short-lived (`oauth-state.ts`). `consumeState` is what decides
- * whose connection this is — nothing here reads a tenant from the query string.
+ * The unauthenticated OAuth callback router lives in `./oauth-callback.ts`.
+ * It is mounted at the same base path, ahead of this router, so that the
+ * provider's redirect resolves before `requireAuth` can challenge it.
  */
-export const oauthCallbackRouter: Router = Router();
-
-/**
- * Where the browser is sent afterwards.
- *
- * The result is carried as query parameters, never the code or the token. A
- * failure sends the operator back to the same screen with the provider's own
- * message rather than to a dead end.
- */
-function callbackRedirect(outcome: { ok: true; integrationId: string } | { ok: false; reason: string }): string {
-  const url = new URL('/app/integrations', env.APP_URL);
-  if (outcome.ok) {
-    url.searchParams.set('connected', 'meta');
-    url.searchParams.set('integration', outcome.integrationId);
-  } else {
-    url.searchParams.set('error', outcome.reason.slice(0, 300));
-  }
-  return url.toString();
-}
-
-oauthCallbackRouter.get(
-  '/meta/callback',
-  validateQuery(
-    z.object({
-      // Meta sends either (code, state) or its own error triple.
-      code: z.string().min(1).max(2000).optional(),
-      state: z.string().min(1).max(200).optional(),
-      error: z.string().max(200).optional(),
-      error_reason: z.string().max(200).optional(),
-      error_description: z.string().max(500).optional(),
-    }),
-  ),
-  asyncHandler(async (req, res) => {
-    const query = req.query as {
-      code?: string; state?: string; error?: string; error_description?: string;
-    };
-
-    // The operator pressed Cancel on Meta's dialog. Not an error worth a 500.
-    if (query.error) {
-      res.redirect(callbackRedirect({ ok: false, reason: query.error_description ?? query.error }));
-      return;
-    }
-    if (!query.code || !query.state) {
-      res.redirect(callbackRedirect({ ok: false, reason: 'Meta returned no authorization code' }));
-      return;
-    }
-
-    try {
-      const result = await completeCallback({
-        platform: Platform.FACEBOOK,
-        state: query.state,
-        code: query.code,
-        fetchImpl: fetch as unknown as Parameters<typeof completeCallback>[0]['fetchImpl'],
-      });
-      res.redirect(callbackRedirect({ ok: true, integrationId: result.integrationId }));
-    } catch (error) {
-      // completeCallback has already parked the integration in ERROR with the
-      // reason. Provider messages never carry the code or the token.
-      res.redirect(callbackRedirect({ ok: false, reason: (error as Error).message }));
-    }
-  }),
-);
 
 export const integrationsRouter: Router = Router();
 integrationsRouter.use(requireAuth);
@@ -477,7 +407,17 @@ integrationsRouter.post(
 
     await prisma.integration.update({
       where: { id: existing.id },
-      data: { status: IntegrationStatus.DISCONNECTED, credentials: Prisma.DbNull, accountName: null, accountId: null, lastError: null },
+      data: {
+        status: IntegrationStatus.DISCONNECTED,
+        credentials: Prisma.DbNull,
+        accountName: null,
+        accountId: null,
+        lastError: null,
+        accessTokenEnc: null,
+        refreshTokenEnc: null,
+        tokenExpiresAt: null,
+        tokenFingerprint: null,
+      },
     });
 
     await recordAudit({ actor, action: 'integration.disconnect', entity: 'Integration', entityId: existing.id, ip: req.ip });
