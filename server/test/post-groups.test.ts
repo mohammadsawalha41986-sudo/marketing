@@ -18,6 +18,9 @@ import { PlatformPostStatus, Platform, PostGroupStatus } from '@prisma/client';
 
 import { agent, createTenant, prisma, resetDatabase, type Tenant } from './helpers.js';
 import { deriveGroupStatus } from '../src/services/social/state.js';
+import { publishPlatformPost, refreshGroupStatus } from '../src/services/social/post-groups.js';
+import { socialTick } from '../src/services/publishing/scheduler.js';
+import { encryptSecret } from '../src/lib/crypto.js';
 
 describe('multi-platform posts', () => {
   let tenant: Tenant;
@@ -286,5 +289,162 @@ describe('multi-platform posts', () => {
     // The new architecture is additive. A change here means something migrated
     // that nobody asked to migrate.
     expect(await prisma.content.count()).toBe(before);
+  });
+});
+
+/**
+ * Scheduling and publishing on the multi-platform path.
+ *
+ * Same rule as the single-platform pipeline: PUBLISHED is reachable only via a
+ * provider's post id, and a scheduled time arriving is not evidence of anything.
+ */
+describe('multi-platform scheduling and publishing', () => {
+  let tenant: Tenant;
+  const PAGE_ID = '1220219831177035';
+
+  beforeAll(async () => {
+    await resetDatabase();
+    tenant = await createTenant('social-publish');
+    process.env.TOKEN_ENCRYPTION_KEY = 'Zm9yLXRlc3Rpbmctb25seS0zMi1ieXRlLWtleS0hIQ==';
+  });
+
+  beforeEach(async () => {
+    await prisma.postGroup.deleteMany({ where: { clientId: tenant.clientId } });
+    await prisma.integrationAccount.deleteMany({ where: { clientId: tenant.clientId } });
+    await prisma.integration.deleteMany({ where: { clientId: tenant.clientId } });
+  });
+
+  const connectPage = async () => {
+    const integration = await prisma.integration.create({
+      data: {
+        organizationId: tenant.organizationId,
+        clientId: tenant.clientId,
+        platform: Platform.FACEBOOK,
+        status: 'CONNECTED',
+      },
+    });
+    return prisma.integrationAccount.create({
+      data: {
+        integrationId: integration.id,
+        clientId: tenant.clientId,
+        kind: 'PAGE',
+        externalId: PAGE_ID,
+        name: 'PawEase',
+        selected: true,
+        accessTokenEnc: encryptSecret('page-token'),
+        tokenStatus: 'TOKEN_VALID',
+      },
+    });
+  };
+
+  const respond = (body: unknown, status = 200) => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      calls.push(url);
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      };
+    }) as never;
+    return { fetchImpl, calls };
+  };
+
+  const approvedPost = async (scheduledAt?: Date) => {
+    const account = await connectPage();
+    const group = await prisma.postGroup.create({
+      data: {
+        organizationId: tenant.organizationId,
+        clientId: tenant.clientId,
+        name: 'Publishable',
+        posts: {
+          create: [{
+            platform: Platform.FACEBOOK,
+            integrationAccountId: account.id,
+            caption: 'Less mess, happier dog.',
+            status: scheduledAt ? PlatformPostStatus.SCHEDULED : PlatformPostStatus.QUEUED,
+            scheduledAt: scheduledAt ?? null,
+          }],
+        },
+      },
+      include: { posts: true },
+    });
+    return { group, post: group.posts[0]! };
+  };
+
+  it('publishes and stores the provider id', async () => {
+    const { post } = await approvedPost();
+    const { fetchImpl, calls } = respond({ id: `${PAGE_ID}_555` });
+
+    const result = await publishPlatformPost({ prisma, platformPostId: post.id, fetchImpl });
+
+    expect(result.published).toBe(true);
+    expect(result.externalPostId).toBe(`${PAGE_ID}_555`);
+    expect(calls[0]).toContain(`/${PAGE_ID}/feed`);
+
+    const after = await prisma.platformPost.findUniqueOrThrow({ where: { id: post.id } });
+    expect(after.status).toBe(PlatformPostStatus.PUBLISHED);
+    expect(after.publishedAt).toBeTruthy();
+  });
+
+  it('never becomes published when the provider refuses', async () => {
+    const { post } = await approvedPost();
+    const { fetchImpl } = respond(
+      { error: { message: 'requires pages_manage_posts', type: 'OAuthException', code: 200 } }, 403,
+    );
+
+    const result = await publishPlatformPost({ prisma, platformPostId: post.id, fetchImpl });
+
+    expect(result.published).toBe(false);
+    const after = await prisma.platformPost.findUniqueOrThrow({ where: { id: post.id } });
+    expect(after.status).toBe(PlatformPostStatus.FAILED);
+    expect(after.externalPostId).toBeNull();
+    expect(after.errorMessage).toMatch(/pages_manage_posts/);
+  });
+
+  it('never publishes twice however often the worker runs', async () => {
+    const { post } = await approvedPost();
+    const { fetchImpl, calls } = respond({ id: `${PAGE_ID}_once` });
+
+    await publishPlatformPost({ prisma, platformPostId: post.id, fetchImpl });
+    await publishPlatformPost({ prisma, platformPostId: post.id, fetchImpl });
+    await publishPlatformPost({ prisma, platformPostId: post.id, fetchImpl });
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('the scheduler queues a due post without publishing it', async () => {
+    const { post } = await approvedPost(new Date(Date.now() - 60_000));
+    const { fetchImpl } = respond({ id: 'should-not-be-used' });
+
+    // Only the sweep half: queued, not published.
+    const report = await socialTick({ prisma, fetchImpl, limit: 0 });
+    expect(report.published).toHaveLength(0);
+
+    const swept = await socialTick({ prisma, fetchImpl: respond({ id: `${PAGE_ID}_sched` }).fetchImpl });
+    expect(swept.queued.concat(swept.published)).toContain(post.id);
+  });
+
+  it('the group reports partially published when one platform fails', async () => {
+    const account = await connectPage();
+    const group = await prisma.postGroup.create({
+      data: {
+        organizationId: tenant.organizationId,
+        clientId: tenant.clientId,
+        name: 'Mixed',
+        posts: {
+          create: [
+            { platform: Platform.FACEBOOK, integrationAccountId: account.id, caption: 'a', status: PlatformPostStatus.PUBLISHED, externalPostId: 'x' },
+            { platform: Platform.TIKTOK, caption: 'b', status: PlatformPostStatus.FAILED },
+          ],
+        },
+      },
+    });
+
+    await refreshGroupStatus(prisma, group.id);
+
+    const after = await prisma.postGroup.findUniqueOrThrow({ where: { id: group.id } });
+    expect(after.status).toBe(PostGroupStatus.PARTIALLY_PUBLISHED);
   });
 });

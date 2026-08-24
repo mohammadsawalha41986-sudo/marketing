@@ -25,6 +25,7 @@ import { recordAudit } from '../services/audit.js';
 import {
   SocialError, createGroup, publishPlatformPost, transition, transitionGroup, updatePlatformPost,
 } from '../services/social/post-groups.js';
+import { overall, validateMediaForPlatform } from '../services/social/media-rules.js';
 
 export const socialRouter: Router = Router();
 socialRouter.use(requireAuth);
@@ -263,6 +264,78 @@ const PUBLISHABLE_FROM = new Set<PlatformPostStatus>([
   PlatformPostStatus.QUEUED,
   PlatformPostStatus.FAILED,
 ]);
+
+/**
+ * Whether this platform's version could publish, and what is stopping it.
+ *
+ * Asked by the composer before it offers the button, so a Reel with a landscape
+ * video is caught while someone is looking at it rather than at 7pm on a
+ * Saturday when the platform refuses it.
+ */
+socialRouter.get(
+  '/platform-posts/:id/readiness',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+
+    const post = await prisma.platformPost.findFirst({
+      where: { id: req.params.id, postGroup: { organizationId: orgId(actor) } },
+      select: {
+        platform: true, caption: true, headline: true, config: true,
+        integrationAccount: { select: { name: true, tokenStatus: true, accessTokenEnc: true } },
+        media: {
+          orderBy: { position: 'asc' },
+          select: {
+            media: {
+              select: {
+                id: true, originalName: true, type: true, mimeType: true,
+                sizeBytes: true, width: true, height: true, durationSeconds: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!post) throw notFound('Post');
+
+    const problems: Array<{ level: string; message: string }> = [];
+
+    if (!post.integrationAccount) {
+      problems.push({
+        level: 'INCOMPATIBLE',
+        message: `No ${post.platform} account is attached. Connect one under Integrations.`,
+      });
+    } else if (!post.integrationAccount.accessTokenEnc) {
+      problems.push({
+        level: 'INCOMPATIBLE',
+        message: `${post.integrationAccount.name} has no usable publishing token. Reconnect it.`,
+      });
+    }
+
+    if (!post.caption?.trim() && !post.headline?.trim()) {
+      problems.push({ level: 'INCOMPATIBLE', message: 'The post has no text.' });
+    }
+
+    const surface = typeof (post.config as Record<string, unknown>)?.mediaType === 'string'
+      ? String((post.config as Record<string, unknown>).mediaType)
+      : undefined;
+
+    const media = post.media.map((link) => ({
+      mediaId: link.media.id,
+      filename: link.media.originalName,
+      findings: validateMediaForPlatform(link.media, post.platform, surface),
+    }));
+
+    for (const row of media) problems.push(...row.findings);
+
+    res.json({
+      ready: !problems.some((problem) => problem.level === 'INCOMPATIBLE'),
+      compatibility: overall(problems as Array<{ level: 'OK' | 'WARNING' | 'INCOMPATIBLE'; message: string }>),
+      problems,
+      media,
+    });
+  }),
+);
 
 /**
  * The workflow verbs.
