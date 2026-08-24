@@ -82,6 +82,11 @@ enum Platform {
   GOOGLE_BUSINESS
   X
   LINKEDIN
+
+  /// Appended, never inserted. PostgreSQL enum values are ordered by definition
+  /// and existing rows hold the values above; adding in the middle would rewrite
+  /// their ordering.
+  YOUTUBE
 }
 
 /// Campaign objectives.
@@ -337,6 +342,7 @@ model Organization {
   creativePerformance CreativePerformance[]
   recommendations AiRecommendation[]
   automationSettings AutomationSettings[]
+  postGroups PostGroup[]
 }
 
 model User {
@@ -369,6 +375,7 @@ model User {
   @@index([organizationId])
   @@index([clientId])
   @@index([role])
+  postGroupsCreated PostGroup[] @relation("PostGroupAuthor")
 }
 
 model Session {
@@ -441,6 +448,7 @@ model Client {
   @@unique([organizationId, name])
   @@index([organizationId])
   @@index([status])
+  postGroups PostGroup[]
 }
 
 /// Brand DNA — the bounded context handed to the AI service on every generation.
@@ -555,6 +563,7 @@ model Media {
   /// Duplicate detection is per tenant: two organizations uploading the same
   /// stock photo is not a duplicate, it is two businesses using one photo.
   @@index([organizationId, sha256])
+  platformPostLinks PlatformPostMedia[]
 }
 
 /// A rendered post creative: the finished artwork, not the photograph it was
@@ -686,6 +695,7 @@ model Campaign {
   @@index([clientId])
   @@index([status])
   @@index([startDate, endDate])
+  postGroups PostGroup[]
 }
 
 /// One line of campaign cost.
@@ -1272,6 +1282,7 @@ model IntegrationAccount {
   /// Re-running discovery must update rows, never duplicate them.
   @@unique([integrationId, kind, externalId])
   @@index([clientId])
+  platformPosts PlatformPost[]
 }
 
 /// One OAuth authorization attempt.
@@ -1698,4 +1709,165 @@ model PublishingAttempt {
   job PublishingJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
   @@index([jobId])
+}
+
+// ------------------------------------------------------------ multi-platform posts
+//
+// Built alongside `Content`, not on top of it.
+//
+// `Content` is single-platform: one row carries one `platform`, so "the same
+// campaign on Facebook and Instagram" can only be expressed as two unrelated
+// rows that nothing joins. That model is in production, holds the
+// real-world-verified PawEase publication, and is left exactly as it is —
+// nothing here migrates it, and both paths run side by side until the new one
+// has earned the traffic.
+//
+// The shape the new one adds is a group with per-platform children, because
+// what an agency actually writes is one idea in six different voices: the
+// Facebook version is longer, the Instagram version leads with the image, the
+// TikTok version opens with a hook. A design that copies one caption everywhere
+// is the thing this exists to stop.
+
+/// The lifecycle of a group, which is a summary of its children.
+///
+/// PARTIALLY_PUBLISHED is the state that makes multi-platform honest: Facebook
+/// succeeding and TikTok failing is neither PUBLISHED nor FAILED, and calling it
+/// either one loses the half that matters.
+enum PostGroupStatus {
+  DRAFT
+  IN_REVIEW
+  CHANGES_REQUESTED
+  APPROVED
+  SCHEDULED
+  PUBLISHING
+  PARTIALLY_PUBLISHED
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+/// The lifecycle of one platform's version of a post.
+///
+/// Deliberately its own enum rather than a reuse of ContentStatus: that one
+/// carries a legacy FAILED value kept only because PostgreSQL cannot drop enum
+/// values, and a new table has no reason to inherit it.
+enum PlatformPostStatus {
+  DRAFT
+  IN_REVIEW
+  CHANGES_REQUESTED
+  APPROVED
+  SCHEDULED
+  QUEUED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+/// One idea, published across several platforms.
+model PostGroup {
+  id             String          @id @default(cuid())
+  organizationId String
+  clientId       String
+  campaignId     String?
+  name           String
+  description    String?
+  status         PostGroupStatus @default(DRAFT)
+  createdById    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  createdBy    User?        @relation("PostGroupAuthor", fields: [createdById], references: [id], onDelete: SetNull)
+
+  posts PlatformPost[]
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([campaignId])
+  @@index([status])
+}
+
+/// One platform's version of a post: its own words, media, schedule and fate.
+model PlatformPost {
+  id          String   @id @default(cuid())
+  postGroupId String
+  platform    Platform
+
+  /// The account this publishes to — the Page, the IG professional account, the
+  /// channel. Nullable until the operator picks one, which is also what makes
+  /// "this platform is not connected yet" expressible.
+  integrationAccountId String?
+
+  caption  String?
+  /// Platforms that separate a title from the body use this; the rest ignore it.
+  headline String?
+  hashtags String[] @default([])
+  linkUrl  String?
+  ctaLabel String?
+
+  /**
+   * Provider-specific settings that only one platform understands: Instagram's
+   * media type, TikTok's privacy level, YouTube's visibility, Google Business's
+   * post type and dates.
+   *
+   * JSON rather than thirty nullable columns, because the alternative is a table
+   * whose shape changes every time a provider adds a field. Never credentials —
+   * those live encrypted on IntegrationAccount and nowhere else.
+   */
+  config Json @default("{}")
+
+  status      PlatformPostStatus @default(DRAFT)
+  scheduledAt DateTime?
+  timezone    String             @default("Asia/Riyadh")
+
+  /// The provider's own id and link. Never ours, never synthesised.
+  externalPostId String?
+  externalUrl    String?
+  publishedAt    DateTime?
+
+  attemptCount  Int       @default(0)
+  lastAttemptAt DateTime?
+  nextRetryAt   DateTime?
+  errorCode     String?
+  errorMessage  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  postGroup          PostGroup           @relation(fields: [postGroupId], references: [id], onDelete: Cascade)
+  integrationAccount IntegrationAccount? @relation(fields: [integrationAccountId], references: [id], onDelete: SetNull)
+  media              PlatformPostMedia[]
+
+  /// One version per platform per group. Two Facebook versions of the same idea
+  /// is not a feature, it is a double post.
+  @@unique([postGroupId, platform])
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([nextRetryAt])
+}
+
+/// The media attached to one platform's version, in publication order.
+///
+/// Points at the existing Media table: there is one storage system and one
+/// upload path, and a second one would mean two places for a customer's
+/// creative to live and two ways for it to go missing.
+model PlatformPostMedia {
+  id             String @id @default(cuid())
+  platformPostId String
+  mediaId        String
+  position       Int    @default(0)
+  /// Per-platform role, where a platform distinguishes one: YouTube's thumbnail
+  /// against its video, for instance.
+  role           String?
+
+  platformPost PlatformPost @relation(fields: [platformPostId], references: [id], onDelete: Cascade)
+  media        Media        @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([platformPostId, mediaId, role])
+  @@index([platformPostId])
+  @@index([mediaId])
 }
