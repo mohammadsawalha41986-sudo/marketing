@@ -26,6 +26,8 @@ import { decryptSecret } from '../../lib/crypto.js';
 import { storage } from '../storage/index.js';
 import { readObject } from '../storage/objects.js';
 import { ProviderApiError, type FetchLike } from './meta.js';
+import { publishToGoogleAds, type GoogleAdsPublishInput } from './google-ads-flow.js';
+import { publishToTikTok, type TikTokAdsPublishInput } from './tiktok-ads-flow.js';
 import {
   adsManagerUrl,
   createAd,
@@ -327,5 +329,31 @@ export async function publishToMeta(input: PublishInput) {
         steps: steps as unknown as Prisma.InputJsonValue,
       },
     });
+  }
+}
+
+/**
+ * Platform-aware publish dispatcher.
+ *
+ * Routes to the correct flow based on the publication's platform. Meta
+ * remains the default for FACEBOOK/INSTAGRAM; Google Ads and TikTok now
+ * have their own flows.
+ */
+export async function publishAd(input: PublishInput) {
+  const publication = await prisma.adPublication.findFirst({
+    where: { id: input.publicationId, organizationId: input.organizationId },
+    select: { platform: true },
+  });
+  if (!publication) throw notFound('Publication');
+
+  switch (publication.platform) {
+    case Platform.GOOGLE_ADS:
+      return publishToGoogleAds(input as unknown as GoogleAdsPublishInput);
+    case Platform.TIKTOK:
+      return publishToTikTok(input as unknown as TikTokAdsPublishInput);
+    case Platform.FACEBOOK:
+    case Platform.INSTAGRAM:
+    default:
+      return publishToMeta(input);
   }
 }

@@ -26,7 +26,7 @@ import { validateBody, validateParams, validateQuery } from '../middleware/valid
 import { idParam } from '../lib/http.js';
 import { assertWritable, orgId, scopeWhere } from '../lib/scope.js';
 import { recordAudit } from '../services/audit.js';
-import { publishToMeta } from '../services/integrations/publish-flow.js';
+import { publishAd, publishToMeta } from '../services/integrations/publish-flow.js';
 import { preflight } from '../services/campaign/preflight.js';
 import { storage } from '../services/storage/index.js';
 
@@ -282,7 +282,7 @@ publicationsRouter.post(
     const actor = actorOf(req);
     assertWritable(actor);
 
-    const publication = await publishToMeta({
+    const publication = await publishAd({
       publicationId: req.params.id as string,
       organizationId: orgId(actor),
       fetchImpl: fetch as unknown as Parameters<typeof publishToMeta>[0]['fetchImpl'],

@@ -26,6 +26,7 @@ import {
   SocialError, createGroup, publishPlatformPost, transition, transitionGroup, updatePlatformPost,
 } from '../services/social/post-groups.js';
 import { overall, validateMediaForPlatform } from '../services/social/media-rules.js';
+import { postGroupAnalytics, socialOverview } from '../services/social/analytics.js';
 
 export const socialRouter: Router = Router();
 socialRouter.use(requireAuth);
@@ -564,5 +565,33 @@ socialRouter.delete(
     });
 
     res.json({ ok: true });
+  }),
+);
+
+socialRouter.get(
+  '/analytics/overview',
+  validateQuery(z.object({
+    clientId: z.string().max(40).optional(),
+    from: z.coerce.date().optional(),
+    to: z.coerce.date().optional(),
+  })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const query = req.query as unknown as { clientId?: string; from?: Date; to?: Date };
+    const clientId = resolveClientId(actor, query.clientId);
+
+    const overview = await socialOverview(orgId(actor), clientId ?? undefined, query.from, query.to);
+    res.json(overview);
+  }),
+);
+
+socialRouter.get(
+  '/post-groups/:id/analytics',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const analytics = await postGroupAnalytics((req.params as { id: string }).id, orgId(actor));
+    if (!analytics) throw notFound('Post group');
+    res.json(analytics);
   }),
 );

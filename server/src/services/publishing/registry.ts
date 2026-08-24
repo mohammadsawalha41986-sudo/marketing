@@ -15,8 +15,10 @@ import { Platform } from '@prisma/client';
 
 import type { PlatformPublisher, PublishRequest, PublishResult } from './contract.js';
 import { facebookPublisher } from './facebook.js';
+import { googleBusinessPublisher } from './google-business.js';
 import { instagramPublisher } from './instagram.js';
 import { linkedInPublisher } from './linkedin.js';
+import { youtubePublisher } from './youtube.js';
 
 /** A publisher that refuses, and says why, for a platform with no adapter yet. */
 function notImplemented(platform: Platform, label: string): PlatformPublisher {
@@ -51,6 +53,8 @@ const PUBLISHERS: Partial<Record<Platform, PlatformPublisher>> = {
   // Text posting implemented against the real /rest/posts API; image posting
   // and the w_organization_social approval are the outstanding work.
   [Platform.LINKEDIN]: linkedInPublisher,
+  [Platform.GOOGLE_BUSINESS]: googleBusinessPublisher,
+  [Platform.YOUTUBE]: youtubePublisher,
   [Platform.X]: notImplemented(Platform.X, 'X'),
 };
 
