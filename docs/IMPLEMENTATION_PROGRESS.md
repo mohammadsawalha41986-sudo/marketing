@@ -75,39 +75,79 @@ is untouched.
 
 ---
 
+## Phase 3 — Composer ✅
+
+`/app/social` (list + create) and `/app/social/:id` (editor). Platform strip
+where each tab edits its own `PlatformPost` via `PATCH /platform-posts/:id`.
+Three columns at desktop, two at tablet, tabs on mobile. Edits are local until
+saved; the seed effect is keyed on post id so a refetch cannot wipe unsaved work.
+`Platform.YOUTUBE` propagated to the frontend type.
+
+## Phase 4 — Platform previews ✅
+
+`web/src/components/platform-previews.tsx` — 8 components: Facebook, Instagram
+Feed/Carousel/Reel, TikTok, YouTube, LinkedIn, Google Business. `PlatformPreview`
+dispatches by platform + variant; an unknown platform says so rather than
+borrowing Facebook's chrome.
+
+## Phase 5 — Media validation ✅ (library UI pending)
+
+`services/social/media-rules.ts` — per platform *and surface*, since an
+Instagram feed post and a Reel disagree about orientation. Returns findings, not
+a boolean: WARNING (will be cropped) and INCOMPATIBLE (will be refused) need
+different words. `GET /platform-posts/:id/readiness` exposes it. 11 tests.
+Still to do: the `/social/library` browse UI, folders and tags.
+
+## Phase 6 — Content calendar ✅
+
+`/app/social/calendar`. `GET /api/social/calendar` returns platform posts in a
+window (unit = one platform post, not a group). Month grid with drag-to-reschedule
+(moves the day, keeps the time), week/day columns, and a list view. Reschedule
+refuses anything already published.
+
+## Phase 8 — Scheduler ✅
+
+`socialTick()` runs alongside the Content sweep each 60s tick: due SCHEDULED →
+QUEUED, then QUEUED → publish, bounded retries, DB-checked idempotency.
+
+## Phase 9 — Facebook bridge ✅
+
+`publishPlatformPost` reaches the verified `facebookPublisher` through the
+registry. No new OAuth or credential store.
+
+## Phase 10 — Instagram ⚠️ READY — EXTERNAL APPROVAL REQUIRED
+
+Real two-step container/publish adapter (`instagram.ts`), registered as a live
+publisher. Blocked on two things no code can grant: App Review for
+`instagram_content_publish`, and a public delivery URL for media (the adapter
+refuses INVALID_MEDIA rather than hand Meta an authenticated link). 6 tests.
+`PublishMedia.publicUrl` added for URL-based providers.
+
 ## Remaining phases
 
 | Phase | Scope | State |
 |---|---|---|
-| 3 | Composer `/social/create` — platform tabs, 3-column responsive | Not started |
-| 4 | 8 platform-specific preview components | Not started |
-| 5 | Media library `/social/library`, `validateMediaForPlatform()` | Not started |
-| 6 | Calendar — LIST view, richer cards, filters | Partly exists |
-| 7 | Approval workflow across PlatformPost | Backend done in Phase 2 |
-| 8 | Scheduler/worker over PlatformPost | Single-platform version exists |
-| 9 | Facebook bridge | Done — reuses verified publisher |
-| 10 | Instagram | Not started — needs App Review |
-| 11 | TikTok | Not started — needs App Review |
+| 5b | `/social/library` browse UI, folders, tags | Not started |
+| 11 | TikTok — resumable video upload | Not started — API audit |
 | 12 | YouTube / LinkedIn / Google Business | Not started |
 | 13 | Meta Ads / Google Ads / TikTok Ads | Not started |
-| 14 | Analytics | Partly exists |
+| 14 | Analytics over PlatformPost | Partly exists |
 | 15 | Report builder | Partly exists |
 
-## External blockers
+## Provider status
 
-Not fixable in code — they need approvals from the platforms:
-
-- **Instagram** — content publishing needs App Review on the Meta app
-- **TikTok** — content posting API needs audit and approval
-- **YouTube** — OAuth verification for upload scope
-- **LinkedIn** — Community Management API access
-- **Google Business** — API access request
-
-The pattern for each: build OAuth, discovery, selection, permission validation,
-the adapter and mocked tests, then mark **READY — EXTERNAL APPROVAL REQUIRED**
-rather than claiming a working integration.
+| Provider | Status |
+|---|---|
+| Facebook | **PASS** — real-world verified |
+| Instagram | **READY — EXTERNAL APPROVAL REQUIRED** (App Review + public media) |
+| TikTok | NOT IMPLEMENTED — API audit |
+| YouTube | NOT IMPLEMENTED |
+| LinkedIn | **READY — EXTERNAL APPROVAL REQUIRED** (w_organization_social; text only) |
+| Google Business | NOT IMPLEMENTED |
+| Meta/Google/TikTok Ads | NOT IMPLEMENTED |
 
 ## Next exact action
 
-Phase 3 — the composer at `/social/create`, wired to `POST /api/social/post-groups`,
-with platform tabs editing one `PlatformPost` each.
+Phase 12 continues — Google Business (`localPosts` API, text + image, no video)
+and YouTube; then Phase 13 (Ads hubs) and Phase 14 (analytics over PlatformPost).
+Composer now surfaces the media/readiness check inline, closing Phase 5's UI.

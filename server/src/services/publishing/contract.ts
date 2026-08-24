@@ -90,6 +90,16 @@ export interface PublishMedia {
   data: Buffer;
   mimeType: string;
   filename: string;
+  /**
+   * A public, un-authenticated URL for the same bytes, when one exists.
+   *
+   * Facebook takes the bytes directly, so it never needs this. Instagram's
+   * Content Publishing API is URL-only: it hands Meta a link and Meta fetches
+   * it, which cannot be an authenticated endpoint. A publisher that needs a
+   * public URL and does not get one must refuse with INVALID_MEDIA rather than
+   * publish something Meta will fail to fetch.
+   */
+  publicUrl?: string | null;
 }
 
 /** Everything a publisher needs, with nothing about how it was stored. */

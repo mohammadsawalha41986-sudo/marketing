@@ -88,7 +88,7 @@ export type Role = 'SUPER_ADMIN' | 'AGENCY_ADMIN' | 'AGENCY_STAFF' | 'CLIENT_ADM
 export type Language = 'AR' | 'EN';
 export type Platform =
   | 'FACEBOOK' | 'INSTAGRAM' | 'TIKTOK' | 'SNAPCHAT'
-  | 'GOOGLE_ADS' | 'GOOGLE_BUSINESS' | 'X' | 'LINKEDIN';
+  | 'GOOGLE_ADS' | 'GOOGLE_BUSINESS' | 'X' | 'LINKEDIN' | 'YOUTUBE';
 export type CampaignStatus = 'DRAFT' | 'SCHEDULED' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'CANCELLED';
 export type ContentStatus =
   | 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED'

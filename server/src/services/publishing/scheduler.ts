@@ -23,10 +23,11 @@
  * once there is more than one publisher process.
  */
 
-import { ContentStatus, PublishingJobStatus, type PrismaClient } from '@prisma/client';
+import { ContentStatus, PlatformPostStatus, PublishingJobStatus, type PrismaClient } from '@prisma/client';
 
 import type { FetchLike } from './contract.js';
 import { enqueue, runJob } from './service.js';
+import { publishPlatformPost, refreshGroupStatus } from '../social/post-groups.js';
 
 /** How many due posts one pass will take on. Keeps a backlog from stalling the tick. */
 const BATCH = 10;
@@ -141,8 +142,72 @@ export async function publishingTick(input: {
   prisma: PrismaClient;
   fetchImpl: FetchLike;
   now?: Date;
-}): Promise<{ sweep: SweepReport; drain: DrainReport }> {
+}): Promise<{ sweep: SweepReport; drain: DrainReport; social: SocialTickReport }> {
   const sweep = await sweepDue({ prisma: input.prisma, now: input.now });
   const drain = await drainQueue({ prisma: input.prisma, fetchImpl: input.fetchImpl, now: input.now });
-  return { sweep, drain };
+  const social = await socialTick(input);
+  return { sweep, drain, social };
+}
+
+export interface SocialTickReport {
+  queued: string[];
+  published: string[];
+  failed: string[];
+}
+
+/**
+ * The same two passes over the multi-platform path.
+ *
+ * Separate from the Content sweep rather than merged with it, because the two
+ * models have different tables and different status enums, and a single query
+ * that tried to cover both would be a union that reads worse than two clear
+ * loops. They share the tick, not the code.
+ */
+export async function socialTick(input: {
+  prisma: PrismaClient;
+  fetchImpl: FetchLike;
+  now?: Date;
+  limit?: number;
+}): Promise<SocialTickReport> {
+  const { prisma, fetchImpl } = input;
+  const now = input.now ?? new Date();
+  const take = input.limit ?? BATCH;
+
+  const report: SocialTickReport = { queued: [], published: [], failed: [] };
+
+  // Due and scheduled → queued. The arrival of a time is not a publication.
+  const due = await prisma.platformPost.findMany({
+    where: { status: PlatformPostStatus.SCHEDULED, scheduledAt: { lte: now } },
+    orderBy: { scheduledAt: 'asc' },
+    take,
+    select: { id: true, postGroupId: true },
+  });
+
+  for (const post of due) {
+    await prisma.platformPost.update({
+      where: { id: post.id },
+      data: { status: PlatformPostStatus.QUEUED },
+    });
+    await refreshGroupStatus(prisma, post.postGroupId);
+    report.queued.push(post.id);
+  }
+
+  // Queued and not backing off → publish.
+  const ready = await prisma.platformPost.findMany({
+    where: {
+      status: PlatformPostStatus.QUEUED,
+      OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+    },
+    orderBy: { createdAt: 'asc' },
+    take,
+    select: { id: true },
+  });
+
+  for (const post of ready) {
+    const result = await publishPlatformPost({ prisma, platformPostId: post.id, fetchImpl, now });
+    if (result.published) report.published.push(post.id);
+    else report.failed.push(post.id);
+  }
+
+  return report;
 }
