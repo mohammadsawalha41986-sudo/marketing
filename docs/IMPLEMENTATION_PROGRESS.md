@@ -3,8 +3,8 @@
 Checkpoint for the multi-phase social agency build. Updated at the end of each
 phase so work can resume from here rather than restarting.
 
-**Current phase:** 2 complete → 3 next
-**Baseline at start:** 512 tests · **Now:** 527 tests
+**Current phase:** 12 complete → 13 next
+**Baseline at start:** 512 tests · **Now:** 572 tests
 
 ---
 
@@ -123,13 +123,30 @@ publisher. Blocked on two things no code can grant: App Review for
 refuses INVALID_MEDIA rather than hand Meta an authenticated link). 6 tests.
 `PublishMedia.publicUrl` added for URL-based providers.
 
+## Phase 12 — LinkedIn / Google Business / YouTube ✅
+
+**LinkedIn** — text posting via `/rest/posts` API with org URN author. Image
+posting deferred (three-call dance). `canPublish: true`, gated on
+`w_organization_social` approval. 5 tests.
+
+**Google Business** — `localPosts` API adapter supporting UPDATE (text + image),
+OFFER (coupon code + redemption URL), and EVENT (title + date range) post types.
+Image via `publicUrl` (Google fetches it). Config passed through
+`PlatformPost.config`. Gated on `business.manage` OAuth scope. 10 tests.
+
+**YouTube** — resumable upload via YouTube Data API v3: init with metadata
+(`snippet` + `status`), then PUT video bytes. Supports title, description, tags,
+privacy status, madeForKids via config. Refuses text-only posts honestly (no
+community post API). Gated on `youtube.upload` scope. 8 tests.
+
+All three registered in the publisher registry with `canPublish: true`.
+
 ## Remaining phases
 
 | Phase | Scope | State |
 |---|---|---|
 | 5b | `/social/library` browse UI, folders, tags | Not started |
 | 11 | TikTok — resumable video upload | Not started — API audit |
-| 12 | YouTube / LinkedIn / Google Business | Not started |
 | 13 | Meta Ads / Google Ads / TikTok Ads | Not started |
 | 14 | Analytics over PlatformPost | Partly exists |
 | 15 | Report builder | Partly exists |
@@ -141,13 +158,12 @@ refuses INVALID_MEDIA rather than hand Meta an authenticated link). 6 tests.
 | Facebook | **PASS** — real-world verified |
 | Instagram | **READY — EXTERNAL APPROVAL REQUIRED** (App Review + public media) |
 | TikTok | NOT IMPLEMENTED — API audit |
-| YouTube | NOT IMPLEMENTED |
+| YouTube | **READY — EXTERNAL APPROVAL REQUIRED** (youtube.upload scope; video only) |
 | LinkedIn | **READY — EXTERNAL APPROVAL REQUIRED** (w_organization_social; text only) |
-| Google Business | NOT IMPLEMENTED |
+| Google Business | **READY — EXTERNAL APPROVAL REQUIRED** (business.manage scope) |
 | Meta/Google/TikTok Ads | NOT IMPLEMENTED |
 
 ## Next exact action
 
-Phase 12 continues — Google Business (`localPosts` API, text + image, no video)
-and YouTube; then Phase 13 (Ads hubs) and Phase 14 (analytics over PlatformPost).
-Composer now surfaces the media/readiness check inline, closing Phase 5's UI.
+Phase 13 — Ads Hubs (Meta Ads / Google Ads / TikTok Ads), kept separate from
+organic publishing. Then Phase 14 (analytics over PlatformPost).
