@@ -3,8 +3,8 @@
 Checkpoint for the multi-phase social agency build. Updated at the end of each
 phase so work can resume from here rather than restarting.
 
-**Current phase:** 12 complete → 13 next
-**Baseline at start:** 512 tests · **Now:** 572 tests
+**Current phase:** 14 complete → 5b next
+**Baseline at start:** 512 tests · **Now:** 582 tests
 
 ---
 
@@ -141,14 +141,68 @@ community post API). Gated on `youtube.upload` scope. 8 tests.
 
 All three registered in the publisher registry with `canPublish: true`.
 
+## Phase 13 — Ads Hubs ✅
+
+Paid ads kept separate from organic publishing. Each platform adapter creates
+campaigns/ad-groups/ads via its own REST API; all created paused so nothing
+spends until the operator activates in the platform's native Ads Manager.
+
+**Google Ads** — `google-ads-publish.ts`: REST v17 API.
+`createGoogleAdsCampaign` (budget in micros + campaign, both PAUSED),
+`createGoogleAdsAdGroup`, `createGoogleAdsAd` (responsive search ad).
+`GoogleAdsApiError` for typed error handling. 6 tests.
+
+**TikTok Ads** — `tiktok-ads-publish.ts`: Business API v1.3.
+`createTikTokCampaign`, `createTikTokAdGroup`, `createTikTokAd`. All created
+with `operation_status: DISABLE` (TikTok's equivalent of PAUSED). 6 tests.
+
+**Orchestration** — `google-ads-flow.ts` and `tiktok-ads-flow.ts` mirror Meta's
+pattern: Integration lookup → decrypt token → campaign → ad group → ad → write
+provider IDs to AdPublication. Auth failure → REQUIRES_REAUTH.
+
+**Dispatcher** — `publishAd()` in `publish-flow.ts` routes by AdPublication
+platform: Meta (existing), Google Ads (new), TikTok (new). Publications endpoint
+updated to use the dispatcher.
+
+**Adapter honesty** — TikTokAdapter and GoogleAdsAdapter updated with
+`publish: 'IMPLEMENTED'` in their ImplementationReport.
+
+## Phase 14 — Analytics over PlatformPost ✅
+
+Organic post analytics with four-state metric distinction:
+- **ZERO** — fetched, platform said 0
+- **UNAVAILABLE** — platform does not report this metric for this post type
+- **NOT_FETCHED** — we have not asked the platform yet
+- **PROVIDER_ERROR** — we asked and the platform refused or failed
+
+**Service** — `social/analytics.ts`:
+- `METRICS_SUPPORTED` per-platform map (e.g. Instagram has saves, Facebook has clicks)
+- `metricState()` — determines the state for each metric
+- `buildMetrics()` — 8 metrics: likes, comments, shares, saves, reach, impressions, engagements, clicks
+- `postGroupAnalytics(postGroupId, organizationId)` — per-group analytics with engagement rate
+- `socialOverview(organizationId, clientId?, from?, to?)` — org-wide overview with platform breakdown and top posts
+
+**API routes** added to `/api/social`:
+| Method | Path |
+|---|---|
+| GET | `/analytics/overview` |
+| GET | `/post-groups/:id/analytics` |
+
+**Frontend** — `web/src/routes/social-analytics.tsx`:
+- 8 KPI cards (total posts, published, reach, impressions, likes, comments, shares, engagements)
+- Platform breakdown table (published count, engagements, reach, impressions per platform)
+- Top posts by engagement table with four-state metric display (— for unavailable, … for not fetched, ! for error)
+- Period selector (7/14/30/90 days)
+- Sidebar navigation link under Marketing group
+
+10 tests for metric state logic.
+
 ## Remaining phases
 
 | Phase | Scope | State |
 |---|---|---|
 | 5b | `/social/library` browse UI, folders, tags | Not started |
 | 11 | TikTok — resumable video upload | Not started — API audit |
-| 13 | Meta Ads / Google Ads / TikTok Ads | Not started |
-| 14 | Analytics over PlatformPost | Partly exists |
 | 15 | Report builder | Partly exists |
 
 ## Provider status
@@ -157,13 +211,15 @@ All three registered in the publisher registry with `canPublish: true`.
 |---|---|
 | Facebook | **PASS** — real-world verified |
 | Instagram | **READY — EXTERNAL APPROVAL REQUIRED** (App Review + public media) |
-| TikTok | NOT IMPLEMENTED — API audit |
+| TikTok | NOT IMPLEMENTED — API audit (organic); Ads: IMPLEMENTED |
 | YouTube | **READY — EXTERNAL APPROVAL REQUIRED** (youtube.upload scope; video only) |
 | LinkedIn | **READY — EXTERNAL APPROVAL REQUIRED** (w_organization_social; text only) |
 | Google Business | **READY — EXTERNAL APPROVAL REQUIRED** (business.manage scope) |
-| Meta/Google/TikTok Ads | NOT IMPLEMENTED |
+| Meta Ads | IMPLEMENTED (existing) |
+| Google Ads | IMPLEMENTED |
+| TikTok Ads | IMPLEMENTED |
 
 ## Next exact action
 
-Phase 13 — Ads Hubs (Meta Ads / Google Ads / TikTok Ads), kept separate from
-organic publishing. Then Phase 14 (analytics over PlatformPost).
+Phase 5b — `/social/library` browse UI with folders and tags. Then Phase 11
+(TikTok organic video upload). Then Phase 15 (report builder).

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  Award, Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, CreditCard, FileText, Gauge, Image,
+  Award, BarChart3, Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, CreditCard, FileText, Gauge, Image,
   LayoutDashboard, Languages, LogOut, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
   Rocket, Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Upload, Users, X, type LucideIcon, Share2,
 } from 'lucide-react';
@@ -69,6 +69,7 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
       { to: '/app/content', labelKey: 'nav.organicContent', icon: PenLine },
       { to: '/app/social', labelKey: 'nav.socialPosts', icon: Share2 },
       { to: '/app/social/calendar', labelKey: 'nav.socialCalendar', icon: CalendarDays },
+      { to: '/app/social/analytics', labelKey: 'nav.socialAnalytics', icon: BarChart3 },
     ],
   },
   {
