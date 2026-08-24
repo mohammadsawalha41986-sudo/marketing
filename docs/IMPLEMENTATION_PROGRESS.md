@@ -142,11 +142,12 @@ refuses INVALID_MEDIA rather than hand Meta an authenticated link). 6 tests.
 | Instagram | **READY — EXTERNAL APPROVAL REQUIRED** (App Review + public media) |
 | TikTok | NOT IMPLEMENTED — API audit |
 | YouTube | NOT IMPLEMENTED |
-| LinkedIn | NOT IMPLEMENTED |
+| LinkedIn | **READY — EXTERNAL APPROVAL REQUIRED** (w_organization_social; text only) |
 | Google Business | NOT IMPLEMENTED |
 | Meta/Google/TikTok Ads | NOT IMPLEMENTED |
 
 ## Next exact action
 
-Phase 12 — LinkedIn adapter (`/ugcPosts`, text + image), the same shape as
-Instagram: real adapter, mocked tests, READY — EXTERNAL APPROVAL REQUIRED.
+Phase 12 continues — Google Business (`localPosts` API, text + image, no video)
+and YouTube; then Phase 13 (Ads hubs) and Phase 14 (analytics over PlatformPost).
+Composer now surfaces the media/readiness check inline, closing Phase 5's UI.

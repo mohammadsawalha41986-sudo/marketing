@@ -313,6 +313,14 @@ export function SocialPostPage() {
     [group, activeId],
   );
 
+  // Whether this version could actually publish, from the server. Refetched by
+  // key so switching platform tabs asks about the right one.
+  const readiness = useQuery<{
+    ready: boolean;
+    compatibility: 'OK' | 'WARNING' | 'INCOMPATIBLE';
+    problems: Array<{ level: string; message: string }>;
+  }>(active ? `/social/platform-posts/${active.id}/readiness` : null, [active?.id, group?.updatedAt]);
+
   useEffect(() => {
     if (!active) return;
     setActiveId(active.id);
@@ -498,6 +506,26 @@ export function SocialPostPage() {
 
           <Card>
             <CardHeader title="Workflow" subtitle={`This ${humanize(active.platform)} version only.`} />
+
+            {/* What is stopping it, before the button rather than after. */}
+            {readiness.data && readiness.data.problems.length > 0 ? (
+              <div className="mx-4 mt-4 space-y-1.5">
+                {readiness.data.problems.map((problem, index) => (
+                  <p
+                    key={index}
+                    className={cn(
+                      'rounded-lg border p-2.5 text-[12px]',
+                      problem.level === 'INCOMPATIBLE'
+                        ? 'border-danger/25 bg-danger/10 text-fg'
+                        : 'border-warn/25 bg-warn/10 text-fg',
+                    )}
+                  >
+                    {problem.message}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+
             <div className="flex flex-wrap gap-2 p-4">
               <Button size="sm" variant="secondary" loading={busy} onClick={() => act('submit')}>Submit</Button>
               <Button size="sm" variant="secondary" loading={busy} onClick={() => act('approve')}>Approve</Button>
