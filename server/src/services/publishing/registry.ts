@@ -15,6 +15,7 @@ import { Platform } from '@prisma/client';
 
 import type { PlatformPublisher, PublishRequest, PublishResult } from './contract.js';
 import { facebookPublisher } from './facebook.js';
+import { instagramPublisher } from './instagram.js';
 
 /** A publisher that refuses, and says why, for a platform with no adapter yet. */
 function notImplemented(platform: Platform, label: string): PlatformPublisher {
@@ -40,10 +41,11 @@ function notImplemented(platform: Platform, label: string): PlatformPublisher {
 const PUBLISHERS: Partial<Record<Platform, PlatformPublisher>> = {
   [Platform.FACEBOOK]: facebookPublisher,
 
-  // Reserved, and honest about it. Instagram is closest: it already has account
-  // discovery and a Page relationship, and needs the two-step container/publish
-  // sequence rather than a new architecture.
-  [Platform.INSTAGRAM]: notImplemented(Platform.INSTAGRAM, 'Instagram'),
+  // The two-step container/publish flow is implemented and proven against mocks.
+  // It stays gated on two external requirements it cannot satisfy itself: App
+  // Review for instagram_content_publish, and a public delivery URL for media
+  // (the adapter refuses rather than send Meta an authenticated link).
+  [Platform.INSTAGRAM]: instagramPublisher,
   [Platform.TIKTOK]: notImplemented(Platform.TIKTOK, 'TikTok'),
   [Platform.LINKEDIN]: notImplemented(Platform.LINKEDIN, 'LinkedIn'),
   [Platform.X]: notImplemented(Platform.X, 'X'),
