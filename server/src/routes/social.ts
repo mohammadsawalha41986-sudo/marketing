@@ -178,6 +178,108 @@ socialRouter.get(
   }),
 );
 
+/**
+ * Every platform post in a window, for the calendar.
+ *
+ * Returns platform posts rather than groups: the calendar's unit is "a thing
+ * going out at a time", and a group whose Facebook version publishes Monday and
+ * whose Instagram version publishes Friday is two entries, not one.
+ */
+socialRouter.get(
+  '/calendar',
+  validateQuery(z.object({
+    from: z.coerce.date(),
+    to: z.coerce.date(),
+    clientId: z.string().max(40).optional(),
+    platform: z.nativeEnum(Platform).optional(),
+    status: z.nativeEnum(PlatformPostStatus).optional(),
+    campaignId: z.string().max(40).optional(),
+  })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const query = req.query as unknown as {
+      from: Date; to: Date; clientId?: string; platform?: Platform;
+      status?: PlatformPostStatus; campaignId?: string;
+    };
+    const clientId = resolveClientId(actor, query.clientId);
+
+    const items = await prisma.platformPost.findMany({
+      where: {
+        scheduledAt: { gte: query.from, lte: query.to },
+        ...(query.platform ? { platform: query.platform } : {}),
+        ...(query.status ? { status: query.status } : {}),
+        postGroup: {
+          ...scopeWhere(actor),
+          ...(clientId ? { clientId } : {}),
+          ...(query.campaignId ? { campaignId: query.campaignId } : {}),
+        },
+      },
+      orderBy: { scheduledAt: 'asc' },
+      select: {
+        id: true, platform: true, status: true, scheduledAt: true, timezone: true,
+        caption: true, headline: true, externalUrl: true, errorMessage: true,
+        postGroup: {
+          select: {
+            id: true, name: true,
+            client: { select: { id: true, name: true, businessName: true } },
+            campaign: { select: { id: true, name: true } },
+          },
+        },
+        media: {
+          take: 1,
+          orderBy: { position: 'asc' },
+          select: { media: { select: { url: true, thumbnailUrl: true, type: true } } },
+        },
+      },
+    });
+
+    res.json({ items });
+  }),
+);
+
+/**
+ * Move one platform post to a new time — what a drag on the calendar does.
+ *
+ * Rescheduling something already published is refused: the post exists on the
+ * platform at the time it went out, and changing our record would only make the
+ * two disagree.
+ */
+socialRouter.post(
+  '/platform-posts/:id/reschedule',
+  requireAgency,
+  validateParams(idParam),
+  validateBody(z.object({ scheduledAt: z.coerce.date() })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+
+    const post = await prisma.platformPost.findFirst({
+      where: { id: req.params.id, postGroup: { organizationId: orgId(actor) } },
+      select: { id: true, status: true, externalPostId: true, postGroupId: true },
+    });
+    if (!post) throw notFound('Post');
+
+    if (post.externalPostId || post.status === PlatformPostStatus.PUBLISHED) {
+      throw conflict('This post has already been published and cannot be rescheduled.');
+    }
+    if (post.status === PlatformPostStatus.PUBLISHING) {
+      throw conflict('This post is being published right now.');
+    }
+
+    const updated = await prisma.platformPost.update({
+      where: { id: post.id },
+      data: { scheduledAt: (req.body as { scheduledAt: Date }).scheduledAt },
+      select: { id: true, scheduledAt: true, status: true },
+    });
+
+    await recordAudit({
+      actor, action: 'social.post.reschedule', entity: 'PlatformPost', entityId: post.id, ip: req.ip,
+    });
+
+    res.json({ post: updated });
+  }),
+);
+
 /** Edit one platform's version. Its siblings are untouched. */
 socialRouter.patch(
   '/platform-posts/:id',

@@ -14,6 +14,7 @@ import { ClientDetailPage, ClientsPage } from './routes/clients';
 import { CampaignDetailPage, CampaignsPage } from './routes/campaigns';
 import { ContentDetailPage, ContentPage, StudioPage } from './routes/content';
 import { SocialPostsPage, SocialPostPage } from './routes/social';
+import { SocialCalendarPage } from './routes/social-calendar';
 import { BrandPage } from './routes/brand';
 import { ImageAdsPage, VideoAdsPage } from './routes/ads';
 import { CreativesPage } from './routes/creatives';
@@ -103,6 +104,7 @@ export default function App() {
                 <Route path="content" element={<ContentPage />} />
                 <Route path="content/:id" element={<ContentDetailPage />} />
                 <Route path="social" element={<SocialPostsPage />} />
+                <Route path="social/calendar" element={<SocialCalendarPage />} />
                 <Route path="social/:id" element={<SocialPostPage />} />
                 <Route path="creatives" element={<CreativesPage />} />
                 <Route path="image-ads" element={<ImageAdsPage />} />

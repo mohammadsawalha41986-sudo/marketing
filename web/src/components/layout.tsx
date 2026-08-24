@@ -68,6 +68,7 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
       { to: '/app/meta-campaigns', labelKey: 'nav.metaCampaigns', icon: Rocket },
       { to: '/app/content', labelKey: 'nav.organicContent', icon: PenLine },
       { to: '/app/social', labelKey: 'nav.socialPosts', icon: Share2 },
+      { to: '/app/social/calendar', labelKey: 'nav.socialCalendar', icon: CalendarDays },
     ],
   },
   {
