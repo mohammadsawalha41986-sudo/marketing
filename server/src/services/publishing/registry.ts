@@ -16,6 +16,7 @@ import { Platform } from '@prisma/client';
 import type { PlatformPublisher, PublishRequest, PublishResult } from './contract.js';
 import { facebookPublisher } from './facebook.js';
 import { instagramPublisher } from './instagram.js';
+import { linkedInPublisher } from './linkedin.js';
 
 /** A publisher that refuses, and says why, for a platform with no adapter yet. */
 function notImplemented(platform: Platform, label: string): PlatformPublisher {
@@ -47,7 +48,9 @@ const PUBLISHERS: Partial<Record<Platform, PlatformPublisher>> = {
   // (the adapter refuses rather than send Meta an authenticated link).
   [Platform.INSTAGRAM]: instagramPublisher,
   [Platform.TIKTOK]: notImplemented(Platform.TIKTOK, 'TikTok'),
-  [Platform.LINKEDIN]: notImplemented(Platform.LINKEDIN, 'LinkedIn'),
+  // Text posting implemented against the real /rest/posts API; image posting
+  // and the w_organization_social approval are the outstanding work.
+  [Platform.LINKEDIN]: linkedInPublisher,
   [Platform.X]: notImplemented(Platform.X, 'X'),
 };
 

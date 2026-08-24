@@ -98,39 +98,55 @@ a boolean: WARNING (will be cropped) and INCOMPATIBLE (will be refused) need
 different words. `GET /platform-posts/:id/readiness` exposes it. 11 tests.
 Still to do: the `/social/library` browse UI, folders and tags.
 
+## Phase 6 — Content calendar ✅
+
+`/app/social/calendar`. `GET /api/social/calendar` returns platform posts in a
+window (unit = one platform post, not a group). Month grid with drag-to-reschedule
+(moves the day, keeps the time), week/day columns, and a list view. Reschedule
+refuses anything already published.
+
 ## Phase 8 — Scheduler ✅
 
-`socialTick()` runs alongside the Content sweep in the same 60s tick: due
-SCHEDULED → QUEUED, then QUEUED → publish. Bounded retries, idempotency checked
-against the database before any provider call.
+`socialTick()` runs alongside the Content sweep each 60s tick: due SCHEDULED →
+QUEUED, then QUEUED → publish, bounded retries, DB-checked idempotency.
 
 ## Phase 9 — Facebook bridge ✅
 
-`publishPlatformPost` reaches the existing verified `facebookPublisher` through
-the `PlatformPublisher` registry. No new OAuth, no new credential store.
+`publishPlatformPost` reaches the verified `facebookPublisher` through the
+registry. No new OAuth or credential store.
+
+## Phase 10 — Instagram ⚠️ READY — EXTERNAL APPROVAL REQUIRED
+
+Real two-step container/publish adapter (`instagram.ts`), registered as a live
+publisher. Blocked on two things no code can grant: App Review for
+`instagram_content_publish`, and a public delivery URL for media (the adapter
+refuses INVALID_MEDIA rather than hand Meta an authenticated link). 6 tests.
+`PublishMedia.publicUrl` added for URL-based providers.
 
 ## Remaining phases
 
 | Phase | Scope | State |
 |---|---|---|
 | 5b | `/social/library` browse UI, folders, tags | Not started |
-| 6 | Calendar over PlatformPost — LIST view, filters | Not started |
-| 7 | Client-portal approval over PlatformPost | Backend done |
-| 10 | Instagram | Not started — App Review |
-| 11 | TikTok | Not started — API audit |
+| 11 | TikTok — resumable video upload | Not started — API audit |
 | 12 | YouTube / LinkedIn / Google Business | Not started |
 | 13 | Meta Ads / Google Ads / TikTok Ads | Not started |
 | 14 | Analytics over PlatformPost | Partly exists |
 | 15 | Report builder | Partly exists |
 
-## External blockers
+## Provider status
 
-Instagram (App Review), TikTok (API audit), YouTube (OAuth verification),
-LinkedIn (Community Management API), Google Business (API access). For each:
-build OAuth, discovery, selection, permission validation, adapter and mocked
-tests, then mark **READY — EXTERNAL APPROVAL REQUIRED**.
+| Provider | Status |
+|---|---|
+| Facebook | **PASS** — real-world verified |
+| Instagram | **READY — EXTERNAL APPROVAL REQUIRED** (App Review + public media) |
+| TikTok | NOT IMPLEMENTED — API audit |
+| YouTube | NOT IMPLEMENTED |
+| LinkedIn | NOT IMPLEMENTED |
+| Google Business | NOT IMPLEMENTED |
+| Meta/Google/TikTok Ads | NOT IMPLEMENTED |
 
 ## Next exact action
 
-Phase 6 — calendar over `PlatformPost`: `GET /api/social/calendar` returning
-platform posts in a window, then MONTH/WEEK/DAY/LIST views with drag-to-reschedule.
+Phase 12 — LinkedIn adapter (`/ugcPosts`, text + image), the same shape as
+Instagram: real adapter, mocked tests, READY — EXTERNAL APPROVAL REQUIRED.
