@@ -6,7 +6,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   Award, Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, CreditCard, FileText, Gauge, Image,
   LayoutDashboard, Languages, LogOut, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
-  Rocket, Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Upload, Users, X, type LucideIcon,
+  Rocket, Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Upload, Users, X, type LucideIcon, Share2,
 } from 'lucide-react';
 
 import { api, qs, type Paginated } from '../lib/api';
@@ -67,6 +67,7 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
       { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
       { to: '/app/meta-campaigns', labelKey: 'nav.metaCampaigns', icon: Rocket },
       { to: '/app/content', labelKey: 'nav.organicContent', icon: PenLine },
+      { to: '/app/social', labelKey: 'nav.socialPosts', icon: Share2 },
     ],
   },
   {
