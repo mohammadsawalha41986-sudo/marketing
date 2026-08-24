@@ -222,9 +222,14 @@ class MetaAdapter extends BaseAdapter {
 class TikTokAdapter extends BaseAdapter {
   readonly platform = 'TIKTOK' as Platform;
   readonly label = 'TikTok';
-  // Direct posting exists but is gated behind TikTok's own approval, so it is
-  // declared as a capability of the API rather than as something we can do yet.
   override readonly capabilities = { publish: true, metrics: true, audiences: false };
+  override readonly implementation: ImplementationReport = {
+    oauth: 'ARCHITECTURE_ONLY',
+    accountDiscovery: 'ARCHITECTURE_ONLY',
+    publish: 'IMPLEMENTED',
+    metrics: 'ARCHITECTURE_ONLY',
+    conversions: 'NOT_SUPPORTED',
+  };
 
   override oauth(): OAuthDescriptor {
     return {
@@ -255,7 +260,14 @@ class SnapchatAdapter extends BaseAdapter {
 class GoogleAdsAdapter extends BaseAdapter {
   readonly platform = 'GOOGLE_ADS' as Platform;
   readonly label = 'Google Ads';
-  override readonly capabilities = { publish: false, metrics: true, audiences: true };
+  override readonly capabilities = { publish: true, metrics: true, audiences: true };
+  override readonly implementation: ImplementationReport = {
+    oauth: 'ARCHITECTURE_ONLY',
+    accountDiscovery: 'ARCHITECTURE_ONLY',
+    publish: 'IMPLEMENTED',
+    metrics: 'ARCHITECTURE_ONLY',
+    conversions: 'NOT_SUPPORTED',
+  };
 
   override oauth(): OAuthDescriptor {
     return {
