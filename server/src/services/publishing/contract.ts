@@ -120,6 +120,16 @@ export interface PublishRequest {
   fetchImpl: FetchLike;
   /** Abandon the call after this long. Absent means the publisher's default. */
   timeoutMs?: number;
+  /**
+   * The post's provider-specific settings, straight from `PlatformPost.config`.
+   *
+   * Declared here rather than reached for through a cast because two adapters
+   * now genuinely need it — YouTube for title and visibility, TikTok for the
+   * privacy level it must send. A publisher that does not understand a key
+   * ignores it; nothing here is credentials, which live encrypted on the
+   * account and are never addressable from a post's config.
+   */
+  config?: Record<string, unknown>;
 }
 
 export type PublishResult =

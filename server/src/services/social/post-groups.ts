@@ -300,7 +300,7 @@ export async function publishPlatformPost(input: {
     where: { id: platformPostId },
     select: {
       id: true, postGroupId: true, platform: true, status: true, caption: true, headline: true,
-      hashtags: true, attemptCount: true, externalPostId: true,
+      hashtags: true, attemptCount: true, externalPostId: true, config: true,
       integrationAccount: { select: { externalId: true, name: true, accessTokenEnc: true } },
       media: {
         orderBy: { position: 'asc' },
@@ -354,6 +354,9 @@ export async function publishPlatformPost(input: {
       accessToken: decryptSecret(post.integrationAccount.accessTokenEnc),
     },
     fetchImpl,
+    // Provider-specific settings the operator chose, e.g. TikTok's privacy
+    // level or YouTube's visibility. Never credentials.
+    config: (post.config ?? {}) as Record<string, unknown>,
   });
 
   if (!result.success) {

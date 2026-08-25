@@ -37,6 +37,7 @@ import {
   type DiscoveredAccount,
   type FetchLike,
 } from './meta.js';
+import * as tiktok from './tiktok.js';
 
 /** Where each provider's callback lands. Documented so app consoles match. */
 export function callbackPath(platform: Platform): string {
@@ -68,12 +69,38 @@ export interface AuthorizeResult {
  * Start OAuth: mint a bound state, park the integration in CONNECTING, and hand
  * back the provider's real authorization URL.
  */
+/**
+ * Which provider owns a platform's OAuth.
+ *
+ * A lookup rather than a chain of ifs, so adding a provider is one entry and
+ * every platform that has no adapter still fails loudly rather than silently
+ * receiving Meta's authorization URL — which is exactly what happened while
+ * TikTok was routed through `metaConfig()`.
+ */
+type OAuthProvider = 'META' | 'TIKTOK';
+
+const OAUTH_PROVIDER: Partial<Record<Platform, OAuthProvider>> = {
+  [Platform.FACEBOOK]: 'META',
+  [Platform.INSTAGRAM]: 'META',
+  [Platform.TIKTOK]: 'TIKTOK',
+};
+
+function providerFor(platform: Platform): OAuthProvider {
+  const provider = OAUTH_PROVIDER[platform];
+  if (!provider) {
+    throw new Error(`${platform} has no OAuth integration on this deployment yet.`);
+  }
+  return provider;
+}
+
 export async function beginAuthorization(input: {
   organizationId: string;
   clientId: string;
   platform: Platform;
   baseUrl: string;
 }): Promise<AuthorizeResult> {
+  const provider = providerFor(input.platform);
+
   /*
    * Meta is the authority on this value, not us.
    *
@@ -83,8 +110,10 @@ export async function beginAuthorization(input: {
    * fallback for a deployment that has not set it. Deriving it and then
    * exchanging with a different one is the classic "the code is invalid" loop.
    */
-  const config = metaConfig();
-  const redirectUri = config.redirectUri || callbackUrl(input.baseUrl, input.platform);
+  const metaCfg = provider === 'META' ? metaConfig() : null;
+  const tiktokCfg = provider === 'TIKTOK' ? tiktok.tiktokConfig() : null;
+  const redirectUri =
+    (metaCfg?.redirectUri || tiktokCfg?.redirectUri) || callbackUrl(input.baseUrl, input.platform);
 
   /*
    * And it has to point back at a route that exists. A console entry aimed at
@@ -94,8 +123,9 @@ export async function beginAuthorization(input: {
    */
   const expected = callbackPath(input.platform);
   if (!new URL(redirectUri).pathname.endsWith(expected)) {
+    const variable = provider === 'TIKTOK' ? 'TIKTOK_REDIRECT_URI' : 'META_REDIRECT_URI';
     throw new Error(
-      `META_REDIRECT_URI must end with ${expected} so the authorization lands on the callback route. ` +
+      `${variable} must end with ${expected} so the authorization lands on the callback route. ` +
         `It currently points at ${new URL(redirectUri).pathname}.`,
     );
   }
@@ -122,9 +152,11 @@ export async function beginAuthorization(input: {
     metadata: { integrationId: integration.id },
   });
 
-  // Only Meta has a real authorization URL builder so far; the rest report the
-  // configuration they need rather than pretending to have a URL.
-  return { redirectTo: authorizationUrl({ config, state }), integrationId: integration.id };
+  const redirectTo = tiktokCfg
+    ? tiktok.authorizationUrl({ config: tiktokCfg, state })
+    : authorizationUrl({ config: metaCfg!, state });
+
+  return { redirectTo, integrationId: integration.id };
 }
 
 // ---------------------------------------------------------------- callback
@@ -142,6 +174,7 @@ const KIND: Record<DiscoveredAccount['kind'], ExternalAccountKind> = {
   PAGE: ExternalAccountKind.PAGE,
   INSTAGRAM: ExternalAccountKind.INSTAGRAM,
   AD_ACCOUNT: ExternalAccountKind.AD_ACCOUNT,
+  PROFILE: ExternalAccountKind.PROFILE,
 };
 
 /**
@@ -166,12 +199,27 @@ export async function completeCallback(input: {
   });
   if (!integration) throw new Error('The integration this authorization belongs to no longer exists');
 
+  const provider = providerFor(consumed.platform);
+
   try {
-    const config = metaConfig();
-    const tokens = await exchangeCode({ config, code: input.code, fetchImpl: input.fetchImpl });
+    /*
+     * Same four steps for either provider — exchange, validate, read the grant,
+     * discover — because the invariants below (nothing CONNECTED until the
+     * provider answers; nothing attached the operator did not choose) are the
+     * connection's, not Meta's. Only the calls differ.
+     */
+    const tokens =
+      provider === 'TIKTOK'
+        ? await tiktok.exchangeCode({
+          config: tiktok.tiktokConfig(), code: input.code, fetchImpl: input.fetchImpl,
+        })
+        : await exchangeCode({ config: metaConfig(), code: input.code, fetchImpl: input.fetchImpl });
 
     // The connection is only real if the provider answers with this token.
-    const identity = await validateToken({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
+    const identity =
+      provider === 'TIKTOK'
+        ? await tiktok.validateToken({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl })
+        : await validateToken({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
     /*
      * What Meta granted, asked as its own question.
      *
@@ -180,10 +228,27 @@ export async function completeCallback(input: {
      * connection reads CONNECTED and then fails at the first post with an error
      * nobody saw coming.
      */
-    const granted = await grantedPermissions({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
-    const canPublishPages = granted.includes(PAGE_PUBLISH_PERMISSION);
+    /*
+     * TikTok returns the grant in the token response itself rather than from a
+     * second endpoint, so there is nothing extra to ask for — and asking Meta's
+     * /me/permissions with a TikTok token would fail the whole connection.
+     */
+    const granted =
+      provider === 'TIKTOK'
+        ? tokens.scopes
+        : await grantedPermissions({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
 
-    const discovered = await discoverAccounts({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
+    // The permission that decides whether the attached account can actually
+    // post: pages_manage_posts on Meta, video.publish on TikTok.
+    const canPublishPages =
+      provider === 'TIKTOK'
+        ? granted.includes(tiktok.PUBLISH_SCOPE)
+        : granted.includes(PAGE_PUBLISH_PERMISSION);
+
+    const discovered =
+      provider === 'TIKTOK'
+        ? await tiktok.discoverAccounts({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl })
+        : await discoverAccounts({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
 
     await prisma.$transaction(async (tx) => {
       await tx.integration.update({

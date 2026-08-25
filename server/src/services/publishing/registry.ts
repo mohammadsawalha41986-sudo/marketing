@@ -18,6 +18,7 @@ import { facebookPublisher } from './facebook.js';
 import { googleBusinessPublisher } from './google-business.js';
 import { instagramPublisher } from './instagram.js';
 import { linkedInPublisher } from './linkedin.js';
+import { tiktokPublisher } from './tiktok.js';
 import { youtubePublisher } from './youtube.js';
 
 /** A publisher that refuses, and says why, for a platform with no adapter yet. */
@@ -49,7 +50,13 @@ const PUBLISHERS: Partial<Record<Platform, PlatformPublisher>> = {
   // Review for instagram_content_publish, and a public delivery URL for media
   // (the adapter refuses rather than send Meta an authenticated link).
   [Platform.INSTAGRAM]: instagramPublisher,
-  [Platform.TIKTOK]: notImplemented(Platform.TIKTOK, 'TikTok'),
+  /*
+   * Direct post through the Content Posting API. The adapter reads the
+   * creator's own privacy options before uploading rather than assuming them,
+   * because an unaudited TikTok app may only post SELF_ONLY and sending a
+   * public level would be refused after the whole video had been sent.
+   */
+  [Platform.TIKTOK]: tiktokPublisher,
   // Text posting implemented against the real /rest/posts API; image posting
   // and the w_organization_social approval are the outstanding work.
   [Platform.LINKEDIN]: linkedInPublisher,

@@ -341,7 +341,13 @@ export async function grantedPermissions(input: {
 export const PAGE_PUBLISH_PERMISSION = 'pages_manage_posts';
 
 export interface DiscoveredAccount {
-  kind: 'BUSINESS' | 'PAGE' | 'INSTAGRAM' | 'AD_ACCOUNT';
+  /**
+   * PROFILE is not a Meta asset — it is what a provider whose credential *is*
+   * the account (TikTok's creator account) discovers. The union lives here
+   * because `connect-flow` maps every provider's discoveries through one table,
+   * and a second union would mean two.
+   */
+  kind: 'BUSINESS' | 'PAGE' | 'INSTAGRAM' | 'AD_ACCOUNT' | 'PROFILE';
   externalId: string;
   name: string;
   username?: string;
