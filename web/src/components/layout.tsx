@@ -108,6 +108,7 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
       { to: '/app/creative-performance', labelKey: 'nav.creativePerformance', icon: Award },
       { to: '/app/ceo', labelKey: 'nav.ceo', icon: Gauge },
       { to: '/app/reports', labelKey: 'nav.reports', icon: FileText },
+      { to: '/app/reports/builders', labelKey: 'nav.reportBuilder', icon: FileText },
     ],
   },
   {

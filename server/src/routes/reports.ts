@@ -1,11 +1,11 @@
 /** /api/reports — generate, list, read and export reports. */
 
 import { Router } from 'express';
-import { NotificationType, Prisma, ReportType } from '@prisma/client';
+import { NotificationType, Platform, Prisma, ReportType } from '@prisma/client';
 import { z } from 'zod';
 
 import { prisma } from '../lib/prisma.js';
-import { asyncHandler, notFound } from '../lib/errors.js';
+import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
 import { actorOf, requireAgency, requireAuth } from '../middleware/auth.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { idParam, pageResult, paginate, paginationQuery, resolveRange } from '../lib/http.js';
@@ -15,6 +15,10 @@ import { analyzeCampaigns, buildFacts } from '../services/ai/index.js';
 import { recordAiUsage, recordAudit } from '../services/audit.js';
 import { notify } from '../services/notify.js';
 import { renderReportHtml, renderReportMarkdown } from '../services/report.js';
+import {
+  DEFAULT_CONFIG, REPORT_METRICS, REPORT_SECTIONS, buildReportData, parseConfig,
+  type ReportConfig,
+} from '../services/reports/builder.js';
 
 export const reportsRouter: Router = Router();
 reportsRouter.use(requireAuth);
@@ -186,6 +190,216 @@ reportsRouter.post(
     await recordAudit({ actor, action: 'report.generate', entity: 'Report', entityId: report.id, ip: req.ip });
 
     res.status(201).json({ report });
+  }),
+);
+
+
+// ---------------------------------------------------------------- builder
+//
+// A BUILDER report is a saved *configuration*, not a snapshot. It is stored in
+// the same Report table — same organisation scoping, same list, same delete —
+// and its payload holds the configuration rather than frozen figures, so
+// opening it re-reads Phase 14 and shows current numbers.
+
+const builderConfigSchema = z.object({
+  description: z.string().trim().max(2000).nullish(),
+  platforms: z.array(z.nativeEnum(Platform)).max(12).optional(),
+  metrics: z.array(z.enum(REPORT_METRICS)).max(REPORT_METRICS.length).optional(),
+  sections: z.array(z.enum(REPORT_SECTIONS)).max(REPORT_SECTIONS.length).optional(),
+});
+
+const builderCreateSchema = builderConfigSchema.extend({
+  clientId: z.string().min(1).max(40),
+  title: z.string().trim().min(1).max(200),
+  periodStart: z.coerce.date(),
+  periodEnd: z.coerce.date(),
+});
+
+function toConfig(body: z.infer<typeof builderConfigSchema>, base: ReportConfig = DEFAULT_CONFIG): ReportConfig {
+  return {
+    version: 1,
+    description: body.description === undefined ? base.description : (body.description ?? null),
+    platforms: body.platforms ?? base.platforms,
+    metrics: body.metrics ?? base.metrics,
+    sections: body.sections ?? base.sections,
+  };
+}
+
+/** The one place a builder report is looked up, so scoping cannot drift. */
+async function findBuilder(actor: ReturnType<typeof actorOf>, id: string) {
+  const clientId = resolveClientId(actor, undefined);
+  const report = await prisma.report.findFirst({
+    where: {
+      id,
+      type: ReportType.BUILDER,
+      // Organisation isolation is the same predicate every other report route
+      // uses; a portal user is additionally pinned to their own client.
+      organizationId: orgId(actor),
+      ...(clientId ? { clientId } : {}),
+    },
+    include: { client: { select: { id: true, name: true, businessName: true, logoUrl: true } } },
+  });
+  if (!report) throw notFound('Report');
+  return report;
+}
+
+reportsRouter.post(
+  '/builder',
+  requireAgency,
+  validateBody(builderCreateSchema),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+    const body = req.body as z.infer<typeof builderCreateSchema>;
+
+    if (body.periodEnd < body.periodStart) {
+      throw badRequest('The report period ends before it starts.');
+    }
+
+    // The client must belong to this organisation. Trusting the body here is
+    // how a report gets built over another tenant's data.
+    const client = await prisma.client.findFirst({
+      where: { id: body.clientId, organizationId: orgId(actor) },
+      select: { id: true },
+    });
+    if (!client) throw notFound('Client');
+
+    const report = await prisma.report.create({
+      data: {
+        organizationId: orgId(actor),
+        clientId: client.id,
+        type: ReportType.BUILDER,
+        title: body.title,
+        periodStart: body.periodStart,
+        periodEnd: body.periodEnd,
+        payload: { builder: toConfig(body) } as unknown as Prisma.InputJsonValue,
+      },
+      include: { client: { select: { id: true, name: true, businessName: true, logoUrl: true } } },
+    });
+
+    await recordAudit({ actor, action: 'report.builder.create', entity: 'Report', entityId: report.id, ip: req.ip });
+    res.status(201).json({ report });
+  }),
+);
+
+reportsRouter.patch(
+  '/builder/:id',
+  requireAgency,
+  validateParams(idParam),
+  validateBody(builderCreateSchema.partial().omit({ clientId: true })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+    const existing = await findBuilder(actor, (req.params as { id: string }).id);
+    const body = req.body as Partial<z.infer<typeof builderCreateSchema>>;
+
+    const periodStart = body.periodStart ?? existing.periodStart;
+    const periodEnd = body.periodEnd ?? existing.periodEnd;
+    if (periodEnd < periodStart) throw badRequest('The report period ends before it starts.');
+
+    const report = await prisma.report.update({
+      where: { id: existing.id },
+      data: {
+        ...(body.title ? { title: body.title } : {}),
+        periodStart,
+        periodEnd,
+        payload: { builder: toConfig(body, parseConfig(existing.payload)) } as unknown as Prisma.InputJsonValue,
+      },
+      include: { client: { select: { id: true, name: true, businessName: true, logoUrl: true } } },
+    });
+
+    await recordAudit({ actor, action: 'report.builder.update', entity: 'Report', entityId: report.id, ip: req.ip });
+    res.json({ report });
+  }),
+);
+
+reportsRouter.post(
+  '/builder/:id/duplicate',
+  requireAgency,
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+    const existing = await findBuilder(actor, (req.params as { id: string }).id);
+
+    const report = await prisma.report.create({
+      data: {
+        organizationId: existing.organizationId,
+        clientId: existing.clientId,
+        type: ReportType.BUILDER,
+        title: `${existing.title} (copy)`.slice(0, 200),
+        periodStart: existing.periodStart,
+        periodEnd: existing.periodEnd,
+        payload: { builder: parseConfig(existing.payload) } as unknown as Prisma.InputJsonValue,
+      },
+      include: { client: { select: { id: true, name: true, businessName: true, logoUrl: true } } },
+    });
+
+    await recordAudit({ actor, action: 'report.builder.duplicate', entity: 'Report', entityId: report.id, ip: req.ip });
+    res.status(201).json({ report });
+  }),
+);
+
+/**
+ * The rendered report, computed from Phase 14 at read time.
+ *
+ * Separate from GET /:id, which returns the saved row: the configuration and
+ * the figures have different lifetimes, and a preview that re-fetched the whole
+ * row on every slider change would be re-reading a configuration it already has.
+ */
+reportsRouter.get(
+  '/builder/:id/data',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const report = await findBuilder(actor, (req.params as { id: string }).id);
+
+    const data = await buildReportData({
+      organizationId: report.organizationId,
+      clientId: report.clientId,
+      from: report.periodStart,
+      to: report.periodEnd,
+      config: parseConfig(report.payload),
+    });
+
+    res.json({ report, config: parseConfig(report.payload), data });
+  }),
+);
+
+/**
+ * A preview of a configuration that has not been saved yet.
+ *
+ * This is what makes the builder feel live: the operator changes a platform or
+ * a date and sees the real numbers, without a save and without exporting a PDF
+ * to find out what the report says.
+ */
+reportsRouter.post(
+  '/builder/preview',
+  requireAgency,
+  validateBody(builderCreateSchema),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const body = req.body as z.infer<typeof builderCreateSchema>;
+
+    if (body.periodEnd < body.periodStart) {
+      throw badRequest('The report period ends before it starts.');
+    }
+
+    const client = await prisma.client.findFirst({
+      where: { id: body.clientId, organizationId: orgId(actor) },
+      select: { id: true, name: true, businessName: true, logoUrl: true },
+    });
+    if (!client) throw notFound('Client');
+
+    const data = await buildReportData({
+      organizationId: orgId(actor),
+      clientId: client.id,
+      from: body.periodStart,
+      to: body.periodEnd,
+      config: toConfig(body),
+    });
+
+    res.json({ client, config: toConfig(body), data });
   }),
 );
 

@@ -304,6 +304,13 @@ enum ReportType {
   CAMPAIGN
   MONTHLY
   PLATFORM
+  /// A saved Report Builder configuration.
+  ///
+  /// Distinct from the four above because its `payload` holds a *configuration*
+  /// rather than frozen figures: a BUILDER report re-reads Phase 14 analytics
+  /// every time it is opened, so the numbers are current and the row stays
+  /// small. The others are snapshots and must keep behaving as snapshots.
+  BUILDER
 }
 
 enum AiKind {

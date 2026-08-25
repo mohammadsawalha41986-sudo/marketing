@@ -153,3 +153,132 @@
     max-width: 100%;
   }
 }
+
+/*
+ * Printing a report.
+ *
+ * The Report Builder exports by printing the page it is already showing, which
+ * is why there is no PDF library in this project and no second renderer that
+ * could disagree with the preview. These rules strip the application chrome and
+ * leave `.report-sheet` alone on the page.
+ *
+ * Direction is deliberately not touched. The document inherits `dir` from
+ * <html>, so an Arabic report prints RTL with correct shaping because the
+ * browser's own text engine lays it out — the part a hand-rolled PDF writer is
+ * most likely to get wrong.
+ */
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm;
+  }
+
+  /*
+   * A report prints light, whatever theme the operator works in.
+   *
+   * Re-declaring the light tokens rather than overriding each colour: every
+   * surface, border and muted label in the report already reads them, so one
+   * block turns the whole document light and nothing has to be restyled twice.
+   * An operator on the dark theme would otherwise hand a client a PDF of navy
+   * blocks — heavy to print and wrong for the audience.
+   */
+  :root,
+  [data-theme='dark'] {
+    --c-bg: 255 255 255;
+    --c-surface: 255 255 255;
+    --c-elevated: 248 249 251;
+    --c-line: 214 220 228;
+    --c-fg: 16 24 40;
+    --c-muted: 90 100 118;
+    --c-brand: 79 70 229;
+    --c-ok: 4 120 87;
+    --c-warn: 161 98 7;
+    --c-danger: 185 28 28;
+    color-scheme: light;
+  }
+
+  /* Platform accents and state colours carry meaning; a greyscale print loses
+     it, so the browser is told to keep them. */
+  html, body {
+    background: #fff !important;
+    color: rgb(16 24 40) !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* The application shell — sidebar, top bar, toasts — is not part of the
+     report. `print:hidden` marks the builder's own controls. */
+  aside:not(.report-sheet aside),
+  header:not(.report-sheet header),
+  nav,
+  [data-print-hide] {
+    display: none !important;
+  }
+
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+  }
+
+  /*
+   * The builder is a two-column grid: controls, then the report. Hiding the
+   * controls with `display:none` leaves their 320px track in place, so the
+   * report printed into a narrow strip down one side of the page. Collapsing
+   * every grid in the builder to one column is what actually gives the sheet
+   * the width of the paper.
+   */
+  .report-builder-grid {
+    display: block !important;
+  }
+
+  .report-sheet {
+    max-width: none !important;
+    width: 100% !important;
+    margin: 0 !important;
+    background: #fff !important;
+  }
+
+  /* Column headers ran into each other without it. */
+  .report-sheet th,
+  .report-sheet td {
+    padding-inline: 6px;
+  }
+
+  /* Sections and table rows must not be split across a page boundary — a KPI
+     card cut in half is the clearest sign a report was generated rather than
+     designed. */
+  .report-sheet section,
+  .report-sheet li,
+  .report-sheet tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .report-sheet h1,
+  .report-sheet h2 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  /* Nothing scrolls on paper; a table that scrolled on screen must print in
+     full rather than clipping its right-hand columns. */
+  .report-sheet .overflow-x-auto {
+    overflow: visible !important;
+  }
+
+  /*
+   * Four KPI columns fit a 1440px viewport and not an A4 page once 14mm
+   * margins are taken — the figures were being clipped mid-number. Three
+   * columns hold a five-digit figure at this size with room to spare.
+   */
+  .report-sheet .grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  /* A figure must never be cut off, whatever the column width. */
+  .report-sheet .tabular {
+    overflow: visible !important;
+    white-space: nowrap;
+  }
+}
