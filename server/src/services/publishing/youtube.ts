@@ -81,7 +81,7 @@ export const youtubePublisher: PlatformPublisher = {
       };
     }
 
-    const config = (request as { config?: YouTubeConfig }).config as YouTubeConfig | undefined;
+    const config = request.config as YouTubeConfig | undefined;
     const title = config?.title ?? (request.caption.slice(0, 100) || 'Untitled');
     const description = config?.description ?? request.caption;
     const privacyStatus = config?.privacyStatus ?? 'public';

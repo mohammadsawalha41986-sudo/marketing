@@ -313,9 +313,21 @@ describe('Meta OAuth routes', () => {
     expect(meta.implementation.metrics).toBe('PARTIALLY_IMPLEMENTED');
     expect(meta.canConnect).toBe(true);
 
+    /*
+     * TikTok is the case that shows the two axes are genuinely independent:
+     * since Phase 11 its OAuth and publishing are built, but this test
+     * environment sets no TIKTOK_* variables, so it is built and still cannot
+     * connect. A single "available" flag could not express that.
+     */
     const tiktok = response.body.adapters.find((row: { platform: string }) => row.platform === 'TIKTOK');
-    expect(tiktok.implementation.oauth).toBe('ARCHITECTURE_ONLY');
+    expect(tiktok.implementation.oauth).toBe('IMPLEMENTED');
+    expect(tiktok.implementation.publish).toBe('IMPLEMENTED');
     expect(tiktok.canConnect).toBe(false);
+
+    // And a provider that is neither built nor configured still says so.
+    const snapchat = response.body.adapters.find((row: { platform: string }) => row.platform === 'SNAPCHAT');
+    expect(snapchat.implementation.oauth).toBe('ARCHITECTURE_ONLY');
+    expect(snapchat.canConnect).toBe(false);
   });
 
   // ------------------------------------------------------- state rejection

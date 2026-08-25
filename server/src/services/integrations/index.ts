@@ -24,6 +24,14 @@
 import type { Platform } from '@prisma/client';
 
 import { encryptionConfigured } from '../../lib/crypto.js';
+/*
+ * Imported rather than restated so the scopes an operator reads here are the
+ * ones the authorization URL actually asks for. The cycle this creates
+ * (tiktok.ts imports ProviderNotConfiguredError from this file) is resolved at
+ * call time — both sides use the other only inside function bodies, never at
+ * module evaluation — which is the same shape meta.ts already has.
+ */
+import { TIKTOK_SCOPES } from './tiktok.js';
 
 export interface AdapterMetric {
   date: string;
@@ -219,24 +227,40 @@ class MetaAdapter extends BaseAdapter {
   }
 }
 
+/**
+ * TikTok, which is two products behind one Platform value.
+ *
+ * Organic posting goes through Login Kit and the Content Posting API, and that
+ * is what the Connect button now runs: `beginAuthorization` builds a Login Kit
+ * URL and discovery attaches the creator's own account. The Ads side
+ * (`tiktok-ads-flow.ts`) speaks to the Business API and needs an advertiser
+ * account, which this login does not grant and this descriptor does not claim.
+ *
+ * The descriptor therefore describes the flow the button actually starts. The
+ * previous entry pointed at the Business API portal while no TikTok OAuth
+ * existed at all, which meant the one thing an operator could read about the
+ * connection was describing a flow nothing implemented.
+ */
 class TikTokAdapter extends BaseAdapter {
   readonly platform = 'TIKTOK' as Platform;
   readonly label = 'TikTok';
   override readonly capabilities = { publish: true, metrics: true, audiences: false };
   override readonly implementation: ImplementationReport = {
-    oauth: 'ARCHITECTURE_ONLY',
-    accountDiscovery: 'ARCHITECTURE_ONLY',
+    oauth: 'IMPLEMENTED',
+    accountDiscovery: 'IMPLEMENTED',
     publish: 'IMPLEMENTED',
+    // Post metrics still arrive through the shared organic sync, which has no
+    // TikTok reader yet. Claiming otherwise would put empty numbers on a chart.
     metrics: 'ARCHITECTURE_ONLY',
     conversions: 'NOT_SUPPORTED',
   };
 
   override oauth(): OAuthDescriptor {
     return {
-      authorizeUrl: 'https://business-api.tiktok.com/portal/auth',
-      scopes: ['ad.group.list', 'campaign.list', 'report.read'],
+      authorizeUrl: 'https://www.tiktok.com/v2/auth/authorize/',
+      scopes: [...TIKTOK_SCOPES],
       requiredEnv: ['TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET', 'TIKTOK_REDIRECT_URI'],
-      docsUrl: 'https://business-api.tiktok.com/portal/docs',
+      docsUrl: 'https://developers.tiktok.com/doc/content-posting-api-get-started',
     };
   }
 }
