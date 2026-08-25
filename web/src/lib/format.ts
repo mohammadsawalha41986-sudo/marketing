@@ -117,6 +117,7 @@ export const PLATFORM_LABELS: Record<string, string> = {
   GOOGLE_BUSINESS: 'Google Business',
   X: 'X',
   LINKEDIN: 'LinkedIn',
+  YOUTUBE: 'YouTube',
 };
 
 /** Brand-recognisable accents for platform chips and chart series. */
@@ -129,6 +130,7 @@ export const PLATFORM_COLORS: Record<string, string> = {
   GOOGLE_BUSINESS: '#a78bfa',
   X: '#94a3b8',
   LINKEDIN: '#0ea5e9',
+  YOUTUBE: '#ef4444',
 };
 
 export const humanize = (value: string): string =>

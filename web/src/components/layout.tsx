@@ -5,7 +5,7 @@ import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Award, BarChart3, Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, CreditCard, FileText, Gauge, Image,
-  LayoutDashboard, Languages, LogOut, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
+  LayoutDashboard, LayoutGrid, Languages, LogOut, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
   Rocket, Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Upload, Users, X, type LucideIcon, Share2,
 } from 'lucide-react';
 
@@ -23,6 +23,15 @@ interface NavItem {
   labelKey: TranslationKey;
   icon: LucideIcon;
   end?: boolean;
+  /**
+   * Sub-entries, shown indented while the parent's section of the app is open.
+   *
+   * Only one level deep, and deliberately so: the platform views under Content
+   * are the one place in this product where a second level earns its keep,
+   * because "everything on Instagram" is somewhere an operator returns to. A
+   * third level would be a menu, and menus hide things.
+   */
+  children?: NavItem[];
 }
 
 /*
@@ -66,9 +75,23 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
     items: [
       { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
       { to: '/app/meta-campaigns', labelKey: 'nav.metaCampaigns', icon: Rocket },
+      {
+        to: '/app/library',
+        labelKey: 'nav.contentHub',
+        icon: LayoutGrid,
+        end: true,
+        children: [
+          { to: '/app/library/facebook', labelKey: 'nav.facebook', icon: Share2 },
+          { to: '/app/library/instagram', labelKey: 'nav.instagram', icon: Share2 },
+          { to: '/app/library/tiktok', labelKey: 'nav.tiktok', icon: Share2 },
+          { to: '/app/library/youtube', labelKey: 'nav.youtube', icon: Share2 },
+          { to: '/app/library/linkedin', labelKey: 'nav.linkedin', icon: Share2 },
+        ],
+      },
       { to: '/app/content', labelKey: 'nav.organicContent', icon: PenLine },
       { to: '/app/social', labelKey: 'nav.socialPosts', icon: Share2 },
       { to: '/app/social/calendar', labelKey: 'nav.socialCalendar', icon: CalendarDays },
+      { to: '/app/media', labelKey: 'nav.mediaLibrary', icon: Image },
       { to: '/app/social/analytics', labelKey: 'nav.socialAnalytics', icon: BarChart3 },
     ],
   },
@@ -163,6 +186,70 @@ function Logo({ collapsed }: { collapsed?: boolean }) {
   );
 }
 
+/**
+ * One nav row, plus its children when it has them.
+ *
+ * Children are revealed by location rather than by a disclosure control: an
+ * operator inside Content wants its platform views to hand, and everyone else
+ * wants them out of the way. A chevron would make that a thing to click before
+ * the thing they came to click.
+ */
+function NavEntry({ item, onNavigate }: { item: NavItem; onNavigate?: () => void }) {
+  const { t } = useI18n();
+  const location = useLocation();
+  const withinSection = location.pathname.startsWith(item.to);
+
+  return (
+    <>
+      <NavLink
+        to={item.to}
+        end={item.end}
+        onClick={onNavigate}
+        className={({ isActive }) =>
+          cn(
+            'group relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors',
+            isActive ? 'bg-brand/12 font-medium text-brand' : 'text-muted hover:bg-elevated hover:text-fg',
+          )
+        }
+      >
+        {({ isActive }) => (
+          <>
+            {isActive ? (
+              <motion.span
+                layoutId="nav-active"
+                className="absolute inset-y-1.5 start-0 w-0.5 rounded-full bg-brand"
+              />
+            ) : null}
+            <item.icon className="h-[18px] w-[18px] shrink-0" />
+            <span className="truncate">{t(item.labelKey)}</span>
+          </>
+        )}
+      </NavLink>
+
+      {item.children && withinSection ? (
+        // Indented with a logical property so the tree mirrors under Arabic.
+        <div className="ms-4 space-y-0.5 border-s border-line ps-2">
+          {item.children.map((child) => (
+            <NavLink
+              key={child.to}
+              to={child.to}
+              onClick={onNavigate}
+              className={({ isActive }) =>
+                cn(
+                  'flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors',
+                  isActive ? 'font-medium text-brand' : 'text-muted hover:text-fg',
+                )
+              }
+            >
+              <span className="truncate">{t(child.labelKey)}</span>
+            </NavLink>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function NavSection({ section, onNavigate }: { section: (typeof AGENCY_NAV)[number]; onNavigate?: () => void }) {
   const { t } = useI18n();
   return (
@@ -172,30 +259,7 @@ function NavSection({ section, onNavigate }: { section: (typeof AGENCY_NAV)[numb
       </p>
       <nav className="space-y-0.5">
         {section.items.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            onClick={onNavigate}
-            className={({ isActive }) =>
-              cn(
-                'group relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors',
-                isActive ? 'bg-brand/12 font-medium text-brand' : 'text-muted hover:bg-elevated hover:text-fg',
-              )
-            }
-          >
-            {({ isActive }) => (
-              <>
-                {isActive ? (
-                  <motion.span
-                    layoutId="nav-active"
-                    className="absolute inset-y-1.5 start-0 w-0.5 rounded-full bg-brand"
-                  />
-                ) : null}
-                <item.icon className="h-[18px] w-[18px] shrink-0" />
-                <span className="truncate">{t(item.labelKey)}</span>
-              </>
-            )}
-          </NavLink>
+          <NavEntry key={item.to} item={item} onNavigate={onNavigate} />
         ))}
       </nav>
     </div>
