@@ -27,6 +27,8 @@ import {
 } from '../services/social/post-groups.js';
 import { overall, validateMediaForPlatform } from '../services/social/media-rules.js';
 import { postGroupAnalytics, socialOverview } from '../services/social/analytics.js';
+import { allCapabilities } from '../services/social/capabilities.js';
+import { recommendForPost } from '../services/social/recommend.js';
 
 export const socialRouter: Router = Router();
 socialRouter.use(requireAuth);
@@ -437,6 +439,135 @@ socialRouter.get(
       problems,
       media,
     });
+  }),
+);
+
+/**
+ * Contextual AI recommendations for one platform post.
+ *
+ * Declared above the generic `/:id/:action` route below, which would otherwise
+ * swallow it — the same shadowing that once made publish-now answer "invalid
+ * path parameter".
+ */
+socialRouter.get(
+  '/platform-posts/:id/recommendations',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const report = await recommendForPost({
+      prisma,
+      organizationId: orgId(actor),
+      platformPostId: (req.params as { id: string }).id,
+    });
+    if (!report) throw notFound('Post');
+    res.json(report);
+  }),
+);
+
+/**
+ * What each platform can actually do.
+ *
+ * Static per deployment, so the workspace can fetch it once and stop guessing
+ * which controls to render. Organic surfaces and paid placements are separate
+ * lists precisely so the composer cannot offer ad targeting on an organic post.
+ */
+socialRouter.get(
+  '/capabilities',
+  asyncHandler(async (_req, res) => {
+    res.json({ platforms: allCapabilities() });
+  }),
+);
+
+/**
+ * The content workspace feed: platform posts, filtered the way the toolbar
+ * filters them.
+ *
+ * Returns platform posts rather than groups because the workspace's unit is
+ * "one post on one platform" — that is what a card shows, what a status
+ * describes and what the platform tabs filter by. The calendar endpoint above
+ * answers the same shape for a time window; this one answers it for a query.
+ */
+socialRouter.get(
+  '/content',
+  validateQuery(paginationQuery.extend({
+    clientId: z.string().max(40).optional(),
+    campaignId: z.string().max(40).optional(),
+    platform: z.nativeEnum(Platform).optional(),
+    status: z.nativeEnum(PlatformPostStatus).optional(),
+    search: z.string().max(200).optional(),
+    from: z.coerce.date().optional(),
+    to: z.coerce.date().optional(),
+  })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const query = req.query as unknown as z.infer<typeof paginationQuery> & {
+      clientId?: string; campaignId?: string; platform?: Platform;
+      status?: PlatformPostStatus; search?: string; from?: Date; to?: Date;
+    };
+    const clientId = resolveClientId(actor, query.clientId);
+
+    const where = {
+      ...(query.platform ? { platform: query.platform } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.from || query.to
+        ? {
+          scheduledAt: {
+            ...(query.from ? { gte: query.from } : {}),
+            ...(query.to ? { lte: query.to } : {}),
+          },
+        }
+        : {}),
+      // Search spans the words an operator would remember: the caption, the
+      // headline and the name of the idea the post belongs to.
+      ...(query.search
+        ? {
+          OR: [
+            { caption: { contains: query.search, mode: 'insensitive' as const } },
+            { headline: { contains: query.search, mode: 'insensitive' as const } },
+            { postGroup: { name: { contains: query.search, mode: 'insensitive' as const } } },
+          ],
+        }
+        : {}),
+      postGroup: {
+        ...scopeWhere(actor),
+        ...(clientId ? { clientId } : {}),
+        ...(query.campaignId ? { campaignId: query.campaignId } : {}),
+      },
+    };
+
+    const [items, total] = await Promise.all([
+      prisma.platformPost.findMany({
+        where,
+        ...paginate(query),
+        orderBy: { updatedAt: 'desc' },
+        select: {
+          id: true, platform: true, caption: true, headline: true, hashtags: true,
+          linkUrl: true, ctaLabel: true, config: true, status: true, scheduledAt: true,
+          timezone: true, externalUrl: true, publishedAt: true, updatedAt: true,
+          errorCode: true, errorMessage: true,
+          // Allowlisted exactly as the group projection is: the account's name is
+          // safe to show, its token is never selected and cannot become selected.
+          integrationAccount: { select: { id: true, name: true, tokenStatus: true } },
+          postGroup: {
+            select: {
+              id: true, name: true, status: true,
+              client: { select: { id: true, name: true, businessName: true } },
+              campaign: { select: { id: true, name: true } },
+            },
+          },
+          media: {
+            orderBy: { position: 'asc' },
+            select: {
+              position: true, role: true,
+              media: { select: { id: true, url: true, thumbnailUrl: true, type: true, mimeType: true } },
+            },
+          },
+        },
+      }),
+      prisma.platformPost.count({ where }),
+    ]);
+
+    res.json(pageResult(items, total, query));
   }),
 );
 

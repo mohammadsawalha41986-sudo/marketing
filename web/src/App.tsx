@@ -14,6 +14,7 @@ import { ClientDetailPage, ClientsPage } from './routes/clients';
 import { CampaignDetailPage, CampaignsPage } from './routes/campaigns';
 import { ContentDetailPage, ContentPage, StudioPage } from './routes/content';
 import { SocialPostsPage, SocialPostPage } from './routes/social';
+import { LibraryPage } from './routes/library';
 import { SocialCalendarPage } from './routes/social-calendar';
 import { SocialAnalyticsPage } from './routes/social-analytics';
 import { BrandPage } from './routes/brand';
@@ -104,6 +105,10 @@ export default function App() {
                 <Route path="media" element={<MediaPage />} />
                 <Route path="content" element={<ContentPage />} />
                 <Route path="content/:id" element={<ContentDetailPage />} />
+                {/* The content command centre. Platform is a route segment so
+                    "everything on Instagram" is a place, not a filter state. */}
+                <Route path="library" element={<LibraryPage />} />
+                <Route path="library/:platform" element={<LibraryPage />} />
                 <Route path="social" element={<SocialPostsPage />} />
                 <Route path="social/calendar" element={<SocialCalendarPage />} />
                 <Route path="social/analytics" element={<SocialAnalyticsPage />} />
