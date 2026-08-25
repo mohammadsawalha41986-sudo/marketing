@@ -15,6 +15,7 @@ import { CampaignDetailPage, CampaignsPage } from './routes/campaigns';
 import { ContentDetailPage, ContentPage, StudioPage } from './routes/content';
 import { SocialPostsPage, SocialPostPage } from './routes/social';
 import { LibraryPage } from './routes/library';
+import { ReportBuilderListPage, ReportBuilderPage } from './routes/report-builder';
 import { SocialCalendarPage } from './routes/social-calendar';
 import { SocialAnalyticsPage } from './routes/social-analytics';
 import { BrandPage } from './routes/brand';
@@ -124,6 +125,10 @@ export default function App() {
                 <Route path="analytics" element={<AnalyticsPage />} />
                 <Route path="creative-performance" element={<CreativePerformancePage />} />
                 <Route path="reports" element={<ReportsPage />} />
+                {/* Declared before reports/:id so "builder" is not read as an id. */}
+                <Route path="reports/builders" element={<ReportBuilderListPage />} />
+                <Route path="reports/builder" element={<ReportBuilderPage />} />
+                <Route path="reports/builder/:id" element={<ReportBuilderPage />} />
                 <Route path="reports/:id" element={<ReportDetailPage />} />
                 <Route path="approvals" element={<ApprovalsPage />} />
                 <Route path="notifications" element={<NotificationsPage />} />
