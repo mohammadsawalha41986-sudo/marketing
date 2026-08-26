@@ -67,7 +67,7 @@ interface PostGroupRow {
 
 export function SocialPostsPage() {
   const { currentId: clientId, current } = useRestaurant();
-  const { lang } = useI18n();
+  const { t, lang } = useI18n();
   const [creating, setCreating] = useState(false);
 
   const { data, loading, error, refetch } = useQuery<Paginated<PostGroupRow>>(
@@ -82,7 +82,7 @@ export function SocialPostsPage() {
         subtitle={
           current
             ? `One idea, written differently for each platform — for ${current.businessName}.`
-            : 'Choose a restaurant in the top bar.'
+            : t('common.pickProject')
         }
         action={
           <Button icon={Plus} onClick={() => setCreating(true)} disabled={!clientId}>

@@ -327,3 +327,59 @@ export function Swatch({
     </div>
   );
 }
+
+// ------------------------------------------------------- qualified metrics
+
+/**
+ * Phase 14's four metric states, and the one renderer that draws them.
+ *
+ * This lives here rather than on a page because two pages drawing an
+ * unmeasured figure differently is how one of them eventually prints zero.
+ * `UNAVAILABLE` means the provider has no such metric and never will;
+ * `NOT_FETCHED` means nobody has asked yet; `PROVIDER_ERROR` means we asked and
+ * were refused; `ZERO` names a measured value, whatever that value is. Each
+ * sends the operator somewhere different, and none of them is a zero to print.
+ */
+export type MetricState = 'ZERO' | 'UNAVAILABLE' | 'NOT_FETCHED' | 'PROVIDER_ERROR';
+
+export interface QualifiedMetric {
+  metric: string;
+  /** Non-null only when state is ZERO. A renderer cannot print an absence. */
+  value: number | null;
+  state: MetricState;
+  /** Why, when there is something to say. Never invented. */
+  note: string | null;
+}
+
+/** Currency and ratio metrics format differently; the rest are counts. */
+const MONEY_METRICS = new Set(['spend', 'budget', 'cpc', 'cpa', 'cpm']);
+const PERCENT_METRICS = new Set(['ctr']);
+const RATIO_METRICS = new Set(['roas']);
+
+export function MetricValue({
+  metric, currency = 'USD', className,
+}: { metric: QualifiedMetric; currency?: string; className?: string }) {
+  const { t, lang } = useI18n();
+
+  if (metric.state !== 'ZERO' || metric.value === null) {
+    return (
+      <span
+        className={cn('text-muted', className)}
+        title={metric.note ?? t(`report.state.${metric.state}` as never)}
+      >
+        {t(`report.short.${metric.state}` as never)}
+      </span>
+    );
+  }
+
+  const value = metric.value;
+  const text = MONEY_METRICS.has(metric.metric)
+    ? money(value, lang, true, currency)
+    : PERCENT_METRICS.has(metric.metric)
+      ? pct(value)
+      : RATIO_METRICS.has(metric.metric)
+        ? ratio(value)
+        : num(value, lang, true);
+
+  return <span className={className} dir="auto">{text}</span>;
+}

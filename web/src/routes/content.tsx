@@ -236,7 +236,7 @@ export function StudioPage() {
 
   const generate = async () => {
     if (!brief.clientId) {
-      push({ tone: 'error', title: 'Choose a restaurant first' });
+      push({ tone: 'error', title: t('common.pickProject') });
       return;
     }
     setGenerating(true);
@@ -281,7 +281,7 @@ export function StudioPage() {
 
   const save = async () => {
     if (!brief.clientId || !brief.name.trim()) {
-      push({ tone: 'error', title: 'A restaurant and a name are required' });
+      push({ tone: 'error', title: t('content.projectAndNameRequired') });
       return;
     }
     setSaving(true);
