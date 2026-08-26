@@ -15,6 +15,7 @@ import { CampaignDetailPage, CampaignsPage } from './routes/campaigns';
 import { ContentDetailPage, ContentPage, StudioPage } from './routes/content';
 import { SocialPostsPage, SocialPostPage } from './routes/social';
 import { LibraryPage } from './routes/library';
+import { MarketingOverviewPage, PlatformWorkspacePage } from './routes/marketing';
 import { ReportBuilderListPage, ReportBuilderPage } from './routes/report-builder';
 import { GoogleSectionPage } from './routes/google';
 import { SocialCalendarPage } from './routes/social-calendar';
@@ -113,6 +114,8 @@ export default function App() {
                     inside, so the group shares its loading and empty states. */}
                 <Route path="google" element={<GoogleSectionPage />} />
                 <Route path="google/:section" element={<GoogleSectionPage />} />
+                <Route path="marketing" element={<MarketingOverviewPage />} />
+                <Route path="marketing/:platform" element={<PlatformWorkspacePage />} />
                 <Route path="library" element={<LibraryPage />} />
                 <Route path="library/:platform" element={<LibraryPage />} />
                 <Route path="social" element={<SocialPostsPage />} />
