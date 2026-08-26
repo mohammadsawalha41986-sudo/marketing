@@ -105,6 +105,7 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
         icon: Wallet,
         end: true,
         children: [
+          { to: '/app/marketing/advertising/ai', labelKey: 'nav.adAi', icon: Sparkles },
           { to: '/app/marketing/advertising/creatives', labelKey: 'nav.adCreatives', icon: LayoutGrid },
           { to: '/app/marketing/advertising/calendar', labelKey: 'nav.adCalendar', icon: CalendarDays },
         ],
