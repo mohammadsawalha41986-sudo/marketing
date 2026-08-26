@@ -20,6 +20,20 @@ export const generatedCopySchema = z.object({
 
 export type GeneratedCopy = z.infer<typeof generatedCopySchema>;
 
+/**
+ * A public reply to a customer review.
+ *
+ * One field, and bounded: Google truncates long replies in the listing, and a
+ * reply is the one AI output in this product that gets published under the
+ * business's own name to a stranger. A tight shape is what stops a model
+ * returning a marketing paragraph where two sentences were asked for.
+ */
+export const reviewReplySchema = z.object({
+  reply: z.string().min(1).max(1500),
+});
+
+export type ReviewReply = z.infer<typeof reviewReplySchema>;
+
 export const hashtagSetSchema = z.object({
   hashtags: z.array(z.string().min(2).max(60)).min(1).max(30),
 });

@@ -16,6 +16,7 @@ import { ContentDetailPage, ContentPage, StudioPage } from './routes/content';
 import { SocialPostsPage, SocialPostPage } from './routes/social';
 import { LibraryPage } from './routes/library';
 import { ReportBuilderListPage, ReportBuilderPage } from './routes/report-builder';
+import { GoogleSectionPage } from './routes/google';
 import { SocialCalendarPage } from './routes/social-calendar';
 import { SocialAnalyticsPage } from './routes/social-analytics';
 import { BrandPage } from './routes/brand';
@@ -108,6 +109,10 @@ export default function App() {
                 <Route path="content/:id" element={<ContentDetailPage />} />
                 {/* The content command centre. Platform is a route segment so
                     "everything on Instagram" is a place, not a filter state. */}
+                {/* The Google workspace. One route entry; the section resolves
+                    inside, so the group shares its loading and empty states. */}
+                <Route path="google" element={<GoogleSectionPage />} />
+                <Route path="google/:section" element={<GoogleSectionPage />} />
                 <Route path="library" element={<LibraryPage />} />
                 <Route path="library/:platform" element={<LibraryPage />} />
                 <Route path="social" element={<SocialPostsPage />} />

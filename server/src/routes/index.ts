@@ -21,6 +21,7 @@ import { calendarRouter } from './calendar.js';
 import { approvalsRouter } from './approvals.js';
 import { analyticsRouter } from './analytics.js';
 import { reportsRouter } from './reports.js';
+import { googleRouter } from './google.js';
 import { adminRouter } from './admin.js';
 import { socialRouter } from './social.js';
 import { oauthCallbackRouter } from './oauth-callback.js';
@@ -89,6 +90,7 @@ apiRouter.use('/calendar', calendarRouter);
 apiRouter.use('/approvals', approvalsRouter);
 apiRouter.use('/analytics', analyticsRouter);
 apiRouter.use('/reports', reportsRouter);
+apiRouter.use('/google', googleRouter);
 apiRouter.use('/notifications', notificationsRouter);
 /*
  * Order matters. The OAuth callback is a redirect from the provider and carries

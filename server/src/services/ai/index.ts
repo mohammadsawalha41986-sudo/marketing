@@ -13,7 +13,7 @@ import { hasOpenAi, env } from '../../env.js';
 import type { BrandContext, ContentRequest } from './context.js';
 import { findForbidden, platformRule } from './context.js';
 import type { CampaignFacts } from './facts.js';
-import { openAiAnalysis, openAiCopy, openAiHashtags } from './openai.js';
+import { openAiAnalysis, openAiCopy, openAiHashtags, openAiReviewReply } from './openai.js';
 import { templateAnalysis, templateCopy, templateHashtags } from './template.js';
 import { generatedCopySchema, type AiResult, type Analysis, type GeneratedCopy } from './schemas.js';
 
@@ -135,6 +135,77 @@ export async function analyzeCampaigns(facts: CampaignFacts): Promise<AiResult<A
     'template',
     'Produced by the built-in rule-based analyst. Every figure quoted is measured, not estimated.',
   );
+}
+
+/**
+ * A suggested public reply to a review.
+ *
+ * Degrades to a template like every other generator here, so a deployment with
+ * no OPENAI_API_KEY still produces something an operator can edit rather than an
+ * error. Either way it is a *suggestion*: nothing in this module can publish,
+ * and the route that can will not accept a suggestion that a human has not
+ * approved.
+ */
+export async function generateReviewReply(
+  brand: BrandContext,
+  review: { rating: number; comment: string | null; category: string; reviewerName?: string | null; language: string },
+): Promise<AiResult<{ reply: string }>> {
+  const started = Date.now();
+
+  if (hasOpenAi) {
+    try {
+      const reply = await openAiReviewReply({ brand, ...review });
+      const { removed, text } = scrubText(reply, brand.forbiddenWords);
+      const notice = removed.length > 0 ? `Removed brand-forbidden wording: ${removed.join(', ')}.` : undefined;
+      return timed(started, { reply: text }, 'openai', notice);
+    } catch (error) {
+      console.warn('[ai] OpenAI review reply failed, using template:', (error as Error).message);
+    }
+  }
+
+  const { text } = scrubText(templateReply(brand, review), brand.forbiddenWords);
+  return timed(started, { reply: text }, 'template', FALLBACK_NOTICE);
+}
+
+/** Strips brand-forbidden words from a free-text string. */
+function scrubText(text: string, forbidden: string[]): { text: string; removed: string[] } {
+  const removed = findForbidden(text, forbidden);
+  let output = text;
+  for (const word of removed) {
+    output = output.replace(new RegExp(word.replace(/[.*+?^$()|[\]\\]/g, '\\$&'), 'gi'), '').replace(/\s{2,}/g, ' ');
+  }
+  return { text: output.trim(), removed };
+}
+
+/**
+ * The no-API-key reply.
+ *
+ * Deliberately plain and slightly generic: it is a starting point an operator
+ * edits, and a template that tried to sound specific would put invented detail
+ * about a visit nobody witnessed into a public answer.
+ */
+function templateReply(
+  brand: BrandContext,
+  review: { rating: number; comment: string | null; language: string },
+): string {
+  const arabic = review.language === 'AR';
+  const name = brand.businessName;
+
+  if (review.rating >= 4) {
+    return arabic
+      ? `شكراً جزيلاً على تقييمك ومشاركتك تجربتك مع ${name}. يسعدنا أن الزيارة نالت إعجابك، ونتطلع لاستقبالك مرة أخرى.`
+      : `Thank you for taking the time to share this. We are glad the visit lived up to expectations, and the team at ${name} looks forward to welcoming you back.`;
+  }
+
+  if (review.rating <= 2) {
+    return arabic
+      ? `نأسف لأن تجربتك مع ${name} لم تكن كما ينبغي، ونشكرك على إخبارنا. نود الاستماع إلى التفاصيل، فيرجى التواصل معنا مباشرة حتى نتمكن من معالجة الأمر.`
+      : `We are sorry this visit fell short of what ${name} aims for, and we appreciate you telling us. We would like to hear the details directly so we can look into it properly — please get in touch with us.`;
+  }
+
+  return arabic
+    ? `شكراً على ملاحظاتك. نأخذ كل تعليق على محمل الجد في ${name}، ويسعدنا التواصل معك لمعرفة المزيد.`
+    : `Thank you for the feedback. We take every comment seriously at ${name}, and we would welcome the chance to hear more.`;
 }
 
 export const aiStatus = () => ({

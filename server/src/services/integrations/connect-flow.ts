@@ -38,6 +38,7 @@ import {
   type FetchLike,
 } from './meta.js';
 import * as tiktok from './tiktok.js';
+import * as google from './google.js';
 
 /** Where each provider's callback lands. Documented so app consoles match. */
 export function callbackPath(platform: Platform): string {
@@ -77,12 +78,13 @@ export interface AuthorizeResult {
  * receiving Meta's authorization URL — which is exactly what happened while
  * TikTok was routed through `metaConfig()`.
  */
-type OAuthProvider = 'META' | 'TIKTOK';
+type OAuthProvider = 'META' | 'TIKTOK' | 'GOOGLE';
 
 const OAUTH_PROVIDER: Partial<Record<Platform, OAuthProvider>> = {
   [Platform.FACEBOOK]: 'META',
   [Platform.INSTAGRAM]: 'META',
   [Platform.TIKTOK]: 'TIKTOK',
+  [Platform.GOOGLE_BUSINESS]: 'GOOGLE',
 };
 
 function providerFor(platform: Platform): OAuthProvider {
@@ -112,8 +114,10 @@ export async function beginAuthorization(input: {
    */
   const metaCfg = provider === 'META' ? metaConfig() : null;
   const tiktokCfg = provider === 'TIKTOK' ? tiktok.tiktokConfig() : null;
+  const googleCfg = provider === 'GOOGLE' ? google.googleConfig() : null;
   const redirectUri =
-    (metaCfg?.redirectUri || tiktokCfg?.redirectUri) || callbackUrl(input.baseUrl, input.platform);
+    (metaCfg?.redirectUri || tiktokCfg?.redirectUri || googleCfg?.redirectUri)
+    || callbackUrl(input.baseUrl, input.platform);
 
   /*
    * And it has to point back at a route that exists. A console entry aimed at
@@ -123,7 +127,9 @@ export async function beginAuthorization(input: {
    */
   const expected = callbackPath(input.platform);
   if (!new URL(redirectUri).pathname.endsWith(expected)) {
-    const variable = provider === 'TIKTOK' ? 'TIKTOK_REDIRECT_URI' : 'META_REDIRECT_URI';
+    const variable = provider === 'TIKTOK'
+      ? 'TIKTOK_REDIRECT_URI'
+      : provider === 'GOOGLE' ? 'GOOGLE_REDIRECT_URI' : 'META_REDIRECT_URI';
     throw new Error(
       `${variable} must end with ${expected} so the authorization lands on the callback route. ` +
         `It currently points at ${new URL(redirectUri).pathname}.`,
@@ -154,7 +160,9 @@ export async function beginAuthorization(input: {
 
   const redirectTo = tiktokCfg
     ? tiktok.authorizationUrl({ config: tiktokCfg, state })
-    : authorizationUrl({ config: metaCfg!, state });
+    : googleCfg
+      ? google.authorizationUrl({ config: googleCfg, state })
+      : authorizationUrl({ config: metaCfg!, state });
 
   return { redirectTo, integrationId: integration.id };
 }
@@ -213,13 +221,19 @@ export async function completeCallback(input: {
         ? await tiktok.exchangeCode({
           config: tiktok.tiktokConfig(), code: input.code, fetchImpl: input.fetchImpl,
         })
-        : await exchangeCode({ config: metaConfig(), code: input.code, fetchImpl: input.fetchImpl });
+        : provider === 'GOOGLE'
+          ? await google.exchangeCode({
+            config: google.googleConfig(), code: input.code, fetchImpl: input.fetchImpl,
+          })
+          : await exchangeCode({ config: metaConfig(), code: input.code, fetchImpl: input.fetchImpl });
 
     // The connection is only real if the provider answers with this token.
     const identity =
       provider === 'TIKTOK'
         ? await tiktok.validateToken({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl })
-        : await validateToken({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
+        : provider === 'GOOGLE'
+          ? await google.validateToken({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl })
+          : await validateToken({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
     /*
      * What Meta granted, asked as its own question.
      *
@@ -234,7 +248,7 @@ export async function completeCallback(input: {
      * /me/permissions with a TikTok token would fail the whole connection.
      */
     const granted =
-      provider === 'TIKTOK'
+      provider === 'TIKTOK' || provider === 'GOOGLE'
         ? tokens.scopes
         : await grantedPermissions({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
 
@@ -243,12 +257,16 @@ export async function completeCallback(input: {
     const canPublishPages =
       provider === 'TIKTOK'
         ? granted.includes(tiktok.PUBLISH_SCOPE)
-        : granted.includes(PAGE_PUBLISH_PERMISSION);
+        : provider === 'GOOGLE'
+          ? granted.includes(google.BUSINESS_SCOPE)
+          : granted.includes(PAGE_PUBLISH_PERMISSION);
 
     const discovered =
       provider === 'TIKTOK'
         ? await tiktok.discoverAccounts({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl })
-        : await discoverAccounts({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
+        : provider === 'GOOGLE'
+          ? await google.discoverAccounts({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl })
+          : await discoverAccounts({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
 
     await prisma.$transaction(async (tx) => {
       await tx.integration.update({

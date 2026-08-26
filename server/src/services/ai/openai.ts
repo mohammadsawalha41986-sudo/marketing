@@ -11,7 +11,9 @@ import { env } from '../../env.js';
 import type { BrandContext, ContentRequest } from './context.js';
 import { platformRule } from './context.js';
 import type { CampaignFacts } from './facts.js';
-import { analysisSchema, generatedCopySchema, type Analysis, type GeneratedCopy } from './schemas.js';
+import {
+  analysisSchema, generatedCopySchema, reviewReplySchema, type Analysis, type GeneratedCopy,
+} from './schemas.js';
 
 let client: OpenAI | null = null;
 
@@ -125,4 +127,52 @@ export async function openAiAnalysis(facts: CampaignFacts): Promise<Analysis> {
     ),
   );
   return analysisSchema.parse(raw);
+}
+
+/**
+ * The system prompt for a public review reply.
+ *
+ * Stricter than the copy prompt, because the output is published under the
+ * business's name to a named customer on a page that ranks in search. The
+ * compensation rule is the load-bearing one: an apology that offers a free meal
+ * is a commitment the business never authorised, and it is the single most
+ * likely thing a helpful model volunteers.
+ */
+const REPLY_SYSTEM = `You write short public replies to customer reviews on behalf of a business.
+
+Rules:
+- Reply only to what the review actually says. Never invent details about the visit.
+- Never offer refunds, vouchers, discounts, free items or any compensation.
+- Never state facts, policies, prices or awards that are not in the brand context.
+- Never use any word listed in forbiddenWords.
+- Two or three sentences. No hashtags, no emoji, no slogans, no marketing language.
+- Write in the requested language only. For Arabic, write natural Modern Standard Arabic.
+- Sign off as the business, never as an individual employee.
+
+Return JSON: { "reply": string }`;
+
+export async function openAiReviewReply(input: {
+  brand: BrandContext;
+  language: string;
+  rating: number;
+  comment: string | null;
+  category: string;
+  reviewerName?: string | null;
+}): Promise<string> {
+  const user = [
+    `Business: ${input.brand.businessName}`,
+    input.brand.businessType ? `Type: ${input.brand.businessType}` : null,
+    input.brand.toneOfVoice ? `Tone of voice: ${input.brand.toneOfVoice}` : null,
+    input.brand.personality.length > 0 ? `Personality: ${input.brand.personality.join(', ')}` : null,
+    input.brand.forbiddenWords.length > 0 ? `forbiddenWords: ${input.brand.forbiddenWords.join(', ')}` : null,
+    `Language: ${input.language}`,
+    '',
+    `Review rating: ${input.rating} of 5`,
+    `Review topic: ${input.category}`,
+    input.reviewerName ? `Reviewer: ${input.reviewerName}` : null,
+    input.comment ? `Review text: "${input.comment}"` : 'The reviewer left a rating with no text.',
+  ].filter(Boolean).join('\n');
+
+  const raw = await complete(REPLY_SYSTEM, user);
+  return reviewReplySchema.parse(raw).reply;
 }
