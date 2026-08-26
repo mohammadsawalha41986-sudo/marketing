@@ -1057,8 +1057,18 @@ model AiRecommendation {
   publicationId  String?
 
   type           RecommendationType
+  /// How soon this wants attention. Separate from confidence: a low-confidence
+  /// finding about a rejected ad still outranks a high-confidence nicety.
+  priority       RecommendationPriority @default(P2)
   /// PERFORMING | UNDERPERFORMING | INSUFFICIENT_DATA | AT_RISK
   state          String
+  /// Which services were actually queried to produce this. Never aspirational —
+  /// a recommendation that claims a source it did not read is unfalsifiable.
+  dataSources    String[]           @default([])
+  /// The platform this concerns, when it concerns one.
+  platform       Platform?
+  /// The place this concerns, as the campaign recorded it (e.g. a country code).
+  location       String?
   title          String
   /// The reasoning, in the operator's words.
   reason         String
@@ -1107,6 +1117,31 @@ enum RecommendationType {
   REDUCE_SPEND
   REAUTHORIZE_ACCOUNT
   NO_ACTION
+
+  /// Appended, never inserted — existing rows hold the values above and
+  /// PostgreSQL orders enum values by definition.
+  BEST_PLATFORM
+  BEST_CAMPAIGN
+  BEST_TIME
+  LOCATION_OPPORTUNITY
+  WINNING_CREATIVE
+  CREATIVE_FATIGUE
+  ORGANIC_TO_PAID
+  PAID_TO_ORGANIC
+  PERFORMANCE_ANOMALY
+  DATA_QUALITY
+  REVIEW_COPY
+  REVIEW_CTA
+  REVIEW_HASHTAGS
+  REALLOCATE_BUDGET
+}
+
+/// How soon a recommendation wants a person, independent of how sure it is.
+enum RecommendationPriority {
+  P0
+  P1
+  P2
+  P3
 }
 
 enum RecommendationConfidence {
@@ -1122,6 +1157,9 @@ enum RecommendationStatus {
   REJECTED
   EXPIRED
   FAILED
+
+  /// Appended. A person has read it and neither accepted nor dismissed it yet.
+  REVIEWED
 }
 
 /// Guardrails for anything the system would change on its own.
