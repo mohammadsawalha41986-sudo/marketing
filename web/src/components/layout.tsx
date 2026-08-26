@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
+  Wallet,
   Award, BarChart3, Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, CreditCard, FileText, Gauge, Image,
   LayoutDashboard, LayoutGrid, Languages, LogOut, MapPin, Search, Star, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
   Rocket, Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Upload, Users, X, type LucideIcon, Share2,
@@ -70,11 +71,52 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
       { to: '/app/studio', labelKey: 'nav.aiContent', icon: Sparkles },
     ],
   },
+  /*
+   * Marketing, then Content — the command centre first, and the places an
+   * operator actually works underneath it.
+   *
+   * Each platform appears exactly once, under Platforms, because the workspace
+   * behind it covers that platform's organic *and* paid channels. Listing
+   * Facebook under an "Organic" heading and Meta Ads under an "Advertising"
+   * one would put two entries on the same route, and the second would look
+   * like a page that had gone missing.
+   */
   {
     heading: 'group.marketing',
     items: [
+      {
+        to: '/app/marketing',
+        labelKey: 'nav.marketingOverview',
+        icon: LayoutGrid,
+        end: true,
+        children: [
+          { to: '/app/marketing/facebook', labelKey: 'nav.facebook', icon: Share2 },
+          { to: '/app/marketing/instagram', labelKey: 'nav.instagram', icon: Share2 },
+          { to: '/app/marketing/tiktok', labelKey: 'nav.tiktok', icon: Share2 },
+          { to: '/app/marketing/youtube', labelKey: 'nav.youtube', icon: Share2 },
+          { to: '/app/marketing/linkedin', labelKey: 'nav.linkedin', icon: Share2 },
+          { to: '/app/marketing/snapchat', labelKey: 'nav.snapchat', icon: Share2 },
+          { to: '/app/marketing/google_ads', labelKey: 'nav.googleAds', icon: Megaphone },
+        ],
+      },
+      {
+        to: '/app/marketing/advertising',
+        labelKey: 'nav.advertising',
+        icon: Wallet,
+        end: true,
+        children: [
+          { to: '/app/marketing/advertising/creatives', labelKey: 'nav.adCreatives', icon: LayoutGrid },
+          { to: '/app/marketing/advertising/calendar', labelKey: 'nav.adCalendar', icon: CalendarDays },
+        ],
+      },
       { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
       { to: '/app/meta-campaigns', labelKey: 'nav.metaCampaigns', icon: Rocket },
+    ],
+  },
+  {
+    heading: 'group.content',
+    items: [
+      { to: '/app/content', labelKey: 'nav.organicContent', icon: PenLine },
       {
         to: '/app/library',
         labelKey: 'nav.contentHub',
@@ -88,10 +130,9 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
           { to: '/app/library/linkedin', labelKey: 'nav.linkedin', icon: Share2 },
         ],
       },
-      { to: '/app/content', labelKey: 'nav.organicContent', icon: PenLine },
+      { to: '/app/media', labelKey: 'nav.mediaLibrary', icon: Image },
       { to: '/app/social', labelKey: 'nav.socialPosts', icon: Share2 },
       { to: '/app/social/calendar', labelKey: 'nav.socialCalendar', icon: CalendarDays },
-      { to: '/app/media', labelKey: 'nav.mediaLibrary', icon: Image },
       { to: '/app/social/analytics', labelKey: 'nav.socialAnalytics', icon: BarChart3 },
     ],
   },

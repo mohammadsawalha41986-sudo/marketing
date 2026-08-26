@@ -24,6 +24,8 @@ import { reportsRouter } from './reports.js';
 import { googleRouter } from './google.js';
 import { adminRouter } from './admin.js';
 import { socialRouter } from './social.js';
+import { marketingRouter } from './marketing.js';
+import { advertisingRouter } from './advertising.js';
 import { oauthCallbackRouter } from './oauth-callback.js';
 import { integrationsRouter, notificationsRouter, subscriptionsRouter, usersRouter } from './misc.js';
 
@@ -86,6 +88,8 @@ apiRouter.use('/ceo', ceoRouter);
 apiRouter.use('/creatives', creativesRouter);
 apiRouter.use('/content', contentRouter);
 apiRouter.use('/social', socialRouter);
+apiRouter.use('/marketing', marketingRouter);
+apiRouter.use('/advertising', advertisingRouter);
 apiRouter.use('/calendar', calendarRouter);
 apiRouter.use('/approvals', approvalsRouter);
 apiRouter.use('/analytics', analyticsRouter);
