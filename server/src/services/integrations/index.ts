@@ -33,6 +33,8 @@ import { encryptionConfigured } from '../../lib/crypto.js';
  */
 import { TIKTOK_SCOPES } from './tiktok.js';
 import { GOOGLE_SCOPES } from './google.js';
+import { YOUTUBE_SCOPES } from './youtube.js';
+import { LINKEDIN_SCOPES } from './linkedin.js';
 
 export interface AdapterMetric {
   date: string;
@@ -332,14 +334,56 @@ class GoogleBusinessAdapter extends BaseAdapter {
 class LinkedInAdapter extends BaseAdapter {
   readonly platform = 'LINKEDIN' as Platform;
   readonly label = 'LinkedIn';
-  override readonly capabilities = { publish: true, metrics: true, audiences: true };
+  override readonly capabilities = { publish: true, metrics: false, audiences: false };
+  override readonly implementation: ImplementationReport = {
+    oauth: 'IMPLEMENTED',
+    accountDiscovery: 'IMPLEMENTED',
+    // Text posts only; image posting is a three-call upload dance that is not
+    // written yet, and the publisher refuses an image rather than drop it.
+    publish: 'IMPLEMENTED',
+    // Community Management reporting is a separate surface and is not read.
+    metrics: 'ARCHITECTURE_ONLY',
+    conversions: 'NOT_SUPPORTED',
+  };
 
   override oauth(): OAuthDescriptor {
     return {
       authorizeUrl: 'https://www.linkedin.com/oauth/v2/authorization',
-      scopes: ['r_ads', 'r_ads_reporting', 'w_organization_social'],
-      requiredEnv: ['LINKEDIN_CLIENT_ID', 'LINKEDIN_CLIENT_SECRET', 'LINKEDIN_REDIRECT_URI'],
+      scopes: [...LINKEDIN_SCOPES],
+      // The redirect URI is optional: unset, it is derived from the request
+      // host, so listing it here would report a configured deployment as
+      // missing a variable it does not need.
+      requiredEnv: ['LINKEDIN_CLIENT_ID', 'LINKEDIN_CLIENT_SECRET'],
       docsUrl: 'https://learn.microsoft.com/en-us/linkedin/marketing/',
+    };
+  }
+}
+
+/**
+ * YouTube rides Google's OAuth client with a YouTube-shaped grant, which is why
+ * its required variables are Google's. Only the scope and the discovered asset
+ * differ; see `youtube.ts`.
+ */
+class YouTubeAdapter extends BaseAdapter {
+  readonly platform = 'YOUTUBE' as Platform;
+  readonly label = 'YouTube';
+  override readonly capabilities = { publish: true, metrics: false, audiences: false };
+  override readonly implementation: ImplementationReport = {
+    oauth: 'IMPLEMENTED',
+    accountDiscovery: 'IMPLEMENTED',
+    // Video upload via the resumable Data API v3 path. Text-only community
+    // posts have no public endpoint and the publisher refuses them honestly.
+    publish: 'IMPLEMENTED',
+    metrics: 'ARCHITECTURE_ONLY',
+    conversions: 'NOT_SUPPORTED',
+  };
+
+  override oauth(): OAuthDescriptor {
+    return {
+      authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      scopes: [...YOUTUBE_SCOPES],
+      requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'],
+      docsUrl: 'https://developers.google.com/youtube/v3/guides/uploading_a_video',
     };
   }
 }
@@ -367,6 +411,7 @@ const adapters: Record<string, PlatformAdapter> = {
   GOOGLE_ADS: new GoogleAdsAdapter(),
   GOOGLE_BUSINESS: new GoogleBusinessAdapter(),
   LINKEDIN: new LinkedInAdapter(),
+  YOUTUBE: new YouTubeAdapter(),
   X: new XAdapter(),
 };
 

@@ -91,12 +91,22 @@ export function googleConfigured(env: NodeJS.ProcessEnv = process.env): boolean 
     .every((key) => Boolean(env[key]?.trim()));
 }
 
-export function authorizationUrl(input: { config: GoogleConfig; state: string }): string {
+/**
+ * `scopes` is a parameter because more than one platform sits behind this one
+ * OAuth client. Business Profile asks for `business.manage`; YouTube asks for
+ * `youtube.upload` and would be refused outright if it inherited Business
+ * Profile's list. The default keeps every existing caller unchanged.
+ */
+export function authorizationUrl(input: {
+  config: GoogleConfig;
+  state: string;
+  scopes?: readonly string[];
+}): string {
   const url = new URL(AUTHORIZE);
   url.searchParams.set('client_id', input.config.clientId);
   url.searchParams.set('redirect_uri', input.config.redirectUri);
   url.searchParams.set('response_type', 'code');
-  url.searchParams.set('scope', GOOGLE_SCOPES.join(' '));
+  url.searchParams.set('scope', (input.scopes ?? GOOGLE_SCOPES).join(' '));
   url.searchParams.set('state', input.state);
   /*
    * Both of these, always. `access_type=offline` is what makes Google issue a

@@ -39,8 +39,18 @@ const API = 'https://open.tiktokapis.com/v2';
  * are requested because TikTok grants per-scope and the publisher checks which
  * one actually came back rather than assuming the request was honoured.
  */
-export const TIKTOK_SCOPES = ['user.info.basic', 'video.publish', 'video.upload'] as const;
+/*
+ * `video.list` is what `video/query` needs in order to read a published
+ * video's like, comment, share and view counts. It is requested alongside the
+ * publishing scopes rather than in a second consent trip, and because TikTok
+ * grants per scope, a creator who declines it still connects and still
+ * publishes — metric ingestion reports MISSING_PERMISSION and everything else
+ * carries on. Metrics are not worth breaking a publish over.
+ */
+export const TIKTOK_SCOPES = ['user.info.basic', 'video.publish', 'video.upload', 'video.list'] as const;
 export const PUBLISH_SCOPE = 'video.publish';
+/** What reading a published video's statistics requires. */
+export const METRICS_SCOPE = 'video.list';
 
 export interface TikTokConfig {
   clientKey: string;
