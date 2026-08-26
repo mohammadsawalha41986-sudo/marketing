@@ -1,9 +1,9 @@
 /**
- * The restaurant currently being worked on.
+ * The project currently being worked on.
  *
- * Every screen in here is about one restaurant at a time — its campaigns, its
+ * Every screen in here is about one project at a time — its campaigns, its
  * posts, its assets, its integrations. Before this, each page carried its own
- * picker, so choosing a restaurant on Content and then opening Analytics meant
+ * picker, so choosing a project on Content and then opening Analytics meant
  * choosing it again, and the two could silently disagree about whose numbers
  * were on screen. The choice belongs to the session, not to the page.
  *
@@ -11,9 +11,12 @@
  * pages like Campaigns and Content filter from the `?client=` search param
  * (which is what makes a filtered view linkable), while Media, Integrations and
  * Analytics held the id in local state. This provider is the single source, and
- * keeps `?client=` in step so a link still carries the restaurant with it.
+ * keeps `?client=` in step so a link still carries the project with it.
  *
- * The API and the database still say client. Only the vocabulary changed.
+ * The API, the database and this module's own symbols still say client and
+ * restaurant. Renaming them would be a migration and a wide refactor for a
+ * wording change, so the vocabulary meets the product at the translation layer
+ * and at this type. Only what an operator reads has changed.
  */
 
 import {
@@ -28,15 +31,21 @@ export interface RestaurantOption {
   id: string;
   name: string;
   businessName: string;
+  /**
+   * What kind of business this project is — restaurant, clinic, retailer.
+   * A property of the project, never the global noun for it: the product
+   * manages marketing for companies of any kind, and the entity is a Project.
+   */
+  businessType: string | null;
   logoUrl: string | null;
   status: string;
 }
 
 interface RestaurantValue {
-  /** Every restaurant the signed-in operator can act on. */
+  /** Every project the signed-in operator can act on. */
   restaurants: RestaurantOption[];
   loading: boolean;
-  /** Empty string means "all restaurants", which several pages support. */
+  /** Empty string means "all projects", which several pages support. */
   currentId: string;
   current: RestaurantOption | null;
   setCurrentId: (id: string) => void;
@@ -52,7 +61,7 @@ export function RestaurantProvider({ children }: { children: ReactNode }) {
   const [params, setParams] = useSearchParams();
 
   // A deep link wins over whatever was chosen last: someone sent that URL
-  // because of the restaurant in it.
+  // because of the project in it.
   const fromUrl = params.get('client') ?? '';
   const [stored, setStored] = useState<string>(() => localStorage.getItem(STORAGE_KEY) ?? '');
   const currentId = isClientUser ? user?.clientId ?? '' : fromUrl || stored;
@@ -81,7 +90,7 @@ export function RestaurantProvider({ children }: { children: ReactNode }) {
     };
   }, [isAgency]);
 
-  // A restaurant that was deleted, or that belongs to another organization,
+  // A project that was deleted, or that belongs to another organization,
   // must not linger as the active selection.
   useEffect(() => {
     if (!isAgency || loading || !stored || restaurants.length === 0) return;

@@ -15,7 +15,9 @@ import { CampaignDetailPage, CampaignsPage } from './routes/campaigns';
 import { ContentDetailPage, ContentPage, StudioPage } from './routes/content';
 import { SocialPostsPage, SocialPostPage } from './routes/social';
 import { LibraryPage } from './routes/library';
-import { MarketingOverviewPage, PlatformWorkspacePage } from './routes/marketing';
+import {
+  MarketingCalendarPage, MarketingOverviewPage, PlatformWorkspacePage,
+} from './routes/marketing';
 import { AdvertisingAiPage } from './routes/advertising-ai';
 import {
   AdCreativesPage, AdvertisingPage,
@@ -125,6 +127,9 @@ export default function App() {
                 <Route path="marketing/advertising/creatives" element={<AdCreativesPage />} />
                 <Route path="marketing/advertising/calendar" element={<PaidCalendarPage />} />
                 <Route path="marketing/advertising/campaigns/:id" element={<AdCampaignDetailPage />} />
+                {/* Declared before :platform so "calendar" is not read as a
+                    workspace slug. */}
+                <Route path="marketing/calendar" element={<MarketingCalendarPage />} />
                 <Route path="marketing/:platform" element={<PlatformWorkspacePage />} />
                 <Route path="library" element={<LibraryPage />} />
                 <Route path="library/:platform" element={<LibraryPage />} />

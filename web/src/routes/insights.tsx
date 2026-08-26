@@ -63,7 +63,7 @@ export function AnalyticsPage({ portal = false }: { portal?: boolean }) {
   const runAnalysis = async () => {
     const target = clientId || restaurants[0]?.id;
     if (!target) {
-      push({ tone: 'error', title: 'Choose a restaurant to analyse' });
+      push({ tone: 'error', title: t('common.pickProject') });
       return;
     }
     setAnalysing(true);

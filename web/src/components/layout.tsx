@@ -7,7 +7,7 @@ import {
   Wallet,
   Award, BarChart3, Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, CreditCard, FileText, Gauge, Image,
   LayoutDashboard, LayoutGrid, Languages, LogOut, MapPin, Search, Star, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
-  Rocket, Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Upload, Users, X, type LucideIcon, Share2,
+  Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Upload, Users, X, type LucideIcon, Share2,
 } from 'lucide-react';
 
 import { api, qs, type Paginated } from '../lib/api';
@@ -18,6 +18,7 @@ import { useTheme } from '../lib/theme';
 import { cn } from '../lib/utils';
 import { relative } from '../lib/format';
 import { Avatar, Badge, useToast } from './ui';
+import { CreateButton } from './create-flow';
 
 interface NavItem {
   to: string;
@@ -38,24 +39,80 @@ interface NavItem {
 /*
  * The operator's navigation.
  *
- * Grouped by what you came here to do rather than by which database table the
- * page reads, which is why Campaigns and Organic Content sit together under
- * Marketing while the studio pages that produce them sit under Create.
+ * Grouped by the shape of the work rather than by which table a page reads:
+ * Marketing OS is where you look, Platforms is where you work, and Content and
+ * Advertising are the two channels underneath. Analytics and Reports are kept
+ * apart on purpose — analysis and the artefact you send a client are different
+ * jobs, and Phase 15's Report Builder is the only place the second happens.
  *
- * Two entries are deliberately gone from the top level. "Clients" is now
- * Restaurants — the same page and the same API, named for what it holds.
- * "Approvals" was a whole section for a field on a piece of content; review
- * state now lives with the content it belongs to, and the page itself is still
- * routed and still reachable, just not competing for a slot in the primary nav.
+ * Nothing is listed that does not exist. The master spec names a few surfaces
+ * this deployment has not built — ad sets as their own page, team and billing
+ * settings, a separate creative-intelligence screen — and a nav entry leading
+ * to an empty page is the fake functionality §48 forbids, so they are absent
+ * until they are real.
  */
 const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
   {
-    heading: 'group.workspace',
+    heading: 'nav.marketingOs',
     items: [
       { to: '/app/dashboard', labelKey: 'nav.home', icon: LayoutDashboard },
-      { to: '/app/restaurants', labelKey: 'nav.restaurants', icon: Store },
-      { to: '/app/brand', labelKey: 'nav.brandDna', icon: Palette },
-      { to: '/app/media', labelKey: 'nav.assets', icon: Image },
+      { to: '/app/marketing', labelKey: 'nav.marketingOverview', icon: LayoutGrid, end: true },
+    ],
+  },
+  /*
+   * Platforms.
+   *
+   * One entry per *workspace*, not per `Platform`. Meta is one login and one
+   * app review covering Facebook and Instagram; Google is one OAuth client
+   * covering Business Profile and Ads. Listing the members separately would put
+   * two sidebar entries on one authorisation and invite the operator to connect
+   * the same thing twice.
+   *
+   * Every workspace is listed whether or not this deployment can use it,
+   * because the page's job is to say *why* not — a platform that quietly
+   * disappears from the nav teaches nothing.
+   */
+  {
+    heading: 'group.platforms',
+    items: [
+      { to: '/app/marketing/meta', labelKey: 'nav.meta', icon: Share2 },
+      { to: '/app/marketing/tiktok', labelKey: 'nav.tiktok', icon: Share2 },
+      { to: '/app/marketing/google', labelKey: 'nav.google', icon: MapPin },
+      { to: '/app/marketing/youtube', labelKey: 'nav.youtube', icon: Clapperboard },
+      { to: '/app/marketing/linkedin', labelKey: 'nav.linkedin', icon: Share2 },
+      { to: '/app/marketing/snapchat', labelKey: 'nav.snapchat', icon: Share2 },
+    ],
+  },
+  {
+    heading: 'group.content',
+    items: [
+      {
+        to: '/app/library',
+        labelKey: 'nav.commandCenter',
+        icon: LayoutGrid,
+        end: true,
+        children: [
+          { to: '/app/library/facebook', labelKey: 'nav.facebook', icon: Share2 },
+          { to: '/app/library/instagram', labelKey: 'nav.instagram', icon: Share2 },
+          { to: '/app/library/tiktok', labelKey: 'nav.tiktok', icon: Share2 },
+          { to: '/app/library/youtube', labelKey: 'nav.youtube', icon: Share2 },
+          { to: '/app/library/linkedin', labelKey: 'nav.linkedin', icon: Share2 },
+        ],
+      },
+      { to: '/app/social', labelKey: 'nav.composer', icon: PenLine },
+      { to: '/app/content', labelKey: 'nav.organicContent', icon: FileText },
+      { to: '/app/media', labelKey: 'nav.mediaLibrary', icon: Image },
+      { to: '/app/marketing/calendar', labelKey: 'nav.unifiedCalendar', icon: CalendarDays },
+    ],
+  },
+  {
+    heading: 'group.advertising',
+    items: [
+      { to: '/app/marketing/advertising', labelKey: 'nav.advertising', icon: Wallet, end: true },
+      { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
+      { to: '/app/marketing/advertising/creatives', labelKey: 'nav.adCreatives', icon: LayoutGrid },
+      { to: '/app/marketing/advertising/calendar', labelKey: 'nav.adCalendar', icon: CalendarDays },
+      { to: '/app/marketing/advertising/ai', labelKey: 'nav.adAi', icon: Sparkles },
     ],
   },
   {
@@ -71,70 +128,20 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
       { to: '/app/studio', labelKey: 'nav.aiContent', icon: Sparkles },
     ],
   },
-  /*
-   * Marketing, then Content — the command centre first, and the places an
-   * operator actually works underneath it.
-   *
-   * Each platform appears exactly once, under Platforms, because the workspace
-   * behind it covers that platform's organic *and* paid channels. Listing
-   * Facebook under an "Organic" heading and Meta Ads under an "Advertising"
-   * one would put two entries on the same route, and the second would look
-   * like a page that had gone missing.
-   */
   {
-    heading: 'group.marketing',
+    heading: 'group.analytics',
     items: [
-      {
-        to: '/app/marketing',
-        labelKey: 'nav.marketingOverview',
-        icon: LayoutGrid,
-        end: true,
-        children: [
-          { to: '/app/marketing/facebook', labelKey: 'nav.facebook', icon: Share2 },
-          { to: '/app/marketing/instagram', labelKey: 'nav.instagram', icon: Share2 },
-          { to: '/app/marketing/tiktok', labelKey: 'nav.tiktok', icon: Share2 },
-          { to: '/app/marketing/youtube', labelKey: 'nav.youtube', icon: Share2 },
-          { to: '/app/marketing/linkedin', labelKey: 'nav.linkedin', icon: Share2 },
-          { to: '/app/marketing/snapchat', labelKey: 'nav.snapchat', icon: Share2 },
-          { to: '/app/marketing/google_ads', labelKey: 'nav.googleAds', icon: Megaphone },
-        ],
-      },
-      {
-        to: '/app/marketing/advertising',
-        labelKey: 'nav.advertising',
-        icon: Wallet,
-        end: true,
-        children: [
-          { to: '/app/marketing/advertising/ai', labelKey: 'nav.adAi', icon: Sparkles },
-          { to: '/app/marketing/advertising/creatives', labelKey: 'nav.adCreatives', icon: LayoutGrid },
-          { to: '/app/marketing/advertising/calendar', labelKey: 'nav.adCalendar', icon: CalendarDays },
-        ],
-      },
-      { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
-      { to: '/app/meta-campaigns', labelKey: 'nav.metaCampaigns', icon: Rocket },
+      { to: '/app/analytics', labelKey: 'nav.overview', icon: ChartNoAxesCombined },
+      { to: '/app/social/analytics', labelKey: 'nav.socialAnalytics', icon: BarChart3 },
+      { to: '/app/creative-performance', labelKey: 'nav.creativePerformance', icon: Award },
+      { to: '/app/ceo', labelKey: 'nav.ceo', icon: Gauge },
     ],
   },
   {
-    heading: 'group.content',
+    heading: 'group.reports',
     items: [
-      { to: '/app/content', labelKey: 'nav.organicContent', icon: PenLine },
-      {
-        to: '/app/library',
-        labelKey: 'nav.contentHub',
-        icon: LayoutGrid,
-        end: true,
-        children: [
-          { to: '/app/library/facebook', labelKey: 'nav.facebook', icon: Share2 },
-          { to: '/app/library/instagram', labelKey: 'nav.instagram', icon: Share2 },
-          { to: '/app/library/tiktok', labelKey: 'nav.tiktok', icon: Share2 },
-          { to: '/app/library/youtube', labelKey: 'nav.youtube', icon: Share2 },
-          { to: '/app/library/linkedin', labelKey: 'nav.linkedin', icon: Share2 },
-        ],
-      },
-      { to: '/app/media', labelKey: 'nav.mediaLibrary', icon: Image },
-      { to: '/app/social', labelKey: 'nav.socialPosts', icon: Share2 },
-      { to: '/app/social/calendar', labelKey: 'nav.socialCalendar', icon: CalendarDays },
-      { to: '/app/social/analytics', labelKey: 'nav.socialAnalytics', icon: BarChart3 },
+      { to: '/app/reports/builders', labelKey: 'nav.reportBuilder', icon: FileText },
+      { to: '/app/reports', labelKey: 'nav.savedReports', icon: ScrollText },
     ],
   },
   {
@@ -154,31 +161,12 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
     ],
   },
   {
-    heading: 'group.social',
-    items: [
-      { to: '/app/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
-    ],
-  },
-  {
-    heading: 'group.insights',
-    items: [
-      { to: '/app/analytics', labelKey: 'nav.analytics', icon: ChartNoAxesCombined },
-      { to: '/app/creative-performance', labelKey: 'nav.creativePerformance', icon: Award },
-      { to: '/app/ceo', labelKey: 'nav.ceo', icon: Gauge },
-      { to: '/app/reports', labelKey: 'nav.reports', icon: FileText },
-      { to: '/app/reports/builders', labelKey: 'nav.reportBuilder', icon: FileText },
-    ],
-  },
-  {
-    heading: 'group.operations',
-    items: [
-      { to: '/app/notifications', labelKey: 'nav.notifications', icon: Bell },
-    ],
-  },
-  {
     heading: 'group.settings',
     items: [
+      { to: '/app/restaurants', labelKey: 'nav.restaurants', icon: Store },
+      { to: '/app/brand', labelKey: 'nav.brandDna', icon: Palette },
       { to: '/app/integrations', labelKey: 'nav.integrations', icon: CreditCard },
+      { to: '/app/notifications', labelKey: 'nav.notifications', icon: Bell },
       { to: '/app/settings', labelKey: 'nav.settings', icon: Settings },
     ],
   },
@@ -476,7 +464,7 @@ function NotificationBell() {
   const [items, setItems] = useState<NotificationRow[]>([]);
   const [unread, setUnread] = useState(0);
   const navigate = useNavigate();
-  const { lang } = useI18n();
+  const { lang, t } = useI18n();
   const ref = useRef<HTMLDivElement>(null);
 
   const load = async () => {
@@ -516,7 +504,7 @@ function NotificationBell() {
       <button
         onClick={() => setOpen((value) => !value)}
         className="relative grid h-9 w-9 place-items-center rounded-lg border border-line bg-elevated text-muted transition-colors hover:text-fg"
-        aria-label="Notifications"
+        aria-label={t('notif.title')}
       >
         <Bell className="h-4 w-4" />
         {unread > 0 ? (
@@ -536,16 +524,16 @@ function NotificationBell() {
             className="absolute end-0 z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-line bg-surface shadow-lift"
           >
             <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
-              <p className="text-sm font-semibold">Notifications</p>
+              <p className="text-sm font-semibold">{t('notif.title')}</p>
               {unread > 0 ? (
                 <button onClick={markAll} className="text-[12px] text-brand hover:underline">
-                  Mark all read
+                  {t('notif.markAll')}
                 </button>
               ) : null}
             </div>
             <div className="max-h-80 overflow-y-auto">
               {items.length === 0 ? (
-                <p className="px-4 py-8 text-center text-[13px] text-muted">Nothing yet.</p>
+                <p className="px-4 py-8 text-center text-[13px] text-muted">{t('notif.empty')}</p>
               ) : (
                 items.map((item) => (
                   <button
@@ -778,6 +766,16 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
           </div>
 
           <div className="flex items-center gap-2">
+            {/*
+              * The global Create entry point. Agency-only because it ends in
+              * the composer and the advertising centre, and a portal user has
+              * neither. Hidden below `sm` so the top bar does not overflow at
+              * 390px — the dashboard carries the same action where there is
+              * room for it.
+              */}
+            {variant === 'agency' ? (
+              <div className="hidden sm:block"><CreateButton /></div>
+            ) : null}
             <div className="hidden sm:block"><ThemeSwitch /></div>
             <LanguageSwitch />
             <NotificationBell />

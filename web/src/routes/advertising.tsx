@@ -28,25 +28,16 @@ import {
 import { qs } from '../lib/api';
 import { useDebounced, useQuery } from '../lib/hooks';
 import { useI18n, type TranslationKey } from '../lib/i18n';
-import { date as fmtDate, money, num, pct, ratio, shortDate } from '../lib/format';
+import { date as fmtDate, money, shortDate } from '../lib/format';
 import { useRestaurant } from '../lib/restaurant';
 import {
   Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Input,
   PageHeader, Select, Skeleton, TableWrap, Td, Th, type BadgeTone,
 } from '../components/ui';
-import { PlatformChip } from '../components/domain';
+import { MetricValue, PlatformChip, type QualifiedMetric } from '../components/domain';
 import { AdPreview, AdPreviewDrawer, type AdPreviewData } from '../components/ad-preview';
 
 // --------------------------------------------------------------- shapes
-
-type MetricState = 'ZERO' | 'UNAVAILABLE' | 'NOT_FETCHED' | 'PROVIDER_ERROR';
-
-interface QualifiedMetric {
-  metric: string;
-  value: number | null;
-  state: MetricState;
-  note: string | null;
-}
 
 type AdStatus =
   | 'DRAFT' | 'PENDING' | 'ACTIVE' | 'PAUSED' | 'COMPLETED'
@@ -99,47 +90,10 @@ interface Overview {
 }
 
 // ------------------------------------------------------------- metrics
-
-/** Currency and ratio metrics format differently; the rest are counts. */
-const MONEY_METRICS = new Set(['spend', 'budget', 'cpc', 'cpa', 'cpm']);
-const PERCENT_METRICS = new Set(['ctr']);
-const RATIO_METRICS = new Set(['roas']);
-
-/**
- * One figure, rendered only if it was measured.
- *
- * The four states are not decoration. `UNAVAILABLE` means the provider has no
- * such metric and never will; `NOT_FETCHED` means nobody has asked yet;
- * `PROVIDER_ERROR` means we asked and were refused. Each sends the operator
- * somewhere different, and none of them is zero.
- */
-function MetricValue({
-  metric, currency = 'USD', className,
-}: { metric: QualifiedMetric; currency?: string; className?: string }) {
-  const { t, lang } = useI18n();
-
-  if (metric.state !== 'ZERO' || metric.value === null) {
-    return (
-      <span
-        className={['text-muted', className].filter(Boolean).join(' ')}
-        title={metric.note ?? t(`report.state.${metric.state}` as TranslationKey)}
-      >
-        {t(`report.short.${metric.state}` as TranslationKey)}
-      </span>
-    );
-  }
-
-  const value = metric.value;
-  const text = MONEY_METRICS.has(metric.metric)
-    ? money(value, lang, true, currency)
-    : PERCENT_METRICS.has(metric.metric)
-      ? pct(value)
-      : RATIO_METRICS.has(metric.metric)
-        ? ratio(value)
-        : num(value, lang, true);
-
-  return <span className={className} dir="auto">{text}</span>;
-}
+//
+// `MetricValue` — the four-state renderer — lives in components/domain.tsx so
+// this page and the dashboard cannot disagree about what an unmeasured figure
+// looks like. A second copy is how one of them starts printing zero.
 
 const STATUS_TONES: Record<AdStatus, BadgeTone> = {
   ACTIVE: 'ok',

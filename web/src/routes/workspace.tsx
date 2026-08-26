@@ -1031,7 +1031,7 @@ export function IntegrationsPage() {
 
   const connect = async (platform: Platform) => {
     if (!clientId) {
-      push({ tone: 'error', title: 'Choose a restaurant in the top bar first' });
+      push({ tone: 'error', title: t('common.pickProject') });
       return;
     }
     try {
@@ -1166,7 +1166,7 @@ export function IntegrationsPage() {
         subtitle={
           current
             ? `Connections for ${current.businessName}. A provider connects once its credentials are set.`
-            : 'Connection architecture for every ad platform. Choose a restaurant in the top bar to connect one.'
+            : `Connection architecture for every ad platform. ${t('common.pickProject')}`
         }
       />
 

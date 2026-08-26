@@ -18,10 +18,16 @@
  */
 
 import { Router } from 'express';
+import { z } from 'zod';
 
-import { asyncHandler } from '../lib/errors.js';
-import { requireAuth } from '../middleware/auth.js';
+import { asyncHandler, notFound } from '../lib/errors.js';
+import { prisma } from '../lib/prisma.js';
+import { resolveClientId } from '../lib/scope.js';
+import { actorOf, requireAuth } from '../middleware/auth.js';
+import { validateQuery } from '../middleware/validate.js';
 import { adjacentProducts, fullMatrix } from '../services/marketing/capability-matrix.js';
+import { pulse } from '../services/marketing/pulse.js';
+import { WORKSPACE_ORDER, WORKSPACES, resolveWorkspace } from '../services/marketing/workspaces.js';
 
 export const marketingRouter: Router = Router();
 
@@ -46,6 +52,67 @@ marketingRouter.get(
     res.json({
       platforms: fullMatrix(),
       adjacent: adjacentProducts(),
+    });
+  }),
+);
+
+/**
+ * The workspace registry — which platforms each navigable workspace covers.
+ *
+ * Served rather than duplicated in the client so the two cannot disagree about
+ * whether Instagram belongs to Meta. The client still needs its own labels for
+ * translation, but never its own opinion about membership.
+ */
+marketingRouter.get(
+  '/workspaces',
+  asyncHandler(async (_req, res) => {
+    res.json({ workspaces: WORKSPACE_ORDER.map((key) => WORKSPACES[key]) });
+  }),
+);
+
+/**
+ * Today's pipeline and connection health, for the dashboard and each workspace.
+ *
+ * `from`/`to` are required and come from the browser, because "today" is the
+ * operator's day and the server has no way to know which one that is. A
+ * workspace slug narrows the counts to that workspace's platforms.
+ */
+marketingRouter.get(
+  '/pulse',
+  validateQuery(z.object({
+    clientId: z.string().max(40).optional(),
+    workspace: z.string().max(40).optional(),
+    from: z.coerce.date(),
+    to: z.coerce.date(),
+  })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const query = req.query as unknown as {
+      clientId?: string; workspace?: string; from: Date; to: Date;
+    };
+
+    /*
+     * An unknown workspace slug is a 404 rather than a silent fall-back to
+     * every platform: counting the whole account under a heading that says
+     * "TikTok" is worse than saying the page does not exist.
+     */
+    const workspace = query.workspace ? resolveWorkspace(query.workspace) : null;
+    if (query.workspace && !workspace) throw notFound('Workspace');
+
+    const clientId = resolveClientId(actor, query.clientId);
+
+    const result = await pulse({
+      prisma,
+      actor,
+      clientId,
+      platforms: workspace?.platforms,
+      from: query.from,
+      to: query.to,
+    });
+
+    res.json({
+      workspace: workspace ?? null,
+      ...result,
     });
   }),
 );

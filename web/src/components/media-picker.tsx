@@ -19,6 +19,7 @@ import { api, qs, type MediaType } from '../lib/api';
 import { useQuery } from '../lib/hooks';
 import { Button, Card, CardHeader, CardSkeleton, useToast } from './ui';
 import { cn } from '../lib/utils';
+import { useI18n } from '../lib/i18n';
 
 export interface PickedMedia {
   id: string;
@@ -40,7 +41,7 @@ export function MediaPicker({
   onChange,
   max = 10,
   title = 'Media / Creative',
-  subtitle = 'What actually gets published. Uploads land in this restaurant’s library.',
+  subtitle = 'What actually gets published. Uploads land in this project’s library.',
 }: {
   clientId: string;
   campaignId?: string;
@@ -52,6 +53,7 @@ export function MediaPicker({
   subtitle?: string;
 }) {
   const { push } = useToast();
+  const { t } = useI18n();
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   // Bumped after an upload so the library refetches and shows the new file.
@@ -89,7 +91,7 @@ export function MediaPicker({
   const upload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     if (!clientId) {
-      push({ tone: 'error', title: 'Choose a restaurant before uploading' });
+      push({ tone: 'error', title: t('common.pickProject') });
       return;
     }
 
@@ -193,7 +195,7 @@ export function MediaPicker({
         {/* The library for this client. Selecting is how media is replaced. */}
         <div>
           <p className="mb-1.5 text-[11px] uppercase tracking-wide text-muted">
-            {clientId ? 'From this restaurant’s library' : 'Choose a restaurant first'}
+            {clientId ? 'From this project’s library' : t('common.pickProject')}
           </p>
 
           {!clientId ? null : library.loading ? (
