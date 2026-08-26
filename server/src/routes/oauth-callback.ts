@@ -2,14 +2,22 @@
  * The provider's redirect back, on its own unauthenticated router.
  *
  * This is the one integration route the browser reaches without a session:
- * Meta redirects here directly, carrying no cookie of ours. Everything that
- * identifies the tenant therefore comes out of the signed, single-use OAuth
- * state, never out of the query string — a callback is not a place to be told
- * whose connection this is.
+ * the provider redirects here directly, carrying no cookie of ours. Everything
+ * that identifies the tenant therefore comes out of the signed, single-use
+ * OAuth state, never out of the query string — a callback is not a place to be
+ * told whose connection this is.
  *
  * Mounted at /api/integrations, ahead of the authenticated router, so
  * /api/integrations/meta/callback resolves here rather than being challenged
  * for a session it cannot have.
+ *
+ * Every provider gets its own path, and the path is what names the platform
+ * passed to `completeCallback`. That is deliberate and it is a security
+ * property, not bookkeeping: the OAuth state is bound to one platform, and the
+ * route is the independent witness of which provider actually redirected. Were
+ * the platform read out of the state instead, the state would be checked
+ * against itself and the binding would assert nothing. It is also why YouTube
+ * has a route of its own despite sharing Google's OAuth client.
  */
 
 import { Router } from 'express';
@@ -44,139 +52,81 @@ function callbackRedirect(
   return url.toString();
 }
 
-oauthCallbackRouter.get(
-  '/meta/callback',
-  validateQuery(
-    z.object({
-      // Meta sends either (code, state) or its own error triple.
-      code: z.string().min(1).max(2000).optional(),
-      state: z.string().min(1).max(200).optional(),
-      error: z.string().max(200).optional(),
-      error_reason: z.string().max(200).optional(),
-      error_description: z.string().max(500).optional(),
-    }),
-  ),
-  asyncHandler(async (req, res) => {
-    const query = req.query as {
-      code?: string; state?: string; error?: string; error_description?: string;
-    };
-
-    // The operator pressed Cancel on Meta's dialog. Not an error worth a 500.
-    if (query.error) {
-      res.redirect(callbackRedirect({ ok: false, reason: query.error_description ?? query.error }));
-      return;
-    }
-    if (!query.code || !query.state) {
-      res.redirect(callbackRedirect({ ok: false, reason: 'Meta returned no authorization code' }));
-      return;
-    }
-
-    try {
-      const result = await completeCallback({
-        platform: Platform.FACEBOOK,
-        state: query.state,
-        code: query.code,
-        fetchImpl: fetch as unknown as Parameters<typeof completeCallback>[0]['fetchImpl'],
-      });
-      res.redirect(callbackRedirect({ ok: true, integrationId: result.integrationId }));
-    } catch (error) {
-      // completeCallback has already parked the integration in ERROR with the
-      // reason. Provider messages never carry the code or the token.
-      res.redirect(callbackRedirect({ ok: false, reason: (error as Error).message }));
-    }
-  }),
-);
+/**
+ * The query every provider sends back, as the union of what they each use.
+ *
+ * One schema rather than five: the providers disagree about which refusal
+ * fields they populate — Meta sends `error_reason`, TikTok adds `errCode`,
+ * Google sends a bare `error`, LinkedIn an `error_description` — but they agree
+ * on `code`, `state` and `error`, and every extra field is optional. Rejecting
+ * a callback because a provider sent one field more than another would fail the
+ * connection at the last step for no reason.
+ */
+const callbackQuery = z.object({
+  code: z.string().min(1).max(2000).optional(),
+  state: z.string().min(1).max(200).optional(),
+  scope: z.string().max(2000).optional(),
+  error: z.string().max(200).optional(),
+  error_reason: z.string().max(200).optional(),
+  error_description: z.string().max(500).optional(),
+  errCode: z.string().max(50).optional(),
+});
 
 /**
- * TikTok's redirect back.
+ * Mount one provider's callback.
  *
- * A separate route rather than a parameterised one: the two providers disagree
- * about what they send on refusal — Meta uses `error`/`error_description`,
- * TikTok `error`/`error_description` plus its own `errCode` — and a shared
- * handler would have to guess. The work itself is `completeCallback`'s, which
- * is the same function Meta's callback calls.
+ * The handler is identical for all of them because the work is
+ * `completeCallback`'s; what differs is only the platform the route stands for
+ * and the label the operator sees on return.
  */
-oauthCallbackRouter.get(
-  '/tiktok/callback',
-  validateQuery(
-    z.object({
-      code: z.string().min(1).max(2000).optional(),
-      state: z.string().min(1).max(200).optional(),
-      error: z.string().max(200).optional(),
-      error_description: z.string().max(500).optional(),
-      errCode: z.string().max(50).optional(),
+function mountCallback(input: { slug: string; platform: Platform; label: string }): void {
+  oauthCallbackRouter.get(
+    `/${input.slug}/callback`,
+    validateQuery(callbackQuery),
+    asyncHandler(async (req, res) => {
+      const query = req.query as {
+        code?: string; state?: string; error?: string; error_description?: string;
+      };
+
+      // The operator pressed Cancel on the provider's dialog. Not an error
+      // worth a 500, and its own message is better than one we invent.
+      if (query.error) {
+        res.redirect(
+          callbackRedirect({ ok: false, reason: query.error_description ?? query.error }, input.slug),
+        );
+        return;
+      }
+      if (!query.code || !query.state) {
+        res.redirect(
+          callbackRedirect({ ok: false, reason: `${input.label} returned no authorization code` }, input.slug),
+        );
+        return;
+      }
+
+      try {
+        const result = await completeCallback({
+          platform: input.platform,
+          state: query.state,
+          code: query.code,
+          fetchImpl: fetch as unknown as Parameters<typeof completeCallback>[0]['fetchImpl'],
+        });
+        res.redirect(callbackRedirect({ ok: true, integrationId: result.integrationId }, input.slug));
+      } catch (error) {
+        // completeCallback has already parked the integration in ERROR with the
+        // reason. Provider messages never carry the code or the token.
+        res.redirect(callbackRedirect({ ok: false, reason: (error as Error).message }, input.slug));
+      }
     }),
-  ),
-  asyncHandler(async (req, res) => {
-    const query = req.query as {
-      code?: string; state?: string; error?: string; error_description?: string;
-    };
+  );
+}
 
-    // The operator pressed Cancel on TikTok's dialog.
-    if (query.error) {
-      res.redirect(callbackRedirect({ ok: false, reason: query.error_description ?? query.error }, 'tiktok'));
-      return;
-    }
-    if (!query.code || !query.state) {
-      res.redirect(callbackRedirect({ ok: false, reason: 'TikTok returned no authorization code' }, 'tiktok'));
-      return;
-    }
-
-    try {
-      const result = await completeCallback({
-        platform: Platform.TIKTOK,
-        state: query.state,
-        code: query.code,
-        fetchImpl: fetch as unknown as Parameters<typeof completeCallback>[0]['fetchImpl'],
-      });
-      res.redirect(callbackRedirect({ ok: true, integrationId: result.integrationId }, 'tiktok'));
-    } catch (error) {
-      // completeCallback has already parked the integration in ERROR with the
-      // reason. Provider messages never carry the code or the token.
-      res.redirect(callbackRedirect({ ok: false, reason: (error as Error).message }, 'tiktok'));
-    }
-  }),
-);
-
-/**
- * Google's redirect back.
- *
- * Its own route for the same reason TikTok has one: providers disagree about
- * what they send on refusal, and a shared handler would have to guess. Google
- * sends `error=access_denied` when the operator declines the consent screen.
+/*
+ * Meta's slug is `meta` while its platform is FACEBOOK, because one Meta login
+ * covers both Facebook and Instagram and the integration row for the pair is
+ * keyed on FACEBOOK.
  */
-oauthCallbackRouter.get(
-  '/google/callback',
-  validateQuery(
-    z.object({
-      code: z.string().min(1).max(2000).optional(),
-      state: z.string().min(1).max(200).optional(),
-      scope: z.string().max(2000).optional(),
-      error: z.string().max(200).optional(),
-    }),
-  ),
-  asyncHandler(async (req, res) => {
-    const query = req.query as { code?: string; state?: string; error?: string };
-
-    if (query.error) {
-      res.redirect(callbackRedirect({ ok: false, reason: query.error }, 'google'));
-      return;
-    }
-    if (!query.code || !query.state) {
-      res.redirect(callbackRedirect({ ok: false, reason: 'Google returned no authorization code' }, 'google'));
-      return;
-    }
-
-    try {
-      const result = await completeCallback({
-        platform: Platform.GOOGLE_BUSINESS,
-        state: query.state,
-        code: query.code,
-        fetchImpl: fetch as unknown as Parameters<typeof completeCallback>[0]['fetchImpl'],
-      });
-      res.redirect(callbackRedirect({ ok: true, integrationId: result.integrationId }, 'google'));
-    } catch (error) {
-      res.redirect(callbackRedirect({ ok: false, reason: (error as Error).message }, 'google'));
-    }
-  }),
-);
+mountCallback({ slug: 'meta', platform: Platform.FACEBOOK, label: 'Meta' });
+mountCallback({ slug: 'tiktok', platform: Platform.TIKTOK, label: 'TikTok' });
+mountCallback({ slug: 'google', platform: Platform.GOOGLE_BUSINESS, label: 'Google' });
+mountCallback({ slug: 'youtube', platform: Platform.YOUTUBE, label: 'YouTube' });
+mountCallback({ slug: 'linkedin', platform: Platform.LINKEDIN, label: 'LinkedIn' });

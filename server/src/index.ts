@@ -28,6 +28,7 @@ import { prisma } from './lib/prisma.js';
 import { runtimeReport } from './lib/runtime-report.js';
 import { metaConfigDiagnostics } from './services/integrations/meta.js';
 import { publishingTick } from './services/publishing/scheduler.js';
+import { ingestMetricsTick } from './services/social/metrics-ingest.js';
 import { pruneExpiredSessions } from './lib/session.js';
 
 const LINE = '='.repeat(72);
@@ -194,10 +195,35 @@ const publishTimer = setInterval(() => {
 }, Math.max(15_000, publishIntervalMs));
 publishTimer.unref();
 
+/*
+ * Organic metric ingestion.
+ *
+ * Its own timer rather than a step inside the publishing tick, because the two
+ * have nothing in common but the word "periodic". Publishing is latency
+ * sensitive — a post scheduled for 8:00pm should go out at 8:00pm, so that tick
+ * runs every minute and must stay short. Reading insights is the opposite: the
+ * numbers barely move within an hour, the per-post floor is six hours anyway,
+ * and every call spends a provider rate limit that publishing also needs. Doing
+ * it on the minute tick would put a scan in front of every publish for figures
+ * that had not changed.
+ *
+ * Same shape as the timer above in every other respect: in-process, unref'd,
+ * and never fatal — a provider having a bad morning must not take the web
+ * process down with it.
+ */
+const metricsIntervalMs = Number(process.env.METRICS_INGEST_INTERVAL_MS ?? 15 * 60_000);
+const metricsTimer = setInterval(() => {
+  void ingestMetricsTick({ prisma, fetchImpl: fetch as never }).catch((error: Error) =>
+    process.stderr.write(`[marketing-os] metrics ingestion failed: ${error.message}\n`),
+  );
+}, Math.max(60_000, metricsIntervalMs));
+metricsTimer.unref();
+
 function shutdown(signal: string): void {
   process.stdout.write(`[marketing-os] ${signal} received, shutting down\n`);
   clearInterval(pruneTimer);
   clearInterval(publishTimer);
+  clearInterval(metricsTimer);
   server.close(() => {
     void prisma.$disconnect().finally(() => process.exit(0));
   });

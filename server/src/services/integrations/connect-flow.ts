@@ -36,9 +36,12 @@ import {
   validateToken,
   type DiscoveredAccount,
   type FetchLike,
+  type TokenSet,
 } from './meta.js';
 import * as tiktok from './tiktok.js';
 import * as google from './google.js';
+import * as youtube from './youtube.js';
+import * as linkedin from './linkedin.js';
 
 /** Where each provider's callback lands. Documented so app consoles match. */
 export function callbackPath(platform: Platform): string {
@@ -50,6 +53,15 @@ export function callbackPath(platform: Platform): string {
     TIKTOK: 'tiktok',
     SNAPCHAT: 'snapchat',
     LINKEDIN: 'linkedin',
+    /*
+     * YouTube authorises through the same Google OAuth client as Business
+     * Profile but lands on its own route. The state is bound to one platform
+     * and the callback route is what proves which provider redirected, so
+     * sharing Business Profile's route would mean reading the platform out of
+     * the state instead of checking the state against the route — deleting the
+     * check rather than passing it.
+     */
+    YOUTUBE: 'youtube',
     X: 'x',
   };
   return `/api/integrations/${slug[platform] ?? platform.toLowerCase()}/callback`;
@@ -78,21 +90,160 @@ export interface AuthorizeResult {
  * receiving Meta's authorization URL — which is exactly what happened while
  * TikTok was routed through `metaConfig()`.
  */
-type OAuthProvider = 'META' | 'TIKTOK' | 'GOOGLE';
+export type OAuthProvider = 'META' | 'TIKTOK' | 'GOOGLE' | 'YOUTUBE' | 'LINKEDIN';
 
 const OAUTH_PROVIDER: Partial<Record<Platform, OAuthProvider>> = {
   [Platform.FACEBOOK]: 'META',
   [Platform.INSTAGRAM]: 'META',
   [Platform.TIKTOK]: 'TIKTOK',
   [Platform.GOOGLE_BUSINESS]: 'GOOGLE',
+  // Google's OAuth client, a YouTube-shaped grant. See `youtube.ts`.
+  [Platform.YOUTUBE]: 'YOUTUBE',
+  [Platform.LINKEDIN]: 'LINKEDIN',
 };
 
-function providerFor(platform: Platform): OAuthProvider {
+export function providerFor(platform: Platform): OAuthProvider {
   const provider = OAUTH_PROVIDER[platform];
   if (!provider) {
     throw new Error(`${platform} has no OAuth integration on this deployment yet.`);
   }
   return provider;
+}
+
+/**
+ * One provider's OAuth, with its configuration already read.
+ *
+ * This replaced four parallel chains of ternaries — one each for the
+ * authorization URL, the code exchange, the validation call and discovery —
+ * that had to be edited in lockstep every time a provider was added. Adding one
+ * wrongly was not hypothetical: TikTok shipped routed through `metaConfig()`,
+ * so pressing Connect on TikTok produced a Facebook authorization URL, and
+ * Google shipped with the same defect. A single entry per provider is the shape
+ * where that mistake has nowhere to hide.
+ *
+ * `redirectUri` is threaded through `authorize` and `exchange` rather than read
+ * from the config inside them, because OAuth requires the two calls to send a
+ * byte-identical value and the authoritative copy is the one recorded in the
+ * signed state — not whatever the environment holds by the time the operator
+ * comes back from the provider.
+ */
+interface BoundProvider {
+  /** From the provider's own variable; empty means "derive it from the host". */
+  redirectUri: string;
+  /** Named in the error when the configured URI points at the wrong route. */
+  redirectVariable: string;
+  authorize(input: { state: string; redirectUri: string }): string;
+  exchange(input: { code: string; redirectUri: string; fetchImpl: FetchLike }): Promise<TokenSet>;
+  validate(input: { accessToken: string; fetchImpl: FetchLike }): Promise<{ id: string; name: string }>;
+  /**
+   * What the provider actually granted.
+   *
+   * Meta answers this from a second endpoint; every other provider returns the
+   * grant in the token response itself. Asking Meta's `/me/permissions` with a
+   * TikTok token would fail the whole connection, which is why this is the
+   * provider's own question rather than a shared step.
+   */
+  grantedScopes(input: { tokens: TokenSet; fetchImpl: FetchLike }): Promise<string[]>;
+  /** The one grant that decides whether an attached account can post. */
+  publishScope: string;
+  discover(input: { accessToken: string; fetchImpl: FetchLike }): Promise<DiscoveredAccount[]>;
+}
+
+const PROVIDERS: Record<OAuthProvider, () => BoundProvider> = {
+  META: () => {
+    const config = metaConfig();
+    return {
+      redirectUri: config.redirectUri,
+      redirectVariable: 'META_REDIRECT_URI',
+      authorize: ({ state, redirectUri }) => authorizationUrl({ config: { ...config, redirectUri }, state }),
+      exchange: ({ code, redirectUri, fetchImpl }) =>
+        exchangeCode({ config: { ...config, redirectUri }, code, fetchImpl }),
+      validate: (input) => validateToken(input),
+      grantedScopes: ({ fetchImpl, tokens }) =>
+        grantedPermissions({ accessToken: tokens.accessToken, fetchImpl }),
+      publishScope: PAGE_PUBLISH_PERMISSION,
+      discover: (input) => discoverAccounts(input),
+    };
+  },
+
+  TIKTOK: () => {
+    const config = tiktok.tiktokConfig();
+    return {
+      redirectUri: config.redirectUri,
+      redirectVariable: 'TIKTOK_REDIRECT_URI',
+      authorize: ({ state, redirectUri }) =>
+        tiktok.authorizationUrl({ config: { ...config, redirectUri }, state }),
+      exchange: ({ code, redirectUri, fetchImpl }) =>
+        tiktok.exchangeCode({ config: { ...config, redirectUri }, code, fetchImpl }),
+      validate: (input) => tiktok.validateToken(input),
+      grantedScopes: async ({ tokens }) => tokens.scopes,
+      publishScope: tiktok.PUBLISH_SCOPE,
+      discover: (input) => tiktok.discoverAccounts(input),
+    };
+  },
+
+  GOOGLE: () => {
+    const config = google.googleConfig();
+    return {
+      redirectUri: config.redirectUri,
+      redirectVariable: 'GOOGLE_REDIRECT_URI',
+      authorize: ({ state, redirectUri }) =>
+        google.authorizationUrl({ config: { ...config, redirectUri }, state }),
+      exchange: ({ code, redirectUri, fetchImpl }) =>
+        google.exchangeCode({ config: { ...config, redirectUri }, code, fetchImpl }),
+      validate: (input) => google.validateToken(input),
+      grantedScopes: async ({ tokens }) => tokens.scopes,
+      publishScope: google.BUSINESS_SCOPE,
+      discover: (input) => google.discoverAccounts(input),
+    };
+  },
+
+  /*
+   * The same Google OAuth client and the same token calls, asking for the
+   * scope the YouTube publisher actually needs and discovering channels rather
+   * than Business Profile accounts. Everything token-shaped is `google.ts`;
+   * nothing about OAuth is written twice.
+   */
+  YOUTUBE: () => {
+    const config = youtube.youtubeConfig();
+    return {
+      redirectUri: config.redirectUri,
+      redirectVariable: 'YOUTUBE_REDIRECT_URI',
+      authorize: ({ state, redirectUri }) =>
+        google.authorizationUrl({
+          config: { ...config, redirectUri },
+          state,
+          scopes: youtube.YOUTUBE_SCOPES,
+        }),
+      exchange: ({ code, redirectUri, fetchImpl }) =>
+        google.exchangeCode({ config: { ...config, redirectUri }, code, fetchImpl }),
+      validate: (input) => google.validateToken(input),
+      grantedScopes: async ({ tokens }) => tokens.scopes,
+      publishScope: youtube.UPLOAD_SCOPE,
+      discover: (input) => youtube.discoverAccounts(input),
+    };
+  },
+
+  LINKEDIN: () => {
+    const config = linkedin.linkedInConfig();
+    return {
+      redirectUri: config.redirectUri,
+      redirectVariable: 'LINKEDIN_REDIRECT_URI',
+      authorize: ({ state, redirectUri }) =>
+        linkedin.authorizationUrl({ config: { ...config, redirectUri }, state }),
+      exchange: ({ code, redirectUri, fetchImpl }) =>
+        linkedin.exchangeCode({ config: { ...config, redirectUri }, code, fetchImpl }),
+      validate: (input) => linkedin.validateToken(input),
+      grantedScopes: async ({ tokens }) => tokens.scopes,
+      publishScope: linkedin.PUBLISH_SCOPE,
+      discover: (input) => linkedin.discoverAccounts(input),
+    };
+  },
+};
+
+/** The provider's OAuth, configuration read and ready to call. */
+export function bindProvider(platform: Platform): BoundProvider {
+  return PROVIDERS[providerFor(platform)]();
 }
 
 export async function beginAuthorization(input: {
@@ -101,23 +252,18 @@ export async function beginAuthorization(input: {
   platform: Platform;
   baseUrl: string;
 }): Promise<AuthorizeResult> {
-  const provider = providerFor(input.platform);
+  const provider = bindProvider(input.platform);
 
   /*
-   * Meta is the authority on this value, not us.
+   * The provider is the authority on this value, not us.
    *
    * `redirect_uri` must be byte-identical in the authorize call and in the code
-   * exchange, and it must match one registered in the app console — so
-   * META_REDIRECT_URI wins, and the URI derived from the request host is only a
-   * fallback for a deployment that has not set it. Deriving it and then
+   * exchange, and it must match one registered in the app console — so the
+   * provider's own variable wins, and the URI derived from the request host is
+   * only a fallback for a deployment that has not set it. Deriving it and then
    * exchanging with a different one is the classic "the code is invalid" loop.
    */
-  const metaCfg = provider === 'META' ? metaConfig() : null;
-  const tiktokCfg = provider === 'TIKTOK' ? tiktok.tiktokConfig() : null;
-  const googleCfg = provider === 'GOOGLE' ? google.googleConfig() : null;
-  const redirectUri =
-    (metaCfg?.redirectUri || tiktokCfg?.redirectUri || googleCfg?.redirectUri)
-    || callbackUrl(input.baseUrl, input.platform);
+  const redirectUri = provider.redirectUri || callbackUrl(input.baseUrl, input.platform);
 
   /*
    * And it has to point back at a route that exists. A console entry aimed at
@@ -127,11 +273,8 @@ export async function beginAuthorization(input: {
    */
   const expected = callbackPath(input.platform);
   if (!new URL(redirectUri).pathname.endsWith(expected)) {
-    const variable = provider === 'TIKTOK'
-      ? 'TIKTOK_REDIRECT_URI'
-      : provider === 'GOOGLE' ? 'GOOGLE_REDIRECT_URI' : 'META_REDIRECT_URI';
     throw new Error(
-      `${variable} must end with ${expected} so the authorization lands on the callback route. ` +
+      `${provider.redirectVariable} must end with ${expected} so the authorization lands on the callback route. ` +
         `It currently points at ${new URL(redirectUri).pathname}.`,
     );
   }
@@ -158,13 +301,7 @@ export async function beginAuthorization(input: {
     metadata: { integrationId: integration.id },
   });
 
-  const redirectTo = tiktokCfg
-    ? tiktok.authorizationUrl({ config: tiktokCfg, state })
-    : googleCfg
-      ? google.authorizationUrl({ config: googleCfg, state })
-      : authorizationUrl({ config: metaCfg!, state });
-
-  return { redirectTo, integrationId: integration.id };
+  return { redirectTo: provider.authorize({ state, redirectUri }), integrationId: integration.id };
 }
 
 // ---------------------------------------------------------------- callback
@@ -207,66 +344,50 @@ export async function completeCallback(input: {
   });
   if (!integration) throw new Error('The integration this authorization belongs to no longer exists');
 
-  const provider = providerFor(consumed.platform);
+  const provider = bindProvider(consumed.platform);
 
   try {
     /*
-     * Same four steps for either provider — exchange, validate, read the grant,
-     * discover — because the invariants below (nothing CONNECTED until the
-     * provider answers; nothing attached the operator did not choose) are the
-     * connection's, not Meta's. Only the calls differ.
+     * The same four steps for every provider — exchange, validate, read the
+     * grant, discover — because the invariants below (nothing CONNECTED until
+     * the provider answers; nothing attached the operator did not choose) are
+     * the connection's, not Meta's. Only the calls behind them differ.
+     *
+     * The redirect URI comes from the consumed state rather than from the
+     * environment: it is the value that was actually sent to the provider when
+     * this flow started, and the exchange has to match it byte for byte even if
+     * a variable changed in between.
      */
-    const tokens =
-      provider === 'TIKTOK'
-        ? await tiktok.exchangeCode({
-          config: tiktok.tiktokConfig(), code: input.code, fetchImpl: input.fetchImpl,
-        })
-        : provider === 'GOOGLE'
-          ? await google.exchangeCode({
-            config: google.googleConfig(), code: input.code, fetchImpl: input.fetchImpl,
-          })
-          : await exchangeCode({ config: metaConfig(), code: input.code, fetchImpl: input.fetchImpl });
+    const tokens = await provider.exchange({
+      code: input.code,
+      redirectUri: consumed.redirectUri,
+      fetchImpl: input.fetchImpl,
+    });
 
     // The connection is only real if the provider answers with this token.
-    const identity =
-      provider === 'TIKTOK'
-        ? await tiktok.validateToken({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl })
-        : provider === 'GOOGLE'
-          ? await google.validateToken({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl })
-          : await validateToken({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
+    const identity = await provider.validate({
+      accessToken: tokens.accessToken,
+      fetchImpl: input.fetchImpl,
+    });
+
     /*
-     * What Meta granted, asked as its own question.
+     * The grant, asked as the provider's own question.
      *
-     * Meta grants per-permission, so this login may have allowed everything
+     * Providers grant per-permission, so this login may have allowed everything
      * except publishing. Recording the request instead of the grant is how a
      * connection reads CONNECTED and then fails at the first post with an error
      * nobody saw coming.
      */
-    /*
-     * TikTok returns the grant in the token response itself rather than from a
-     * second endpoint, so there is nothing extra to ask for — and asking Meta's
-     * /me/permissions with a TikTok token would fail the whole connection.
-     */
-    const granted =
-      provider === 'TIKTOK' || provider === 'GOOGLE'
-        ? tokens.scopes
-        : await grantedPermissions({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
+    const granted = await provider.grantedScopes({ tokens, fetchImpl: input.fetchImpl });
 
     // The permission that decides whether the attached account can actually
-    // post: pages_manage_posts on Meta, video.publish on TikTok.
-    const canPublishPages =
-      provider === 'TIKTOK'
-        ? granted.includes(tiktok.PUBLISH_SCOPE)
-        : provider === 'GOOGLE'
-          ? granted.includes(google.BUSINESS_SCOPE)
-          : granted.includes(PAGE_PUBLISH_PERMISSION);
+    // post: pages_manage_posts on Meta, video.publish on TikTok, and so on.
+    const canPublishPages = granted.includes(provider.publishScope);
 
-    const discovered =
-      provider === 'TIKTOK'
-        ? await tiktok.discoverAccounts({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl })
-        : provider === 'GOOGLE'
-          ? await google.discoverAccounts({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl })
-          : await discoverAccounts({ accessToken: tokens.accessToken, fetchImpl: input.fetchImpl });
+    const discovered = await provider.discover({
+      accessToken: tokens.accessToken,
+      fetchImpl: input.fetchImpl,
+    });
 
     await prisma.$transaction(async (tx) => {
       await tx.integration.update({
