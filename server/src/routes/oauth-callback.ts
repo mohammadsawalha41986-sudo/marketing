@@ -137,3 +137,46 @@ oauthCallbackRouter.get(
     }
   }),
 );
+
+/**
+ * Google's redirect back.
+ *
+ * Its own route for the same reason TikTok has one: providers disagree about
+ * what they send on refusal, and a shared handler would have to guess. Google
+ * sends `error=access_denied` when the operator declines the consent screen.
+ */
+oauthCallbackRouter.get(
+  '/google/callback',
+  validateQuery(
+    z.object({
+      code: z.string().min(1).max(2000).optional(),
+      state: z.string().min(1).max(200).optional(),
+      scope: z.string().max(2000).optional(),
+      error: z.string().max(200).optional(),
+    }),
+  ),
+  asyncHandler(async (req, res) => {
+    const query = req.query as { code?: string; state?: string; error?: string };
+
+    if (query.error) {
+      res.redirect(callbackRedirect({ ok: false, reason: query.error }, 'google'));
+      return;
+    }
+    if (!query.code || !query.state) {
+      res.redirect(callbackRedirect({ ok: false, reason: 'Google returned no authorization code' }, 'google'));
+      return;
+    }
+
+    try {
+      const result = await completeCallback({
+        platform: Platform.GOOGLE_BUSINESS,
+        state: query.state,
+        code: query.code,
+        fetchImpl: fetch as unknown as Parameters<typeof completeCallback>[0]['fetchImpl'],
+      });
+      res.redirect(callbackRedirect({ ok: true, integrationId: result.integrationId }, 'google'));
+    } catch (error) {
+      res.redirect(callbackRedirect({ ok: false, reason: (error as Error).message }, 'google'));
+    }
+  }),
+);

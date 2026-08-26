@@ -5,7 +5,7 @@ import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Award, BarChart3, Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, CreditCard, FileText, Gauge, Image,
-  LayoutDashboard, LayoutGrid, Languages, LogOut, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
+  LayoutDashboard, LayoutGrid, Languages, LogOut, MapPin, Search, Star, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
   Rocket, Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Upload, Users, X, type LucideIcon, Share2,
 } from 'lucide-react';
 
@@ -93,6 +93,22 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
       { to: '/app/social/calendar', labelKey: 'nav.socialCalendar', icon: CalendarDays },
       { to: '/app/media', labelKey: 'nav.mediaLibrary', icon: Image },
       { to: '/app/social/analytics', labelKey: 'nav.socialAnalytics', icon: BarChart3 },
+    ],
+  },
+  {
+    heading: 'group.google',
+    items: [
+      {
+        to: '/app/google',
+        labelKey: 'nav.googleOverview',
+        icon: MapPin,
+        end: true,
+        children: [
+          { to: '/app/google/locations', labelKey: 'nav.googleLocations', icon: MapPin },
+          { to: '/app/google/reviews', labelKey: 'nav.googleReviews', icon: Star },
+          { to: '/app/google/seo', labelKey: 'nav.googleSeo', icon: Search },
+        ],
+      },
     ],
   },
   {

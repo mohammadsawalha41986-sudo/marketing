@@ -32,6 +32,7 @@ import { encryptionConfigured } from '../../lib/crypto.js';
  * module evaluation — which is the same shape meta.ts already has.
  */
 import { TIKTOK_SCOPES } from './tiktok.js';
+import { GOOGLE_SCOPES } from './google.js';
 
 export interface AdapterMetric {
   date: string;
@@ -308,11 +309,20 @@ class GoogleBusinessAdapter extends BaseAdapter {
   readonly label = 'Google Business Profile';
   // Posts and review replies are publishing; there is no ad-metrics surface.
   override readonly capabilities = { publish: true, metrics: false, audiences: false };
+  override readonly implementation: ImplementationReport = {
+    oauth: 'IMPLEMENTED',
+    accountDiscovery: 'IMPLEMENTED',
+    publish: 'IMPLEMENTED',
+    // Business Profile Performance is a separate API and is not read yet;
+    // claiming otherwise would put empty numbers on a dashboard.
+    metrics: 'ARCHITECTURE_ONLY',
+    conversions: 'NOT_SUPPORTED',
+  };
 
   override oauth(): OAuthDescriptor {
     return {
       authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-      scopes: ['https://www.googleapis.com/auth/business.manage'],
+      scopes: [...GOOGLE_SCOPES],
       requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI'],
       docsUrl: 'https://developers.google.com/my-business',
     };
