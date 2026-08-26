@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
+  Wallet,
   Award, BarChart3, Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, CreditCard, FileText, Gauge, Image,
   LayoutDashboard, LayoutGrid, Languages, LogOut, MapPin, Search, Star, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
   Rocket, Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Upload, Users, X, type LucideIcon, Share2,
@@ -96,6 +97,16 @@ const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
           { to: '/app/marketing/linkedin', labelKey: 'nav.linkedin', icon: Share2 },
           { to: '/app/marketing/snapchat', labelKey: 'nav.snapchat', icon: Share2 },
           { to: '/app/marketing/google_ads', labelKey: 'nav.googleAds', icon: Megaphone },
+        ],
+      },
+      {
+        to: '/app/marketing/advertising',
+        labelKey: 'nav.advertising',
+        icon: Wallet,
+        end: true,
+        children: [
+          { to: '/app/marketing/advertising/creatives', labelKey: 'nav.adCreatives', icon: LayoutGrid },
+          { to: '/app/marketing/advertising/calendar', labelKey: 'nav.adCalendar', icon: CalendarDays },
         ],
       },
       { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
