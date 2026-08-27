@@ -22,7 +22,8 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { createApp } from './app.js';
-import { cookieSecure, env, hasOpenAi, isProd, REPO_ROOT, uploadDir } from './env.js';
+import { cookieSecure, env, isProd, REPO_ROOT, uploadDir } from './env.js';
+import { aiHealth } from './services/ai/health.js';
 import { startDatabaseProbe } from './lib/db-health.js';
 import { prisma } from './lib/prisma.js';
 import { runtimeReport } from './lib/runtime-report.js';
@@ -112,6 +113,22 @@ function metaAppIdSummary(): string {
     : `INVALID — ${faults.join('; ')} (${shape}). Facebook will reject this.`;
 }
 
+/**
+ * The AI line of the startup banner.
+ *
+ * Names the mode *and* what to do about it, because this is the line an
+ * operator reads when they wonder why generated copy looks generic. The
+ * template engine is a supported mode rather than a fault, and saying so stops
+ * the log from reading like an error it is not.
+ */
+function aiProviderSummary(): string {
+  const health = aiHealth();
+  return health.keyConfigured
+    ? `openai:${env.OPENAI_MODEL} (unverified until the first call — POST /api/admin/ai/check to confirm)`
+    : 'built-in template engine — no OPENAI_API_KEY set, so copy, hashtags, analysis and review ' +
+      'replies are produced by rule and labelled as such. This is a supported mode, not a failure.';
+}
+
 const app = createApp();
 
 /*
@@ -131,7 +148,7 @@ const server = app.listen(env.PORT, '0.0.0.0', () => {
       `  app url        ${env.APP_URL}`,
       `  uploads        ${uploadDir}`,
       `  front end      ${hasWebBuild ? 'served from web/dist' : 'NOT BUILT'}`,
-      `  ai provider    ${hasOpenAi ? `openai:${env.OPENAI_MODEL}` : 'built-in template engine (no OPENAI_API_KEY)'}`,
+      `  ai provider    ${aiProviderSummary()}`,
       `  secure cookies ${cookieSecure ? 'on' : 'off'}`,
       `  trust proxy    ${env.TRUST_PROXY}`,
       // Shape only, never the value. This line is what turns a Facebook-side
@@ -186,14 +203,39 @@ pruneTimer.unref();
  * `PUBLISHING_INTERVAL_MS` allows a deployment to slow this down; 60s means a
  * post goes out within a minute of its scheduled time.
  */
+/**
+ * Run a periodic task, never concurrently with itself.
+ *
+ * `setInterval` fires on schedule regardless of whether the previous run has
+ * finished, so a publishing pass that outruns its own interval — one resumable
+ * video upload is enough — overlaps the next one. The database claims make that
+ * safe rather than duplicating a post, but overlapping passes still pile up
+ * provider calls and connections for no benefit, so a tick that is still
+ * running simply skips the next one.
+ */
+function everyInterval(label: string, ms: number, run: () => Promise<unknown>): NodeJS.Timeout {
+  let running = false;
+
+  const timer = setInterval(() => {
+    if (running) {
+      process.stderr.write(`[marketing-os] ${label} still running, skipping this tick\n`);
+      return;
+    }
+    running = true;
+    void run()
+      // Never fatal: a failed tick must not take the web process down with it.
+      .catch((error: Error) => process.stderr.write(`[marketing-os] ${label} failed: ${error.message}\n`))
+      .finally(() => { running = false; });
+  }, ms);
+
+  timer.unref();
+  return timer;
+}
+
 const publishIntervalMs = Number(process.env.PUBLISHING_INTERVAL_MS ?? 60_000);
-const publishTimer = setInterval(() => {
-  void publishingTick({ prisma, fetchImpl: fetch as never }).catch((error: Error) =>
-    // Never fatal: a failed tick must not take the web process down with it.
-    process.stderr.write(`[marketing-os] publishing tick failed: ${error.message}\n`),
-  );
-}, Math.max(15_000, publishIntervalMs));
-publishTimer.unref();
+const publishTimer = everyInterval('publishing tick', Math.max(15_000, publishIntervalMs), () =>
+  publishingTick({ prisma, fetchImpl: fetch as never }),
+);
 
 /*
  * Organic metric ingestion.
@@ -212,12 +254,9 @@ publishTimer.unref();
  * process down with it.
  */
 const metricsIntervalMs = Number(process.env.METRICS_INGEST_INTERVAL_MS ?? 15 * 60_000);
-const metricsTimer = setInterval(() => {
-  void ingestMetricsTick({ prisma, fetchImpl: fetch as never }).catch((error: Error) =>
-    process.stderr.write(`[marketing-os] metrics ingestion failed: ${error.message}\n`),
-  );
-}, Math.max(60_000, metricsIntervalMs));
-metricsTimer.unref();
+const metricsTimer = everyInterval('metrics ingestion', Math.max(60_000, metricsIntervalMs), () =>
+  ingestMetricsTick({ prisma, fetchImpl: fetch as never }),
+);
 
 function shutdown(signal: string): void {
   process.stdout.write(`[marketing-os] ${signal} received, shutting down\n`);
