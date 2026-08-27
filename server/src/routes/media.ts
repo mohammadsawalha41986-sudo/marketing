@@ -24,6 +24,9 @@ import {
 } from '../services/storage/objects.js';
 import { recordAudit } from '../services/audit.js';
 
+/** Reserved `category` value meaning "assets that are in no folder". */
+export const UNFILED = '__unfiled__';
+
 export const mediaRouter: Router = Router();
 mediaRouter.use(requireAuth);
 
@@ -44,12 +47,21 @@ mediaRouter.get(
       campaignId: z.string().max(40).optional(),
       type: z.nativeEnum(MediaType).optional(),
       category: z.string().max(80).optional(),
+      /*
+       * An exact tag, kept separate from `search` on purpose.
+       *
+       * `search` already matches a tag, but it also matches a filename, so it
+       * cannot express "only assets tagged ramadan" — a file called
+       * ramadan-final.jpg with no tags would come back too. The library's tag
+       * chips need the precise question, and the two are not the same one.
+       */
+      tag: z.string().trim().max(40).optional(),
     }),
   ),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
     const query = req.query as unknown as z.infer<typeof paginationQuery> & {
-      clientId?: string; campaignId?: string; type?: MediaType; category?: string;
+      clientId?: string; campaignId?: string; type?: MediaType; category?: string; tag?: string;
     };
 
     const clientId = resolveClientId(actor, query.clientId);
@@ -58,7 +70,20 @@ mediaRouter.get(
       ...(clientId ? { clientId } : {}),
       ...(query.campaignId ? { campaignId: query.campaignId } : {}),
       ...(query.type ? { type: query.type } : {}),
-      ...(query.category ? { category: query.category } : {}),
+      /*
+       * `UNFILED` is a sentinel, not a folder name.
+       *
+       * "Assets in no folder" cannot be asked with an empty string — that is
+       * indistinguishable from "no folder filter at all" once it has been
+       * through a query string. A reserved token is the only way the library's
+       * unfiled bucket can be a real, linkable filter.
+       */
+      ...(query.category === UNFILED
+        ? { category: null }
+        : query.category
+          ? { category: query.category }
+          : {}),
+      ...(query.tag ? { tags: { has: query.tag } } : {}),
       ...(query.search
         ? {
             OR: [
@@ -357,6 +382,63 @@ mediaRouter.delete(
       meta: { name: existing.originalName, object }, ip: req.ip,
     });
     res.json({ ok: true, object });
+  }),
+);
+
+
+/**
+ * The folders and tags that actually exist, with counts.
+ *
+ * The library needs this to draw a folder list at all. Inventing a fixed set of
+ * folders would be inventing product structure the data does not have, and
+ * deriving them in the browser would mean fetching every asset first — the one
+ * thing pagination exists to avoid.
+ *
+ * Folders are `Media.category` and tags are `Media.tags`; neither is a new
+ * model. Prisma cannot group by a scalar list, so tags are counted here over
+ * the tenant's own rows, which is bounded by the same scope every other query
+ * on this router uses.
+ */
+mediaRouter.get(
+  '/facets',
+  validateQuery(z.object({ clientId: z.string().max(40).optional() })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const clientId = resolveClientId(actor, (req.query as { clientId?: string }).clientId);
+
+    const where: Prisma.MediaWhereInput = {
+      organizationId: orgId(actor),
+      ...(clientId ? { clientId } : {}),
+    };
+
+    const [folderRows, tagRows, total, untagged] = await Promise.all([
+      prisma.media.groupBy({
+        by: ['category'],
+        where,
+        _count: { _all: true },
+        orderBy: { _count: { category: 'desc' } },
+      }),
+      prisma.media.findMany({ where, select: { tags: true } }),
+      prisma.media.count({ where }),
+      prisma.media.count({ where: { ...where, tags: { isEmpty: true } } }),
+    ]);
+
+    const tagCounts = new Map<string, number>();
+    for (const row of tagRows) {
+      for (const tag of row.tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+    }
+
+    res.json({
+      total,
+      untagged,
+      // A null category is "no folder" — reported as its own entry rather than
+      // dropped, because assets nobody filed are exactly what a tidy-up needs
+      // to find.
+      folders: folderRows.map((row) => ({ name: row.category, count: row._count._all })),
+      tags: [...tagCounts.entries()]
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
+    });
   }),
 );
 
