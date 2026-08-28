@@ -15,12 +15,23 @@
  * missing) fails at the sweep with a readiness problem, rather than burning
  * publish attempts to discover the same thing three times.
  *
- * This runs in the web process on an interval. That is a real constraint worth
- * stating plainly: it is single-instance, so running two containers would have
- * both sweeping. The claim-by-status-update in `runJob` makes a double publish
- * unlikely, and the job's unique key on (content, platform) makes a double
- * *post* impossible, but a queue with real leases is what this should become
- * once there is more than one publisher process.
+ * This runs in the web process on an interval. There is no Redis and no worker
+ * container, and that is a deliberate answer rather than a gap: the durable
+ * queue is `PublishingJob` in Postgres, the retry state is on the row, and a
+ * broker in front of it would be a second source of truth for work this one
+ * already holds.
+ *
+ * What the design *does* depend on is that every status transition is a
+ * compare-and-swap rather than a read-then-write. It did not used to be: both
+ * publish paths read a row, checked its status in application code, and then
+ * wrote unconditionally, so two callers could both pass the check and both call
+ * the provider. Those claims are now `updateMany` with the prior status in the
+ * WHERE clause, which is a real lease held by the database — the loser sees
+ * `count === 0` and returns without publishing.
+ *
+ * That matters on one instance as much as on several. `setInterval` does not
+ * wait for the previous tick, so a pass that outruns its interval overlaps
+ * itself; `index.ts` also guards against that, but the correctness lives here.
  */
 
 import { ContentStatus, PlatformPostStatus, PublishingJobStatus, type PrismaClient } from '@prisma/client';
@@ -184,10 +195,16 @@ export async function socialTick(input: {
   });
 
   for (const post of due) {
-    await prisma.platformPost.update({
-      where: { id: post.id },
+    // Conditional, like every other transition in this subsystem: two
+    // overlapping ticks would otherwise both queue the same post and both
+    // count it. The publish claim downstream is what prevents a double post;
+    // this keeps the report honest about which tick actually did the work.
+    const queued = await prisma.platformPost.updateMany({
+      where: { id: post.id, status: PlatformPostStatus.SCHEDULED },
       data: { status: PlatformPostStatus.QUEUED },
     });
+    if (queued.count === 0) continue;
+
     await refreshGroupStatus(prisma, post.postGroupId);
     report.queued.push(post.id);
   }

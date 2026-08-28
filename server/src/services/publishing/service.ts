@@ -417,17 +417,51 @@ export async function runJob(input: {
     });
   }
 
-  // Claim the job. Anything that reads it now sees work in progress.
-  await prisma.$transaction([
-    prisma.publishingJob.update({
+  /*
+   * Claim the job — conditionally.
+   *
+   * This used to be a plain `update` by id, which is a read-then-write: two
+   * workers that both selected this job as QUEUED would both pass the checks
+   * above and both write PUBLISHING, and then both call the provider. The
+   * comment claimed the transition stopped that; the query did not, because
+   * nothing in it asserted what the status was *at the moment of the write*.
+   *
+   * `updateMany` with the status in the WHERE clause makes it a real
+   * compare-and-swap: exactly one caller can move the row out of QUEUED, and
+   * `count` tells the loser it lost. That is the property the whole subsystem
+   * was assumed to have, and it costs one clause.
+   *
+   * It matters on a single instance too. The tick is on `setInterval`, so a
+   * pass that outruns its own interval overlaps the next one — a video upload
+   * is enough — and then the two "workers" are two ticks in this same process.
+   */
+  const claimed = await prisma.publishingJob.updateMany({
+    where: { id: job.id, status: PublishingJobStatus.QUEUED },
+    data: { status: PublishingJobStatus.PUBLISHING, lastAttemptAt: now, attempts: { increment: 1 } },
+  });
+
+  if (claimed.count === 0) {
+    // Someone else has it. Report the job's current state rather than inventing
+    // an error: nothing failed here, this worker simply has no work to do.
+    const current = await prisma.publishingJob.findUniqueOrThrow({
       where: { id: job.id },
-      data: { status: PublishingJobStatus.PUBLISHING, lastAttemptAt: now, attempts: { increment: 1 } },
-    }),
-    prisma.content.update({
-      where: { id: job.contentId },
-      data: { status: ContentStatus.PUBLISHING },
-    }),
-  ]);
+      select: { status: true, externalPostId: true, permalink: true },
+    });
+    return {
+      jobId: job.id,
+      status: current.status,
+      externalPostId: current.externalPostId,
+      permalink: current.permalink,
+      error: null,
+      // Nothing was sent, and the reason is the same one dedup exists for.
+      deduplicated: true,
+    };
+  }
+
+  await prisma.content.update({
+    where: { id: job.contentId },
+    data: { status: ContentStatus.PUBLISHING },
+  });
 
   const attempt = await prisma.publishingAttempt.create({
     data: { jobId: job.id, platform: job.platform, result: PublishingAttemptResult.RETRYABLE_FAILURE, startedAt: now },

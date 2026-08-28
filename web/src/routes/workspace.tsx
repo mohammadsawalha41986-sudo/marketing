@@ -320,9 +320,27 @@ interface MediaRow {
   url: string;
   thumbnailUrl: string | null;
   category: string | null;
+  tags: string[];
   createdAt: string;
   client: { id: string; name: string } | null;
 }
+
+/** What the tenant's library actually contains, for the folder and tag rails. */
+interface MediaFacets {
+  total: number;
+  untagged: number;
+  /** `name: null` is the "no folder" bucket — reported, never hidden. */
+  folders: Array<{ name: string | null; count: number }>;
+  tags: Array<{ name: string; count: number }>;
+}
+
+/**
+ * The reserved `category` the API understands as "in no folder".
+ *
+ * Must match `UNFILED` in the media route: an empty string cannot express it,
+ * because a query string cannot tell an empty filter from an absent one.
+ */
+const NO_FOLDER = '__unfiled__';
 
 export function MediaPage() {
   const { t, lang } = useI18n();
@@ -334,18 +352,31 @@ export function MediaPage() {
   const [page, setPage] = useState(1);
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<MediaRow | null>(null);
+  // Folder and tag are separate filters because they are separate questions:
+  // a folder is where an asset was filed, a tag is what it is about, and an
+  // asset has one of the first and many of the second.
+  const [folder, setFolder] = useState('');
+  const [tag, setTag] = useState('');
+  // Bumped after a change that alters what folders or tags exist, so the rails
+  // refetch rather than showing a folder the last asset just left.
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [filing, setFiling] = useState(false);
   const debounced = useDebounced(search);
 
   // The library follows the restaurant chosen in the top bar; the picker that
   // used to sit in this filter row was a second answer to the same question.
   const { currentId: clientId } = useRestaurant();
-  useEffect(() => setPage(1), [clientId]);
+  useEffect(() => setPage(1), [clientId, folder, tag]);
 
   const { data, loading, error, refetch } = useQuery<Paginated<MediaRow>>(
-    `/media${qs({ page, pageSize: 24, search: debounced, type, clientId })}`,
-    [page, debounced, type, clientId],
+    `/media${qs({
+      page, pageSize: 24, search: debounced, type, clientId, tag,
+      category: folder,
+    })}`,
+    [page, debounced, type, clientId, folder, tag],
   );
   const usage = useQuery<{ totalMb: number; byType: Array<{ type: string; count: number }> }>('/media/usage/summary');
+  const facets = useQuery<MediaFacets>(`/media/facets${qs({ clientId })}`, [clientId, refreshKey]);
 
   const upload = async (files: FileList) => {
     setUploading(true);
@@ -361,6 +392,33 @@ export function MediaPage() {
       push({ tone: 'error', title: 'Upload failed', body: err instanceof Error ? err.message : undefined });
     } finally {
       setUploading(false);
+    }
+  };
+
+  /**
+   * Filing an asset: its folder and its tags.
+   *
+   * Writes through the PATCH route that already existed and nothing in the UI
+   * used, so no new endpoint and no new model. The grid and the rails both
+   * refetch, because moving the last asset out of a folder means that folder
+   * no longer exists and leaving it on screen would be a lie.
+   */
+  const saveFiling = async (id: string, category: string, tagList: string[]) => {
+    setFiling(true);
+    try {
+      const { media } = await api.patch<{ media: MediaRow }>(`/media/${id}`, {
+        // An empty box means "no folder", which is null rather than "".
+        category: category.trim() === '' ? null : category.trim(),
+        tags: tagList,
+      });
+      setPreview(media);
+      push({ tone: 'success', title: 'Saved' });
+      refetch();
+      setRefreshKey((n) => n + 1);
+    } catch (err) {
+      push({ tone: 'error', title: 'Could not save', body: err instanceof Error ? err.message : undefined });
+    } finally {
+      setFiling(false);
     }
   };
 
@@ -406,7 +464,48 @@ export function MediaPage() {
           <option value="">{t('common.all')}</option>
           {['IMAGE', 'VIDEO', 'DOCUMENT', 'LOGO'].map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
         </Select>
+        {/*
+          * Folders come from the data, never from a fixed list. A hard-coded
+          * set would be product structure the library does not actually have,
+          * and would hide every folder somebody typed that was not on it.
+          */}
+        <Select value={folder} onChange={(e) => setFolder(e.target.value)} className="w-48">
+          <option value="">All folders</option>
+          {(facets.data?.folders ?? []).map((row) => (
+            <option key={row.name ?? NO_FOLDER} value={row.name ?? NO_FOLDER}>
+              {(row.name ?? 'No folder')} ({row.count})
+            </option>
+          ))}
+        </Select>
       </div>
+
+      {(facets.data?.tags.length ?? 0) > 0 ? (
+        <div className="mb-4 flex flex-wrap items-center gap-1.5">
+          <span className="text-[12px] text-muted">Tags</span>
+          {/* One tag at a time: the API filters by a single tag, and offering
+              multi-select here would promise an intersection it does not do. */}
+          {(facets.data?.tags ?? []).map((row) => (
+            <button
+              key={row.name}
+              type="button"
+              onClick={() => setTag(tag === row.name ? '' : row.name)}
+              className={cn(
+                'rounded-full border px-2.5 py-1 text-[11px] transition-colors',
+                tag === row.name
+                  ? 'border-brand bg-brand/10 text-brand'
+                  : 'border-line text-muted hover:text-fg',
+              )}
+            >
+              {row.name} <span className="opacity-60">{row.count}</span>
+            </button>
+          ))}
+          {tag ? (
+            <button type="button" onClick={() => setTag('')} className="px-2 text-[11px] text-muted hover:text-fg">
+              Clear
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       {error ? (
         <Card><ErrorState message={error} onRetry={refetch} /></Card>
@@ -482,7 +581,6 @@ export function MediaPage() {
                 { label: 'Dimensions', value: preview.width ? `${preview.width} × ${preview.height}` : '—' },
                 { label: 'Client', value: preview.client?.name ?? 'Shared' },
                 { label: 'Uploaded', value: date(preview.createdAt, lang) },
-                { label: 'Category', value: preview.category ?? '—' },
               ].map((row) => (
                 <div key={row.label} className="flex justify-between gap-3">
                   <span className="text-muted">{row.label}</span>
@@ -490,10 +588,81 @@ export function MediaPage() {
                 </div>
               ))}
             </div>
+
+            {canManage ? <FilingEditor key={preview.id} media={preview} saving={filing} onSave={saveFiling} /> : (
+              <div className="grid gap-3 text-[13px] sm:grid-cols-2">
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted">Folder</span>
+                  <span className="text-fg">{preview.category ?? '—'}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted">Tags</span>
+                  <span className="text-fg">{preview.tags.length > 0 ? preview.tags.join(', ') : '—'}</span>
+                </div>
+              </div>
+            )}
           </div>
         ) : null}
       </Modal>
     </>
+  );
+}
+
+
+/**
+ * Where one asset is filed: its folder and its tags.
+ *
+ * Local state rather than saving on every keystroke — filing is a deliberate
+ * act, and a PATCH per character would be a write storm for a field somebody is
+ * still typing. Keyed on the media id by the caller, so opening a different
+ * asset resets the boxes rather than carrying the last one's values over.
+ */
+function FilingEditor({ media, saving, onSave }: {
+  media: MediaRow;
+  saving: boolean;
+  onSave: (id: string, category: string, tags: string[]) => Promise<void>;
+}) {
+  const [category, setCategory] = useState(media.category ?? '');
+  const [tagText, setTagText] = useState(media.tags.join(', '));
+
+  // Split on commas, trim, drop blanks, de-duplicate. The API caps the list at
+  // 20 and each tag at 40 characters; sending more would just be a 400.
+  const tags = useMemo(
+    () => [...new Set(tagText.split(',').map((tag) => tag.trim()).filter(Boolean))].slice(0, 20),
+    [tagText],
+  );
+
+  const dirty = category.trim() !== (media.category ?? '')
+    || tags.join('\u0000') !== media.tags.join('\u0000');
+
+  return (
+    <div className="space-y-3 rounded-xl border border-line p-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Folder" hint="Leave empty to keep this asset unfiled.">
+          <Input value={category} onChange={(e) => setCategory(e.target.value)} maxLength={80} placeholder="e.g. Ramadan 2026" />
+        </Field>
+        <Field label="Tags" hint="Comma separated. Up to 20.">
+          <Input value={tagText} onChange={(e) => setTagText(e.target.value)} placeholder="e.g. hero, vertical, arabic" />
+        </Field>
+      </div>
+
+      {tags.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {tags.map((tag) => (
+            <span key={tag} className="rounded-full border border-line px-2.5 py-1 text-[11px] text-muted">{tag}</span>
+          ))}
+        </div>
+      ) : null}
+
+      <Button
+        variant="secondary"
+        loading={saving}
+        disabled={!dirty}
+        onClick={() => void onSave(media.id, category, tags)}
+      >
+        Save filing
+      </Button>
+    </div>
   );
 }
 

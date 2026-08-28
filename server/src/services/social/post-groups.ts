@@ -287,6 +287,22 @@ export async function transitionGroup(input: {
  * check is first and reads the database rather than memory, so a worker that
  * crashed after publishing but before writing cannot publish twice.
  */
+/**
+ * The statuses a post may be published *from*.
+ *
+ * Exported because two places need to agree on it exactly: the route, which
+ * rejects an unpublishable post with a readable message before any work starts,
+ * and the conditional claim below, which is what actually makes the transition
+ * safe under concurrency. Two copies of this set would be a race waiting to be
+ * reintroduced by whichever one somebody forgot to update.
+ */
+export const PUBLISHABLE_FROM: ReadonlySet<PlatformPostStatus> = new Set([
+  PlatformPostStatus.APPROVED,
+  PlatformPostStatus.SCHEDULED,
+  PlatformPostStatus.QUEUED,
+  PlatformPostStatus.FAILED,
+]);
+
 export async function publishPlatformPost(input: {
   prisma: PrismaClient;
   platformPostId: string;
@@ -326,10 +342,51 @@ export async function publishPlatformPost(input: {
       `No connected ${post.platform} account with a usable publishing token. Reconnect it under Integrations.`);
   }
 
-  await prisma.platformPost.update({
-    where: { id: post.id },
+  /*
+   * Claim the post before calling the provider.
+   *
+   * The `externalPostId` check above is an idempotency check, not a lock: two
+   * callers racing on the same post both read it as unpublished, both pass, and
+   * both publish — and the customer's followers see the post twice with nothing
+   * in our records to explain it. The unique-key protection that guards the
+   * `Content` path does not exist here, because a PlatformPost *is* the row.
+   *
+   * So the transition out of the pre-publish state is done conditionally, with
+   * the acceptable prior states named in the WHERE clause. Exactly one caller
+   * can perform it; `count === 0` means somebody else already has this post,
+   * and this caller must return without touching the provider.
+   *
+   * The accepted set is `PUBLISHABLE_FROM` — the same set the route checks
+   * before calling in, so an operator publishing an approved post and the
+   * scheduler draining a queued one both still work, and a retry from FAILED
+   * still works. Sharing the constant is the point: a set that drifted from the
+   * route's would either reject legitimate publishes or re-open the race.
+   */
+  const claimed = await prisma.platformPost.updateMany({
+    where: {
+      id: post.id,
+      status: { in: [...PUBLISHABLE_FROM] },
+    },
     data: { status: PlatformPostStatus.PUBLISHING, lastAttemptAt: now, attemptCount: { increment: 1 } },
   });
+
+  if (claimed.count === 0) {
+    const current = await prisma.platformPost.findUniqueOrThrow({
+      where: { id: post.id },
+      select: { status: true, externalPostId: true },
+    });
+    return {
+      // Only a genuinely published post counts as published. A post another
+      // worker is mid-publish on is neither published nor failed yet, and
+      // claiming either would be a lie the group status then inherits.
+      published: current.status === PlatformPostStatus.PUBLISHED,
+      externalPostId: current.externalPostId,
+      error: current.status === PlatformPostStatus.PUBLISHED
+        ? null
+        : 'This post is already being published by another worker.',
+    };
+  }
+
   await refreshGroupStatus(prisma, post.postGroupId);
 
   let media: PublishMedia[] = [];

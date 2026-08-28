@@ -23,7 +23,8 @@ import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
 import { assertWritable, orgId, resolveClientId, scopeWhere } from '../lib/scope.js';
 import { recordAudit } from '../services/audit.js';
 import {
-  SocialError, createGroup, publishPlatformPost, transition, transitionGroup, updatePlatformPost,
+  PUBLISHABLE_FROM, SocialError, createGroup, publishPlatformPost, transition, transitionGroup,
+  updatePlatformPost,
 } from '../services/social/post-groups.js';
 import { overall, validateMediaForPlatform } from '../services/social/media-rules.js';
 import { postGroupAnalytics, socialOverview } from '../services/social/analytics.js';
@@ -362,13 +363,6 @@ socialRouter.post(
     });
   }),
 );
-
-const PUBLISHABLE_FROM = new Set<PlatformPostStatus>([
-  PlatformPostStatus.APPROVED,
-  PlatformPostStatus.SCHEDULED,
-  PlatformPostStatus.QUEUED,
-  PlatformPostStatus.FAILED,
-]);
 
 /**
  * Whether this platform's version could publish, and what is stopping it.

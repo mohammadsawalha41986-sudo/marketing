@@ -18,7 +18,7 @@ import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
 import { crossTenant } from '../lib/scope.js';
 import { derive, sumSnapshots } from '../services/analytics.js';
 import { recordAudit } from '../services/audit.js';
-import { aiStatus } from '../services/ai/index.js';
+import { aiStatus, probeProvider } from '../services/ai/index.js';
 import { storageStatus } from '../services/storage/index.js';
 import { cookieSecure, env, hasOpenAi } from '../env.js';
 
@@ -404,6 +404,25 @@ adminRouter.get(
   }),
 );
 
+
+/**
+ * Ask the AI provider whether the configured key and model actually work.
+ *
+ * A live call, so it is a POST and admin-only rather than something a dashboard
+ * polls. `/system` reports what this process has *observed*; this endpoint is
+ * how an operator finds out before anyone tries to generate anything — the
+ * difference that matters when a key is set but expired, out of quota, or
+ * pointed at a model the account cannot reach, since all three of those look
+ * exactly like a healthy deployment until the first generation quietly returns
+ * template output.
+ */
+adminRouter.post(
+  '/ai/check',
+  asyncHandler(async (req, res) => {
+    crossTenant(actorOf(req));
+    res.json(await probeProvider());
+  }),
+);
 
 /** Effective runtime configuration. Secrets are reported as booleans only. */
 adminRouter.get(

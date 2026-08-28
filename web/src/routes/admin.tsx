@@ -487,7 +487,17 @@ export function AdminSettingsPage() {
   const { data, loading } = useQuery<{
     node: string; environment: string; appUrl: string; uptimeSeconds: number;
     storage: { driver: string; persistent: boolean; configured: boolean; reason: string | null; maxUploadMb: number };
-    ai: { provider: string; model: string; configured: boolean; keyConfigured: boolean };
+    ai: {
+      provider: string; model: string; configured: boolean; keyConfigured: boolean;
+      effectiveProvider: string;
+      health: {
+        state: 'NOT_CONFIGURED' | 'UNVERIFIED' | 'HEALTHY' | 'DEGRADED';
+        detail: string; degraded: boolean;
+        lastFailureMessage: string | null; lastFailureOperation: string | null;
+        consecutiveFailures: number;
+        callsThisProcess: { succeeded: number; failed: number };
+      };
+    };
     session: { ttlHours: number; secureCookies: boolean };
     rateLimit: { windowMinutes: number; max: number };
     database: { connected: boolean };
@@ -515,6 +525,20 @@ export function AdminSettingsPage() {
         { label: 'Max upload', value: `${data.storage.maxUploadMb} MB`, icon: HardDrive },
         { label: 'AI provider', value: `${data.ai.provider} (${data.ai.model})`, icon: Server },
         { label: 'AI key configured', value: data.ai.keyConfigured ? 'Yes' : 'No', icon: Shield },
+        // The row that distinguishes "no key, templates by design" from "key
+        // set but failing, templates by accident". Those look identical in
+        // generated output and need completely different responses.
+        { label: 'AI provider health', value: data.ai.health.state, icon: Activity },
+        {
+          label: 'Serving generations with',
+          value: data.ai.effectiveProvider === 'openai' ? data.ai.model : 'built-in template engine',
+          icon: Activity,
+        },
+        {
+          label: 'AI calls this process',
+          value: `${data.ai.health.callsThisProcess.succeeded} ok / ${data.ai.health.callsThisProcess.failed} failed`,
+          icon: Activity,
+        },
         { label: 'Session TTL', value: `${data.session.ttlHours} hours`, icon: Shield },
         { label: 'Secure cookies', value: data.session.secureCookies ? 'On' : 'Off', icon: Shield },
         { label: 'Rate limit', value: `${data.rateLimit.max} / ${data.rateLimit.windowMinutes} min`, icon: Shield },
@@ -539,6 +563,72 @@ export function AdminSettingsPage() {
           </div>
         </Card>
       )}
+
+      {data ? <AiProviderPanel health={data.ai.health} /> : null}
     </>
+  );
+}
+
+/**
+ * The AI provider's actual state, and a button that asks the provider directly.
+ *
+ * Separated from the runtime table because it is the one row an operator is
+ * expected to *act* on, and because a key that is set but broken degrades every
+ * generator silently — the output still arrives, produced by the template
+ * engine, and nothing in the product looks wrong.
+ */
+function AiProviderPanel({ health }: {
+  health: {
+    state: 'NOT_CONFIGURED' | 'UNVERIFIED' | 'HEALTHY' | 'DEGRADED';
+    detail: string; degraded: boolean;
+    lastFailureMessage: string | null; lastFailureOperation: string | null;
+  };
+}) {
+  const toast = useToast();
+  const [checking, setChecking] = useState(false);
+  const [probe, setProbe] = useState<{ reachable: boolean; detail: string; latencyMs: number } | null>(null);
+
+  const tone = health.state === 'HEALTHY' ? 'ok' : health.state === 'DEGRADED' ? 'danger' : 'warn';
+
+  async function check() {
+    setChecking(true);
+    try {
+      const result = await api.post<{ reachable: boolean; detail: string; latencyMs: number }>('/admin/ai/check', {});
+      setProbe(result);
+      toast.push({ tone: result.reachable ? 'success' : 'error', title: result.reachable ? 'Provider reachable' : 'Provider not reachable', body: result.detail });
+    } catch (error) {
+      toast.push({ tone: 'error', title: 'Provider check failed', body: (error as Error).message });
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  return (
+    <Card className="mt-5 max-w-3xl">
+      <CardHeader
+        title="AI provider"
+        icon={Activity}
+        action={<Badge tone={tone}>{health.state}</Badge>}
+      />
+      <div className="space-y-3 px-5 py-4">
+        <p className="text-[13px] leading-relaxed text-muted">{health.detail}</p>
+
+        {health.lastFailureMessage ? (
+          <p className="text-[13px] leading-relaxed text-danger">
+            Last failure{health.lastFailureOperation ? ` (${health.lastFailureOperation})` : ''}: {health.lastFailureMessage}
+          </p>
+        ) : null}
+
+        {probe ? (
+          <p className="text-[13px] leading-relaxed text-muted">
+            Check result ({probe.latencyMs} ms): {probe.detail}
+          </p>
+        ) : null}
+
+        <Button onClick={check} disabled={checking} variant="secondary">
+          {checking ? 'Checking…' : 'Check provider now'}
+        </Button>
+      </div>
+    </Card>
   );
 }
