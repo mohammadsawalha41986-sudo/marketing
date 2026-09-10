@@ -181,7 +181,7 @@ export function CardHeader({
 }: { title: ReactNode; subtitle?: ReactNode; action?: ReactNode; icon?: LucideIcon }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-5 py-4">
-      <div className="flex min-w-0 items-start gap-3">
+      <div className="flex min-w-0 flex-1 items-start gap-3">
         {Icon ? (
           <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand/12 text-brand">
             <Icon className="h-4 w-4" />
@@ -293,19 +293,27 @@ export function Spinner({ className }: { className?: string }) {
 }
 
 export function EmptyState({
-  icon: Icon, title, body, action,
-}: { icon: LucideIcon; title: string; body: string; action?: ReactNode }) {
+  icon: Icon, title, body, action, compact,
+}: { icon: LucideIcon; title: string; body: string; action?: ReactNode; compact?: boolean }) {
+  // `compact` is for an empty panel inside a dashboard column, where the full
+  // treatment would be a hole in the page rather than an explanation.
   return (
-    <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-      <div className="relative mb-5">
-        <span className="absolute inset-0 animate-pulse-ring rounded-2xl bg-brand/20" />
-        <span className="relative grid h-14 w-14 place-items-center rounded-2xl border border-brand/25 bg-brand/10 text-brand">
-          <Icon className="h-6 w-6" />
+    <div className={cn('flex flex-col items-center justify-center text-center', compact ? 'px-5 py-10' : 'px-6 py-16')}>
+      {compact ? (
+        <span className="mb-3 grid h-10 w-10 place-items-center rounded-xl border border-line bg-elevated text-muted">
+          <Icon className="h-4 w-4" />
         </span>
-      </div>
-      <h3 className="text-base font-semibold text-fg">{title}</h3>
-      <p className="mt-1.5 max-w-sm text-sm text-muted">{body}</p>
-      {action ? <div className="mt-5">{action}</div> : null}
+      ) : (
+        <div className="relative mb-5">
+          <span className="absolute inset-0 animate-pulse-ring rounded-2xl bg-brand/20" />
+          <span className="relative grid h-14 w-14 place-items-center rounded-2xl border border-brand/25 bg-brand/10 text-brand">
+            <Icon className="h-6 w-6" />
+          </span>
+        </div>
+      )}
+      <h3 className={cn('font-semibold text-fg', compact ? 'text-[14px]' : 'text-base')}>{title}</h3>
+      <p className={cn('mt-1.5 max-w-sm text-muted', compact ? 'text-[12.5px] leading-snug' : 'text-sm')}>{body}</p>
+      {action ? <div className={compact ? 'mt-3' : 'mt-5'}>{action}</div> : null}
     </div>
   );
 }

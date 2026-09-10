@@ -4,10 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  Wallet,
-  Award, BarChart3, Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, CreditCard, FileText, Gauge, Image,
-  LayoutDashboard, LayoutGrid, Languages, LogOut, MapPin, Search, Star, Megaphone, Menu, Moon, Palette, PenLine, ScrollText,
-  Settings, Shield, Sparkles, Store, Sun, ThumbsUp, Upload, Users, X, type LucideIcon, Share2,
+  Award, BarChart3, Bell, Building2, CalendarDays, ChartNoAxesCombined, ChevronDown, Clapperboard, Compass,
+  CornerDownLeft, CreditCard, FileText, Gauge, Image, LayoutDashboard, LayoutGrid, Languages, LogOut, MapPin,
+  Megaphone, Menu, Moon, Palette, PenLine, Plug, ScrollText, Search, Settings, Share2, Shield, Sparkles, Store,
+  Sun, ThumbsUp, Upload, Users, Wallet, X, type LucideIcon,
 } from 'lucide-react';
 
 import { api, qs, type Paginated } from '../lib/api';
@@ -16,7 +16,8 @@ import { useI18n, type TranslationKey } from '../lib/i18n';
 import { useRestaurant } from '../lib/restaurant';
 import { useTheme } from '../lib/theme';
 import { cn } from '../lib/utils';
-import { relative } from '../lib/format';
+import { humanize, relative } from '../lib/format';
+import { useDebounced } from '../lib/hooks';
 import { Avatar, Badge, useToast } from './ui';
 import { CreateButton } from './create-flow';
 
@@ -39,143 +40,105 @@ interface NavItem {
 /*
  * The operator's navigation.
  *
- * Grouped by the shape of the work rather than by which table a page reads:
- * Marketing OS is where you look, Platforms is where you work, and Content and
- * Advertising are the two channels underneath. Analytics and Reports are kept
- * apart on purpose — analysis and the artefact you send a client are different
- * jobs, and Phase 15's Report Builder is the only place the second happens.
+ * One flat list, in the order the work happens: look at the day, then the
+ * clients, then the plan, then the things you make, then the money, then the
+ * numbers you report. A flat rail beats grouped headings here because the
+ * groups were carrying no information the icons and order did not already —
+ * they only pushed the fifteenth entry below the fold.
  *
- * Nothing is listed that does not exist. The master spec names a few surfaces
- * this deployment has not built — ad sets as their own page, team and billing
- * settings, a separate creative-intelligence screen — and a nav entry leading
- * to an empty page is the fake functionality §48 forbids, so they are absent
- * until they are real.
+ * Every entry points at a surface that exists. Where a label in the product
+ * brief names something this deployment reaches by another route — Strategy is
+ * the Brand DNA, Social Media is the platform workspaces — the entry maps onto
+ * that route rather than a new empty page. Sub-entries are revealed by
+ * location, so the rail stays fifteen rows until you are inside a section.
  */
-const AGENCY_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
+const AGENCY_NAV: Array<{ heading?: TranslationKey; items: NavItem[] }> = [
   {
-    heading: 'nav.marketingOs',
     items: [
-      { to: '/app/dashboard', labelKey: 'nav.home', icon: LayoutDashboard },
-      { to: '/app/marketing', labelKey: 'nav.marketingOverview', icon: LayoutGrid, end: true },
-    ],
-  },
-  /*
-   * Platforms.
-   *
-   * One entry per *workspace*, not per `Platform`. Meta is one login and one
-   * app review covering Facebook and Instagram; Google is one OAuth client
-   * covering Business Profile and Ads. Listing the members separately would put
-   * two sidebar entries on one authorisation and invite the operator to connect
-   * the same thing twice.
-   *
-   * Every workspace is listed whether or not this deployment can use it,
-   * because the page's job is to say *why* not — a platform that quietly
-   * disappears from the nav teaches nothing.
-   */
-  {
-    heading: 'group.platforms',
-    items: [
-      { to: '/app/marketing/meta', labelKey: 'nav.meta', icon: Share2 },
-      { to: '/app/marketing/tiktok', labelKey: 'nav.tiktok', icon: Share2 },
-      { to: '/app/marketing/google', labelKey: 'nav.google', icon: MapPin },
-      { to: '/app/marketing/youtube', labelKey: 'nav.youtube', icon: Clapperboard },
-      { to: '/app/marketing/linkedin', labelKey: 'nav.linkedin', icon: Share2 },
-      { to: '/app/marketing/snapchat', labelKey: 'nav.snapchat', icon: Share2 },
-    ],
-  },
-  {
-    heading: 'group.content',
-    items: [
+      { to: '/app/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard },
+      { to: '/app/restaurants', labelKey: 'nav.clients', icon: Users },
       {
-        to: '/app/library',
-        labelKey: 'nav.commandCenter',
-        icon: LayoutGrid,
-        end: true,
-        children: [
-          { to: '/app/library/facebook', labelKey: 'nav.facebook', icon: Share2 },
-          { to: '/app/library/instagram', labelKey: 'nav.instagram', icon: Share2 },
-          { to: '/app/library/tiktok', labelKey: 'nav.tiktok', icon: Share2 },
-          { to: '/app/library/youtube', labelKey: 'nav.youtube', icon: Share2 },
-          { to: '/app/library/linkedin', labelKey: 'nav.linkedin', icon: Share2 },
-        ],
+        // The Brand DNA is where this product keeps business context, audience,
+        // positioning and content direction — the strategy, under its own name.
+        to: '/app/brand',
+        labelKey: 'nav.strategy',
+        icon: Compass,
       },
-      { to: '/app/social', labelKey: 'nav.composer', icon: PenLine },
-      { to: '/app/content', labelKey: 'nav.organicContent', icon: FileText },
-      { to: '/app/media', labelKey: 'nav.mediaLibrary', icon: Image },
-      { to: '/app/marketing/calendar', labelKey: 'nav.unifiedCalendar', icon: CalendarDays },
-    ],
-  },
-  {
-    heading: 'group.advertising',
-    items: [
-      { to: '/app/marketing/advertising', labelKey: 'nav.advertising', icon: Wallet, end: true },
       { to: '/app/campaigns', labelKey: 'nav.campaigns', icon: Megaphone },
-      { to: '/app/marketing/advertising/creatives', labelKey: 'nav.adCreatives', icon: LayoutGrid },
-      { to: '/app/marketing/advertising/calendar', labelKey: 'nav.adCalendar', icon: CalendarDays },
-      { to: '/app/marketing/advertising/ai', labelKey: 'nav.adAi', icon: Sparkles },
-    ],
-  },
-  {
-    heading: 'group.create',
-    items: [
-      /*
-       * Upload first, deliberately. The operator's own finished ad is the
-       * product's primary path; the render tools below it are optional.
-       */
-      { to: '/app/creatives', labelKey: 'nav.creatives', icon: Upload },
-      { to: '/app/image-ads', labelKey: 'nav.imageAds', icon: Image },
-      { to: '/app/video-ads', labelKey: 'nav.videoAds', icon: Clapperboard },
-      { to: '/app/studio', labelKey: 'nav.aiContent', icon: Sparkles },
-    ],
-  },
-  {
-    heading: 'group.analytics',
-    items: [
-      { to: '/app/analytics', labelKey: 'nav.overview', icon: ChartNoAxesCombined },
-      { to: '/app/social/analytics', labelKey: 'nav.socialAnalytics', icon: BarChart3 },
-      { to: '/app/creative-performance', labelKey: 'nav.creativePerformance', icon: Award },
-      { to: '/app/ceo', labelKey: 'nav.ceo', icon: Gauge },
-    ],
-  },
-  {
-    heading: 'group.reports',
-    items: [
-      { to: '/app/reports/builders', labelKey: 'nav.reportBuilder', icon: FileText },
-      { to: '/app/reports', labelKey: 'nav.savedReports', icon: ScrollText },
-    ],
-  },
-  {
-    heading: 'group.google',
-    items: [
       {
-        to: '/app/google',
-        labelKey: 'nav.googleOverview',
-        icon: MapPin,
-        end: true,
+        to: '/app/content',
+        labelKey: 'nav.content',
+        icon: FileText,
         children: [
-          { to: '/app/google/locations', labelKey: 'nav.googleLocations', icon: MapPin },
-          { to: '/app/google/reviews', labelKey: 'nav.googleReviews', icon: Star },
-          { to: '/app/google/seo', labelKey: 'nav.googleSeo', icon: Search },
+          { to: '/app/social', labelKey: 'nav.composer', icon: PenLine },
+          { to: '/app/library', labelKey: 'nav.commandCenter', icon: LayoutGrid },
+          { to: '/app/studio', labelKey: 'nav.aiContent', icon: Sparkles },
         ],
       },
-    ],
-  },
-  {
-    heading: 'group.settings',
-    items: [
-      { to: '/app/restaurants', labelKey: 'nav.restaurants', icon: Store },
-      { to: '/app/brand', labelKey: 'nav.brandDna', icon: Palette },
-      { to: '/app/integrations', labelKey: 'nav.integrations', icon: CreditCard },
-      { to: '/app/notifications', labelKey: 'nav.notifications', icon: Bell },
+      { to: '/app/marketing/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
+      {
+        to: '/app/marketing',
+        labelKey: 'nav.socialMedia',
+        icon: Share2,
+        end: true,
+        children: [
+          { to: '/app/marketing/meta', labelKey: 'nav.meta', icon: Share2 },
+          { to: '/app/marketing/tiktok', labelKey: 'nav.tiktok', icon: Share2 },
+          { to: '/app/marketing/google', labelKey: 'nav.google', icon: MapPin },
+          { to: '/app/marketing/youtube', labelKey: 'nav.youtube', icon: Clapperboard },
+          { to: '/app/marketing/linkedin', labelKey: 'nav.linkedin', icon: Share2 },
+          { to: '/app/marketing/snapchat', labelKey: 'nav.snapchat', icon: Share2 },
+          { to: '/app/social/analytics', labelKey: 'nav.socialAnalytics', icon: BarChart3 },
+        ],
+      },
+      {
+        to: '/app/marketing/advertising',
+        labelKey: 'nav.advertising',
+        icon: Wallet,
+        end: true,
+        children: [
+          { to: '/app/marketing/advertising/creatives', labelKey: 'nav.adCreatives', icon: LayoutGrid },
+          { to: '/app/marketing/advertising/calendar', labelKey: 'nav.adCalendar', icon: CalendarDays },
+          { to: '/app/creative-performance', labelKey: 'nav.creativePerformance', icon: Award },
+        ],
+      },
+      {
+        to: '/app/analytics',
+        labelKey: 'nav.analytics',
+        icon: ChartNoAxesCombined,
+        children: [
+          { to: '/app/ceo', labelKey: 'nav.ceo', icon: Gauge },
+          { to: '/app/google', labelKey: 'nav.googleOverview', icon: MapPin },
+        ],
+      },
+      {
+        to: '/app/reports',
+        labelKey: 'nav.reports',
+        icon: ScrollText,
+        end: true,
+        children: [
+          { to: '/app/reports/builders', labelKey: 'nav.reportBuilder', icon: FileText },
+        ],
+      },
+      { to: '/app/marketing/advertising/ai', labelKey: 'nav.aiAssistant', icon: Sparkles },
+      { to: '/app/integrations', labelKey: 'nav.integrations', icon: Plug },
+      {
+        to: '/app/media',
+        labelKey: 'nav.brandAssets',
+        icon: Image,
+        children: [
+          { to: '/app/creatives', labelKey: 'nav.creatives', icon: Upload },
+          { to: '/app/image-ads', labelKey: 'nav.imageAds', icon: Image },
+          { to: '/app/video-ads', labelKey: 'nav.videoAds', icon: Clapperboard },
+        ],
+      },
+      { to: '/app/team', labelKey: 'nav.team', icon: Users },
       { to: '/app/settings', labelKey: 'nav.settings', icon: Settings },
     ],
   },
 ];
 
-/*
- * The portal keeps its review queue in the nav: a portal user's whole reason to
- * be here is to look at work and say yes or no to it.
- */
+
 const CLIENT_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
   {
     heading: 'group.workspace',
@@ -219,14 +182,16 @@ const ADMIN_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
 ];
 
 function Logo({ collapsed }: { collapsed?: boolean }) {
+  const { t } = useI18n();
   return (
     <span className="flex items-center gap-2.5">
-      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand to-accent text-white shadow-glow">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-[10px] bg-gradient-to-br from-brand to-secondary text-white">
         <Sparkles className="h-[18px] w-[18px]" />
       </span>
       {!collapsed ? (
         <span className="min-w-0">
           <span className="block truncate text-[15px] font-semibold leading-tight text-fg">Marketing OS</span>
+          <span className="block truncate text-[11px] leading-tight text-muted">{t('app.railTagline')}</span>
         </span>
       ) : null}
     </span>
@@ -254,28 +219,20 @@ function NavEntry({ item, onNavigate }: { item: NavItem; onNavigate?: () => void
         onClick={onNavigate}
         className={({ isActive }) =>
           cn(
-            'group relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors',
-            isActive ? 'bg-brand/12 font-medium text-brand' : 'text-muted hover:bg-elevated hover:text-fg',
+            'group flex items-center gap-3 rounded-[10px] px-3 py-[9px] text-[13.5px] transition-colors',
+            isActive
+              ? 'bg-brand/90 font-medium text-white'
+              : 'text-muted hover:bg-elevated hover:text-fg',
           )
         }
       >
-        {({ isActive }) => (
-          <>
-            {isActive ? (
-              <motion.span
-                layoutId="nav-active"
-                className="absolute inset-y-1.5 start-0 w-0.5 rounded-full bg-brand"
-              />
-            ) : null}
-            <item.icon className="h-[18px] w-[18px] shrink-0" />
-            <span className="truncate">{t(item.labelKey)}</span>
-          </>
-        )}
+        <item.icon className="h-[17px] w-[17px] shrink-0" />
+        <span className="truncate">{t(item.labelKey)}</span>
       </NavLink>
 
       {item.children && withinSection ? (
         // Indented with a logical property so the tree mirrors under Arabic.
-        <div className="ms-4 space-y-0.5 border-s border-line ps-2">
+        <div className="ms-[26px] space-y-0.5 border-s border-line ps-2.5">
           {item.children.map((child) => (
             <NavLink
               key={child.to}
@@ -283,8 +240,8 @@ function NavEntry({ item, onNavigate }: { item: NavItem; onNavigate?: () => void
               onClick={onNavigate}
               className={({ isActive }) =>
                 cn(
-                  'flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors',
-                  isActive ? 'font-medium text-brand' : 'text-muted hover:text-fg',
+                  'flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12.5px] transition-colors',
+                  isActive ? 'font-medium text-fg' : 'text-muted hover:text-fg',
                 )
               }
             >
@@ -297,13 +254,17 @@ function NavEntry({ item, onNavigate }: { item: NavItem; onNavigate?: () => void
   );
 }
 
-function NavSection({ section, onNavigate }: { section: (typeof AGENCY_NAV)[number]; onNavigate?: () => void }) {
+function NavSection({
+  section, onNavigate,
+}: { section: { heading?: TranslationKey; items: NavItem[] }; onNavigate?: () => void }) {
   const { t } = useI18n();
   return (
-    <div className="mb-5">
-      <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-wider text-muted/70">
-        {t(section.heading)}
-      </p>
+    <div className={cn(section.heading ? 'mb-5' : 'mb-2')}>
+      {section.heading ? (
+        <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-wider text-muted/70">
+          {t(section.heading)}
+        </p>
+      ) : null}
       <nav className="space-y-0.5">
         {section.items.map((item) => (
           <NavEntry key={item.to} item={item} onNavigate={onNavigate} />
@@ -348,17 +309,27 @@ function RestaurantSwitch() {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((value) => !value)}
-        className="flex h-9 max-w-[13rem] items-center gap-2 rounded-lg border border-line bg-elevated px-2.5 text-[13px] transition-colors hover:border-brand/30"
+        className="flex h-11 w-full max-w-[11rem] items-center gap-2.5 rounded-[10px] border border-line bg-surface px-2.5 text-[13px] transition-colors hover:border-brand/40 sm:max-w-[15rem]"
         aria-haspopup="listbox"
         aria-expanded={open}
       >
         {current ? (
-          <Avatar name={current.businessName} src={current.logoUrl} size={20} />
+          <Avatar name={current.businessName} src={current.logoUrl} size={26} />
         ) : (
-          <Store className="h-4 w-4 shrink-0 text-muted" />
+          <span className="grid h-[26px] w-[26px] shrink-0 place-items-center rounded-lg bg-brand/10 text-brand">
+            <Store className="h-3.5 w-3.5" />
+          </span>
         )}
-        <span className="min-w-0 truncate font-medium text-fg">
-          {current ? current.businessName : t('restaurant.all')}
+        <span className="min-w-0 text-start">
+          <span className="block truncate font-medium leading-tight text-fg">
+            {current ? current.businessName : t('restaurant.all')}
+          </span>
+          {/* The location, where the project records one — the reference's
+              second line, and never invented when the field is empty. It is the
+              first thing to go when the bar is narrow. */}
+          <span className="hidden truncate text-[11px] leading-tight text-muted sm:block">
+            {current?.location ?? t('restaurant.allSub')}
+          </span>
         </span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted" />
       </button>
@@ -396,10 +367,194 @@ function RestaurantSwitch() {
                   currentId === row.id ? 'font-medium text-brand' : 'text-fg',
                 )}
               >
-                <Avatar name={row.businessName} src={row.logoUrl} size={20} />
-                <span className="min-w-0 truncate">{row.businessName}</span>
+                <Avatar name={row.businessName} src={row.logoUrl} size={22} />
+                <span className="min-w-0">
+                  <span className="block truncate">{row.businessName}</span>
+                  {row.location ? (
+                    <span className="block truncate text-[11px] text-muted">{row.location}</span>
+                  ) : null}
+                </span>
               </button>
             ))}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/**
+ * Global search.
+ *
+ * Deliberately small: it searches the two things an operator actually looks for
+ * by name — a place in the product, and a client — plus campaigns, which the
+ * campaigns endpoint already searches server-side. Nothing here pretends to
+ * search content it cannot reach; a result you can click is a result that
+ * navigates somewhere real.
+ */
+interface SearchHit {
+  id: string;
+  label: string;
+  detail?: string | null;
+  icon: LucideIcon;
+  run: () => void;
+}
+
+function GlobalSearch() {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const { restaurants, setCurrentId } = useRestaurant();
+  const { isAgency } = useAuth();
+  const [term, setTerm] = useState('');
+  const [open, setOpen] = useState(false);
+  const [cursor, setCursor] = useState(0);
+  const [campaigns, setCampaigns] = useState<Array<{ id: string; name: string; status: string }>>([]);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const query = useDebounced(term.trim(), 250);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [open]);
+
+  // ⌘K / Ctrl-K, the shortcut every operator already has in their fingers.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        inputRef.current?.focus();
+        setOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  useEffect(() => {
+    if (!isAgency || query.length < 2) {
+      setCampaigns([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .get<Paginated<{ id: string; name: string; status: string }>>(`/campaigns${qs({ search: query, pageSize: 4 })}`)
+      .then((data) => { if (!cancelled) setCampaigns(data.items); })
+      .catch(() => { if (!cancelled) setCampaigns([]); });
+    return () => { cancelled = true; };
+  }, [query, isAgency]);
+
+  const hits = useMemo<SearchHit[]>(() => {
+    const needle = query.toLowerCase();
+    if (needle.length < 1) return [];
+    const results: SearchHit[] = [];
+
+    for (const item of AGENCY_NAV.flatMap((section) => section.items)) {
+      if (!isAgency) break;
+      const label = t(item.labelKey);
+      if (label.toLowerCase().includes(needle)) {
+        results.push({ id: `nav:${item.to}`, label, detail: item.to, icon: item.icon, run: () => navigate(item.to) });
+      }
+    }
+
+    for (const row of restaurants) {
+      if (
+        row.businessName.toLowerCase().includes(needle)
+        || row.name.toLowerCase().includes(needle)
+        || (row.location ?? '').toLowerCase().includes(needle)
+      ) {
+        results.push({
+          id: `client:${row.id}`,
+          label: row.businessName,
+          detail: row.location,
+          icon: Store,
+          run: () => { setCurrentId(row.id); navigate(`/app/restaurants/${row.id}`); },
+        });
+      }
+    }
+
+    for (const row of campaigns) {
+      results.push({
+        id: `campaign:${row.id}`,
+        label: row.name,
+        detail: humanize(row.status.toLowerCase()),
+        icon: Megaphone,
+        run: () => navigate(`/app/campaigns/${row.id}`),
+      });
+    }
+
+    return results.slice(0, 8);
+  }, [query, restaurants, campaigns, isAgency, navigate, setCurrentId, t]);
+
+  useEffect(() => setCursor(0), [query]);
+
+  const choose = (hit: SearchHit) => {
+    hit.run();
+    setTerm('');
+    setOpen(false);
+    inputRef.current?.blur();
+  };
+
+  return (
+    <div className="relative w-full" ref={ref}>
+      <Search className="pointer-events-none absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+      <input
+        ref={inputRef}
+        value={term}
+        onChange={(event) => { setTerm(event.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') { setOpen(false); inputRef.current?.blur(); return; }
+          if (hits.length === 0) return;
+          if (event.key === 'ArrowDown') { event.preventDefault(); setCursor((value) => (value + 1) % hits.length); }
+          if (event.key === 'ArrowUp') { event.preventDefault(); setCursor((value) => (value - 1 + hits.length) % hits.length); }
+          if (event.key === 'Enter') {
+            const hit = hits[cursor];
+            if (hit) { event.preventDefault(); choose(hit); }
+          }
+        }}
+        placeholder={t('search.placeholder')}
+        aria-label={t('search.placeholder')}
+        className="h-10 w-full rounded-[10px] border border-line bg-elevated ps-9 pe-3 text-[13px] text-fg outline-none transition-colors placeholder:text-muted focus:border-brand/50"
+      />
+
+      <AnimatePresence>
+        {open && query.length > 0 ? (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.12 }}
+            className="absolute inset-x-0 z-50 mt-2 overflow-hidden rounded-xl border border-line bg-surface p-1.5 shadow-lift"
+          >
+            {hits.length === 0 ? (
+              <p className="px-3 py-4 text-center text-[13px] text-muted">{t('search.empty')}</p>
+            ) : (
+              hits.map((hit, index) => (
+                <button
+                  key={hit.id}
+                  onMouseEnter={() => setCursor(index)}
+                  onClick={() => choose(hit)}
+                  className={cn(
+                    'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-start text-[13px] transition-colors',
+                    index === cursor ? 'bg-elevated text-fg' : 'text-muted hover:bg-elevated',
+                  )}
+                >
+                  <hit.icon className="h-4 w-4 shrink-0 text-muted" />
+                  <span className="min-w-0 flex-1 truncate" dir="auto">{hit.label}</span>
+                  {hit.detail ? (
+                    <span className="hidden max-w-[10rem] truncate text-[11px] text-muted sm:block" dir="auto">
+                      {hit.detail}
+                    </span>
+                  ) : null}
+                  {index === cursor ? <CornerDownLeft className="h-3.5 w-3.5 shrink-0 text-muted" /> : null}
+                </button>
+              ))
+            )}
           </motion.div>
         ) : null}
       </AnimatePresence>
@@ -565,7 +720,7 @@ function NotificationBell() {
   );
 }
 
-function UserMenu() {
+function UserMenu({ placement = 'bar' }: { placement?: 'bar' | 'rail' }) {
   const { user, signOut, isSuperAdmin, isClientUser } = useAuth();
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -590,10 +745,20 @@ function UserMenu() {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-2 rounded-lg border border-line bg-elevated py-1 pe-2 ps-1 transition-colors hover:border-brand/30"
+        className={cn(
+          'flex items-center gap-2 transition-colors',
+          placement === 'rail'
+            ? 'w-full rounded-[10px] border border-line bg-elevated p-2 hover:border-brand/40'
+            : 'rounded-[10px] border border-line bg-elevated py-1 pe-2 ps-1 hover:border-brand/30',
+        )}
       >
-        <Avatar name={user.name} src={user.avatarUrl} size={28} />
-        <span className="hidden min-w-0 text-start sm:block">
+        <Avatar name={user.name} src={user.avatarUrl} size={placement === 'rail' ? 32 : 28} />
+        <span
+          className={cn(
+            'min-w-0 flex-1 text-start',
+            placement === 'rail' ? 'block' : 'hidden sm:block',
+          )}
+        >
           <span className="block max-w-[9rem] truncate text-[13px] font-medium leading-tight text-fg">{user.name}</span>
           <span className="block text-[11px] capitalize leading-tight text-muted">{roleLabel}</span>
         </span>
@@ -607,7 +772,10 @@ function UserMenu() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
             transition={{ duration: 0.15 }}
-            className="absolute end-0 z-50 mt-2 w-60 overflow-hidden rounded-xl border border-line bg-surface p-1.5 shadow-lift"
+            className={cn(
+              'absolute z-50 w-60 overflow-hidden rounded-xl border border-line bg-surface p-1.5 shadow-lift',
+              placement === 'rail' ? 'bottom-full start-0 mb-2' : 'end-0 mt-2',
+            )}
           >
             <div className="border-b border-line px-3 py-2.5">
               <p className="truncate text-sm font-medium text-fg">{user.name}</p>
@@ -658,7 +826,7 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
   const location = useLocation();
   const { t } = useI18n();
 
-  const sections = useMemo(() => {
+  const sections = useMemo<Array<{ heading?: TranslationKey; items: NavItem[] }>>(() => {
     if (variant === 'admin') return ADMIN_NAV;
     if (variant === 'client') return CLIENT_NAV;
     return AGENCY_NAV;
@@ -667,8 +835,16 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
   // Route changes close the mobile drawer; leaving it open feels broken.
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
+  /*
+   * The rail.
+   *
+   * Dark against the light workspace, and dark in either theme — it is chrome,
+   * and chrome that changes colour with the content it frames stops reading as
+   * a frame. The identity sits at the top, the work in the middle, the person
+   * signed in at the bottom, which is where a person looks for themselves.
+   */
   const sidebar = (onNavigate?: () => void) => (
-    <div className="flex h-full flex-col">
+    <div className="rail flex h-full flex-col">
       <div className="flex h-16 shrink-0 items-center justify-between px-4">
         <Link to={variant === 'client' ? '/client/dashboard' : variant === 'admin' ? '/admin/dashboard' : '/app/dashboard'}>
           <Logo />
@@ -679,7 +855,7 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
       </div>
 
       {variant === 'client' && user?.client ? (
-        <div className="mx-3 mb-4 flex items-center gap-2.5 rounded-xl border border-line bg-elevated p-2.5">
+        <div className="mx-3 mb-3 flex items-center gap-2.5 rounded-[10px] border border-line bg-elevated p-2.5">
           <Avatar name={user.client.businessName} src={user.client.logoUrl} size={32} />
           <div className="min-w-0">
             <p className="truncate text-[13px] font-medium text-fg">{user.client.businessName}</p>
@@ -688,36 +864,41 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
         </div>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
-        {sections.map((section) => (
-          <NavSection key={section.heading} section={section} onNavigate={onNavigate} />
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+        {sections.map((section, index) => (
+          <NavSection key={section.heading ?? index} section={section} onNavigate={onNavigate} />
         ))}
 
         {variant === 'admin' ? (
           <Link
             to="/app/dashboard"
             onClick={onNavigate}
-            className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm text-muted transition-colors hover:bg-elevated hover:text-fg"
+            className="flex items-center gap-3 rounded-[10px] px-3 py-2 text-[13.5px] text-muted transition-colors hover:bg-elevated hover:text-fg"
           >
-            <LayoutDashboard className="h-[18px] w-[18px]" /> Back to workspace
+            <LayoutDashboard className="h-[17px] w-[17px]" /> {t('nav.workspace')}
           </Link>
         ) : isSuperAdmin && variant === 'agency' ? (
           <Link
             to="/admin/dashboard"
             onClick={onNavigate}
-            className="flex items-center gap-3 rounded-xl border border-dashed border-line px-3 py-2 text-sm text-muted transition-colors hover:border-brand/40 hover:text-brand"
+            className="flex items-center gap-3 rounded-[10px] border border-dashed border-line px-3 py-2 text-[13.5px] text-muted transition-colors hover:border-brand/40 hover:text-brand"
           >
-            <Shield className="h-[18px] w-[18px]" /> {t('nav.admin')}
+            <Shield className="h-[17px] w-[17px]" /> {t('nav.admin')}
           </Link>
         ) : null}
+      </div>
+
+      {/* The person signed in, and the menu that belongs to them. */}
+      <div className="shrink-0 border-t border-line p-3">
+        <UserMenu placement="rail" />
       </div>
     </div>
   );
 
   return (
     <div className="min-h-screen bg-bg">
-      {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 start-0 z-30 hidden w-64 border-e border-line bg-surface lg:block">
+      {/* Desktop rail */}
+      <aside className="fixed inset-y-0 start-0 z-30 hidden w-[248px] lg:block">
         {sidebar()}
       </aside>
 
@@ -733,7 +914,7 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
               onClick={() => setMobileOpen(false)}
             />
             <motion.aside
-              className="absolute inset-y-0 start-0 w-[17rem] border-e border-line bg-surface"
+              className="absolute inset-y-0 start-0 w-[17rem]"
               initial={{ x: '-100%' }}
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
@@ -745,17 +926,18 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
         ) : null}
       </AnimatePresence>
 
-      <div className="lg:ps-64">
-        <header className="glass sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-line px-4 sm:px-6">
+      <div className="lg:ps-[248px]">
+        <header className="sticky top-0 z-20 flex h-16 items-center gap-2 overflow-hidden border-b border-line bg-surface px-4 sm:gap-3 sm:px-6">
           <button
             onClick={() => setMobileOpen(true)}
-            className="grid h-9 w-9 place-items-center rounded-lg border border-line bg-elevated text-muted lg:hidden"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-[10px] border border-line bg-elevated text-muted lg:hidden"
             aria-label="Open menu"
           >
             <Menu className="h-4 w-4" />
           </button>
 
-          <div className="min-w-0 flex-1">
+          {/* Left: what this session is pointed at. */}
+          <div className="min-w-0 flex-1 md:flex-none">
             {variant === 'admin' ? (
               <Badge tone="danger" dot>Super Admin</Badge>
             ) : variant === 'agency' ? (
@@ -765,18 +947,19 @@ export function AppShell({ children, variant }: { children: React.ReactNode; var
             ) : null}
           </div>
 
-          <div className="flex items-center gap-2">
-            {/*
-              * The global Create entry point. Agency-only because it ends in
-              * the composer and the advertising centre, and a portal user has
-              * neither. Hidden below `sm` so the top bar does not overflow at
-              * 390px — the dashboard carries the same action where there is
-              * room for it.
-              */}
+          {/* Middle: search. Agency-side only — a portal user has one client
+              and three screens, and a search box over that is furniture. */}
+          {variant === 'agency' ? (
+            <div className="mx-auto hidden w-full max-w-lg md:block"><GlobalSearch /></div>
+          ) : (
+            <div className="flex-1" />
+          )}
+
+          <div className="ms-auto flex shrink-0 items-center gap-2">
             {variant === 'agency' ? (
               <div className="hidden sm:block"><CreateButton /></div>
             ) : null}
-            <div className="hidden sm:block"><ThemeSwitch /></div>
+            <div className="hidden lg:block"><ThemeSwitch /></div>
             <LanguageSwitch />
             <NotificationBell />
             <UserMenu />

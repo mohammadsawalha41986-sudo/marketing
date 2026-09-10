@@ -123,11 +123,19 @@ export interface KpiCardProps {
   footer?: ReactNode;
   /** Higher is better for most measures, but not for cost per click. */
   invertTrend?: boolean;
+  /**
+   * Show the change without calling it good or bad.
+   *
+   * Spend is the case this exists for: more spend is neither an improvement
+   * nor a regression on its own, and colouring it green would be an opinion
+   * the number does not support.
+   */
+  neutralTrend?: boolean;
 }
 
 export function KpiCard({
   label: title, value, format = 'number', previous, icon: Icon, accent, compact, footer, invertTrend,
-  unavailableReason,
+  neutralTrend, unavailableReason,
 }: KpiCardProps) {
   const { lang } = useI18n();
 
@@ -175,7 +183,12 @@ export function KpiCard({
       {unavailable && unavailableReason ? (
         <p className="mt-1 text-[12px] leading-snug text-muted">{unavailableReason}</p>
       ) : trend !== null ? (
-        <p className={cn('mt-1 flex items-center gap-1 text-[13px]', good ? 'text-ok' : 'text-danger')}>
+        <p
+          className={cn(
+            'mt-1 flex items-center gap-1 text-[13px]',
+            neutralTrend ? 'text-muted' : good ? 'text-ok' : 'text-danger',
+          )}
+        >
           {good ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
           <span dir="ltr" className="tabular inline-block">{delta(trend)}</span>
         </p>

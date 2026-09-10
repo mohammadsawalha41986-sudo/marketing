@@ -97,7 +97,7 @@
 
 @layer components {
   .card {
-    @apply rounded-2xl border border-line bg-surface shadow-card;
+    @apply rounded-xl border border-line bg-surface shadow-card;
   }
 
   /* Frosted panel used for the shell chrome and overlays. */
@@ -117,6 +117,27 @@
     background-size: 44px 44px;
     -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
     mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+  }
+
+  /*
+   * The navigation rail.
+   *
+   * A dark rail beside a light workspace is the shape of this product: the
+   * chrome recedes, the work is the bright surface. Rather than a second set of
+   * colour utilities, the rail re-declares the same theme variables in dark
+   * values, so every existing component inside it (nav rows, avatars, badges)
+   * reads the dark palette without knowing where it is. One block, no fork.
+   */
+  .rail {
+    --c-bg: 13 17 28;
+    --c-surface: 13 17 28;
+    --c-elevated: 24 30 45;
+    --c-line: 33 41 60;
+    --c-fg: 237 240 246;
+    --c-muted: 139 149 170;
+    --c-brand-soft: 33 38 74;
+    color-scheme: dark;
+    @apply bg-surface text-fg;
   }
 
   .brand-gradient-text {

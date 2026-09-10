@@ -351,7 +351,7 @@ export function MarketingCalendar({
         <CardSkeleton rows={6} />
       ) : total === 0 ? (
         <Card>
-          <EmptyState icon={CalendarDays} title={t('cal.empty')} body={t('cal.emptyBody')} />
+          <EmptyState compact icon={CalendarDays} title={t('cal.empty')} body={t('cal.emptyBody')} />
         </Card>
       ) : (
         /*

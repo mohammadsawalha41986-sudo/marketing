@@ -1,29 +1,23 @@
 /**
- * The dashboard. Same data for agency and client portal, one hierarchy.
+ * The dashboard — the command centre, in the shape the product was approved in.
  *
- * The order is the argument: **Today**, then **Performance**, then the
- * **Calendar**, then **AI recommendations**, then **Activity**. Opening the day
- * on spend answers a question nobody has at 9am. What is going out, what is
- * stuck and what broke overnight is the work; the money is how last month went.
+ * Reading order is the argument: what the money did, then how it moved over the
+ * period, then what is going out this week, then what is running, then what is
+ * connected. The right rail carries the two things that are about *now* rather
+ * than about the period — what the engine thinks you should do, and what just
+ * happened.
  *
- * Performance is three tabs rather than one merged number, and the split is
- * deliberate. An organic engagement and a paid click are different
- * measurements, taken by different APIs, with different meanings — so Combined
- * shows them beside each other and says in as many words that they are never
- * added together. Adding them would produce a bigger, more impressive figure
- * that describes nothing.
- *
- * Every paid figure is a `QualifiedMetric` drawn by the shared renderer, so an
- * unfetched number reads NOT_FETCHED here exactly as it does on the advertising
- * dashboard. Phase 14 does the computing; this page only asks and lays out.
+ * Every figure is measured. Where a number cannot be computed — a ratio with no
+ * spend behind it, a platform that has reported nothing — the card says so
+ * instead of printing a confident zero. That rule is the difference between a
+ * dashboard and a picture of one.
  */
 
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
 import {
-  Activity, Bell, Building2, CalendarClock, CalendarDays, Eye, Megaphone,
-  ShieldCheck, Sparkles, Store, ThumbsUp, TrendingUp, TriangleAlert,
+  Activity, BarChart3, CalendarDays, CalendarPlus, ChartNoAxesCombined, Coins, Building2,
+  MousePointerClick, Plug, Sparkles, Target, TrendingUp, Users, Wallet,
 } from 'lucide-react';
 
 import { qs, type Metrics, type Platform } from '../lib/api';
@@ -31,19 +25,31 @@ import { useQuery } from '../lib/hooks';
 import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
 import { useRestaurant } from '../lib/restaurant';
-import { isoDate, money, num, pct, ratio, relative, humanize } from '../lib/format';
+import { isoDate, money, num, ratio, relative, humanize, date as formatDate } from '../lib/format';
 import { cn } from '../lib/utils';
 import {
-  Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, PageHeader,
-  Select, Tabs,
+  Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Select,
+  TableWrap, Td, Th,
 } from '../components/ui';
 import {
-  AlertRow, KpiCard, MetricValue, PlatformChip, StatusBadge,
-  type Alert, type QualifiedMetric,
+  AlertRow, KpiCard, PlatformChip, StatusBadge, type Alert,
 } from '../components/domain';
-import { DonutChart, TrendChart } from '../components/charts';
+import { TrendChart } from '../components/charts';
 import { MarketingCalendar } from '../components/marketing-calendar';
 import { CreateFlow } from '../components/create-flow';
+
+interface CampaignRow {
+  id: string;
+  name: string;
+  objective: string;
+  status: string;
+  client: { id: string; businessName: string; logoUrl: string | null } | null;
+  platforms: Platform[];
+  budget: number;
+  spend: number;
+  roas: number | null;
+  roasReason: string | null;
+}
 
 interface DashboardData {
   range: { from: string; to: string };
@@ -52,35 +58,43 @@ interface DashboardData {
   series: Array<{ date: string } & Metrics>;
   platforms: Array<{ platform: Platform; label: string; spend: number; conversions: number; roas: number; clicks: number }>;
   campaignsByStatus: Record<string, number>;
+  campaigns: CampaignRow[];
   alerts: Alert[];
   recentActivity: Array<{ id: string; action: string; entity: string; user: string; createdAt: string }>;
 }
 
-interface PulseResponse {
-  counts: {
-    scheduled: number;
-    publishing: number;
-    published: number;
-    needsAttention: number;
-    attention: { failedPosts: number; failedAds: number; brokenConnections: number };
-  };
+interface OrganicMetric {
+  value: number | null;
+  state: 'ZERO' | 'UNAVAILABLE' | 'NOT_FETCHED' | 'PROVIDER_ERROR';
+}
+
+interface TopPost {
+  platformPostId: string;
+  postGroupId: string;
+  platform: Platform;
+  platformLabel: string;
+  caption: string | null;
+  publishedAt: string | null;
+  metrics: Record<'reach' | 'impressions' | 'engagements' | 'clicks', OrganicMetric>;
 }
 
 interface SocialOverview {
   totalPosts: number;
   publishedPosts: number;
-  platforms: Array<{
-    platform: Platform;
-    label: string;
-    publishedCount: number;
-    totalEngagements: number;
-    totalReach: number;
-    totalImpressions: number;
-  }>;
+  topPosts: TopPost[];
   periodTotals: {
     likes: number; comments: number; shares: number; saves: number;
     reach: number; impressions: number; engagements: number; clicks: number;
   };
+}
+
+interface IntegrationRow {
+  id: string;
+  platform: Platform;
+  status: string;
+  accountName: string | null;
+  lastError: string | null;
+  client: { id: string; name: string } | null;
 }
 
 interface StoredRecommendation {
@@ -98,65 +112,21 @@ const RANGE_KEYS = [
   { value: 90, key: 'dash.range90' },
 ] as const;
 
-type PerfTab = 'organic' | 'paid' | 'combined';
-
-/** One "today" counter. The needs-attention tile names its parts rather than
- *  leaving an operator to guess what the number is made of. */
-function PulseTile({
-  label, value, icon: Icon, tone = 'neutral', detail, to,
-}: {
-  label: string; value: number; icon: typeof Activity;
-  tone?: 'neutral' | 'danger'; detail?: string | null; to?: string;
-}) {
-  const { lang } = useI18n();
-  const alarming = tone === 'danger' && value > 0;
-
-  const body = (
-    <Card className={cn('h-full p-3.5', to && 'transition-colors hover:border-brand/40')}>
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-[12px] font-medium text-muted">{label}</p>
-        <Icon className={cn('h-4 w-4 shrink-0', alarming ? 'text-danger' : 'text-muted')} aria-hidden />
-      </div>
-      <p className={cn('mt-1 text-[26px] font-semibold tabular leading-none', alarming ? 'text-danger' : 'text-fg')}>
-        {num(value, lang)}
-      </p>
-      {detail ? <p className="mt-1.5 text-[11px] leading-snug text-muted" dir="auto">{detail}</p> : null}
-    </Card>
-  );
-
-  return to ? <Link to={to} className="block h-full">{body}</Link> : body;
-}
-
-/** One organic total. Organic figures are counts of things that happened, so a
- *  zero here is a measured zero — Phase 14 already excluded the unfetched. */
-function OrganicTile({ label, value }: { label: string; value: number }) {
-  const { lang } = useI18n();
-  return (
-    <Card className="p-3.5">
-      <p className="text-[12px] font-medium text-muted">{label}</p>
-      <p className="mt-1 text-[22px] font-semibold tabular leading-none text-fg">{num(value, lang, true)}</p>
-    </Card>
-  );
-}
-
-function PaidTile({ metric, label }: { metric: QualifiedMetric | undefined; label: string }) {
-  if (!metric) return null;
-  return (
-    <Card className="p-3.5">
-      <p className="text-[12px] font-medium text-muted">{label}</p>
-      <p className="mt-1 text-[22px] font-semibold tabular leading-none text-fg">
-        <MetricValue metric={metric} />
-      </p>
-    </Card>
-  );
-}
+/** Connection states carry meaning; each gets the tone that meaning deserves. */
+const INTEGRATION_TONES: Record<string, 'ok' | 'warn' | 'danger' | 'neutral'> = {
+  CONNECTED: 'ok',
+  EXPIRED: 'warn',
+  REAUTH_REQUIRED: 'warn',
+  PENDING: 'warn',
+  ERROR: 'danger',
+  DISCONNECTED: 'neutral',
+};
 
 export function DashboardPage({ portal = false }: { portal?: boolean }) {
   const { user, isAgency } = useAuth();
   const { t, lang } = useI18n();
   const navigate = useNavigate();
   const [days, setDays] = useState(30);
-  const [perf, setPerf] = useState<PerfTab>('combined');
   const [creating, setCreating] = useState(false);
 
   const range = useMemo(() => {
@@ -170,41 +140,33 @@ export function DashboardPage({ portal = false }: { portal?: boolean }) {
   // so this is the same data narrowed, not a different number.
   const { current, currentId } = useRestaurant();
   const clientId = portal ? '' : currentId;
-
-  /* The operator's own day. The server refuses to guess a timezone. */
-  const dayWindow = useMemo(() => {
-    const from = new Date();
-    from.setHours(0, 0, 0, 0);
-    const to = new Date(from);
-    to.setHours(23, 59, 59, 999);
-    return { from: from.toISOString(), to: to.toISOString() };
-  }, []);
+  const base = portal ? '/client' : '/app';
 
   const { data, loading, error, refetch } = useQuery<DashboardData>(
     `/analytics/dashboard${qs({ ...range, clientId })}`,
     [range.from, range.to, clientId],
   );
-  const pulse = useQuery<PulseResponse>(
-    `/marketing/pulse${qs({ clientId, ...dayWindow })}`,
-    [clientId, dayWindow.from],
-  );
-  /* Only the tab that is open is fetched. Nothing is loaded to be discarded. */
   const organic = useQuery<SocialOverview>(
-    perf === 'paid' ? null : `/social/analytics/overview${qs({ ...range, clientId })}`,
-    [range.from, range.to, clientId, perf === 'paid'],
+    `/social/analytics/overview${qs({ ...range, clientId })}`,
+    [range.from, range.to, clientId],
   );
   const recommendations = useQuery<{ items: StoredRecommendation[] }>(
     isAgency ? `/advertising/ai/recommendations${qs({ clientId, pageSize: 3 })}` : null,
     [clientId, isAgency],
   );
+  const integrations = useQuery<{ items: IntegrationRow[] }>(
+    isAgency && !portal ? `/integrations${qs({ clientId })}` : null,
+    [clientId, isAgency, portal],
+  );
 
-  const greeting = user?.name.split(' ')[0] ?? '';
-  const base = portal ? '/client' : '/app';
+  const hour = new Date().getHours();
+  const greetingKey = hour < 12 ? 'dash.morning' : hour < 18 ? 'dash.afternoon' : 'dash.evening';
+  const firstName = user?.name.split(' ')[0] ?? '';
 
   if (error) {
     return (
       <>
-        <PageHeader title={t('nav.dashboard')} />
+        <h1 className="mb-4 text-[22px] font-semibold tracking-tight text-fg">{t('nav.dashboard')}</h1>
         <Card><ErrorState message={error} onRetry={refetch} /></Card>
       </>
     );
@@ -212,406 +174,442 @@ export function DashboardPage({ portal = false }: { portal?: boolean }) {
 
   const kpis = data?.kpis;
   const previous = data?.previous;
-  const counts = pulse.data?.counts;
-
-  const attentionDetail = counts && counts.needsAttention > 0
-    ? [
-      counts.attention.failedPosts > 0 ? `${num(counts.attention.failedPosts, lang)} ${t('ws.attention.posts')}` : null,
-      counts.attention.failedAds > 0 ? `${num(counts.attention.failedAds, lang)} ${t('ws.attention.ads')}` : null,
-      counts.attention.brokenConnections > 0 ? `${num(counts.attention.brokenConnections, lang)} ${t('ws.attention.connections')}` : null,
-    ].filter(Boolean).join(' · ')
-    : counts ? t('ws.attention.none') : null;
-
-  /*
-   * Paid figures come from the same Phase 14 aggregate that draws the chart and
-   * the donut below them, and this was found by looking at the rendered page.
-   *
-   * They were read from `/advertising/overview` — the Advertising Command
-   * Center's per-publication view — which answered NOT_FETCHED for every metric
-   * because this deployment has no `AdPublication` rows, while the chart three
-   * inches lower drew SAR 65,934 of measured campaign spend from
-   * `AnalyticsSnapshot`. Both were telling the truth about different things,
-   * and the screen contradicted itself.
-   *
-   * Phase 14 is the single source of truth for analytics (§35), so the tiles
-   * read it. A ratio it could not compute arrives as null with a reason, which
-   * is Phase 14's own way of refusing to print a number it does not have — the
-   * same discipline as the four states, expressed in the shape this endpoint
-   * returns. Dropping the second call also removes a duplicate request. §45.
-   */
-  const paidMetric = (
-    name: string, value: number | null | undefined, reason?: string,
-  ): QualifiedMetric => (
-    typeof value === 'number'
-      ? { metric: name, value, state: 'ZERO', note: null }
-      : { metric: name, value: null, state: 'UNAVAILABLE', note: reason ?? null }
-  );
+  const totals = organic.data?.periodTotals;
 
   return (
     <>
-      {/* PROJECT HEADER — project, date range, create. §40. */}
-      <PageHeader
-        title={
-          portal
-            ? user?.client?.businessName ?? t('nav.home')
-            : current
-              ? current.businessName
-              : `${t('dash.greeting')}, ${greeting}`
-        }
-        subtitle={
-          data
-            ? `${!portal && !current ? `${t('dash.allRestaurants')} · ` : ''}${data.range.from} → ${data.range.to} · ${t('common.vsPrevious')}`
-            : t('common.loading')
-        }
-        action={
-          <>
-            <Select value={days} onChange={(event) => setDays(Number(event.target.value))} className="w-40">
-              {RANGE_KEYS.map((option) => (
-                <option key={option.value} value={option.value}>{t(option.key)}</option>
-              ))}
-            </Select>
-            {isAgency ? (
-              <Button onClick={() => setCreating(true)} icon={Sparkles}>{t('create.button')}</Button>
-            ) : null}
-          </>
-        }
-      >
-        {/* §1/§38 — the project, and its business type where it declares one.
-            The type is a property of the project, never the global noun for
-            it: "Business type: Restaurant", not a product full of restaurants. */}
-        {current?.businessType ? (
-          <p className="mt-1 text-[12px] text-muted" dir="auto">
-            {t('common.businessType')}: {current.businessType}
+      {/* ---------------------------------------------------------- header */}
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-[26px] font-semibold tracking-tight text-fg sm:text-[28px]" dir="auto">
+            {portal
+              ? user?.client?.businessName ?? t('nav.home')
+              : `${t(greetingKey)}, ${firstName}`}
+          </h1>
+          <p className="mt-1 text-[13.5px] text-muted">
+            {portal ? t('dash.todaySub') : current ? current.businessName : t('dash.todaySub')}
           </p>
-        ) : null}
-      </PageHeader>
+          {current?.businessType && !portal ? (
+            <p className="mt-0.5 text-[12px] text-muted" dir="auto">
+              {t('common.businessType')}: {current.businessType}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="hidden text-[13px] text-muted sm:block">{formatDate(new Date(), lang)}</span>
+          <Select
+            value={days}
+            onChange={(event) => setDays(Number(event.target.value))}
+            className="w-40"
+            aria-label={t('common.date')}
+          >
+            {RANGE_KEYS.map((option) => (
+              <option key={option.value} value={option.value}>{t(option.key)}</option>
+            ))}
+          </Select>
+        </div>
+      </div>
 
       {isAgency ? <CreateFlow open={creating} onClose={() => setCreating(false)} /> : null}
 
-      {/* TODAY */}
-      <section className="mb-6">
-        <p className="mb-2 text-[13px] font-medium text-muted">{t('dash.todayHeading')}</p>
-        {pulse.loading || !counts ? (
-          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, index) => <CardSkeleton key={index} rows={1} />)}
-          </div>
+      {/* ------------------------------------------------------------- KPIs */}
+      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+        {loading || !kpis ? (
+          Array.from({ length: 6 }).map((_, index) => <CardSkeleton key={index} rows={1} />)
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-            <PulseTile
-              label={t('ws.scheduled')}
-              value={counts.scheduled}
-              icon={CalendarDays}
-              to={portal ? undefined : '/app/marketing/calendar'}
+          <>
+            <KpiCard
+              label={t('kpi.revenue')} value={kpis.revenue} previous={previous?.revenue}
+              format="money" compact icon={Coins}
             />
-            <PulseTile label={t('ws.publishing')} value={counts.publishing} icon={Activity} />
-            <PulseTile label={t('ws.published')} value={counts.published} icon={ShieldCheck} />
-            <PulseTile
-              label={t('ws.needsAttention')}
-              value={counts.needsAttention}
-              icon={TriangleAlert}
-              tone="danger"
-              detail={attentionDetail}
-              to={portal ? undefined : '/app/library'}
+            {/* Spend rising is neither good nor bad on its own, so the change is
+                shown without a verdict attached to it. */}
+            <KpiCard
+              label={t('kpi.spend')} value={kpis.spend} previous={previous?.spend}
+              format="money" compact icon={Wallet} neutralTrend
             />
-          </div>
+            <KpiCard
+              label={t('kpi.roas')} value={kpis.roas} previous={previous?.roas}
+              format="ratio" icon={TrendingUp} unavailableReason={kpis.reasons?.roas}
+            />
+            <KpiCard
+              label={t('kpi.conversions')} value={kpis.conversions} previous={previous?.conversions}
+              compact icon={Target}
+            />
+            {/* Cost per conversion falling is the good direction. */}
+            <KpiCard
+              label={t('kpi.cpaShort')} value={kpis.cpa} previous={previous?.cpa}
+              format="money" icon={MousePointerClick} invertTrend
+              unavailableReason={kpis.reasons?.cpa}
+            />
+            <KpiCard
+              label={t('report.metric.engagements')}
+              value={totals ? totals.engagements : null}
+              compact icon={Users}
+              unavailableReason={organic.loading ? t('common.loading') : t('dash.notMeasured')}
+              footer={
+                organic.data
+                  ? t('dash.engagementBasis').replace('{count}', num(organic.data.publishedPosts, lang))
+                  : undefined
+              }
+            />
+          </>
         )}
-      </section>
+      </div>
 
-      {/* PERFORMANCE */}
-      <section className="mb-6">
-        <p className="mb-2 text-[13px] font-medium text-muted">{t('dash.performanceHeading')}</p>
-        <Tabs
-          tabs={[
-            { value: 'organic' as const, label: t('dash.perf.organic') },
-            { value: 'paid' as const, label: t('dash.perf.paid') },
-            { value: 'combined' as const, label: t('dash.perf.combined') },
-          ]}
-          value={perf}
-          onChange={setPerf}
-          className="mb-3"
-        />
-
-        <p className="mb-3 text-[12px] leading-relaxed text-muted">
-          {perf === 'organic' ? t('dash.organicNote')
-            : perf === 'paid' ? t('dash.paidNote')
-              : t('dash.combinedNote')}
-        </p>
-
-        {perf !== 'paid' ? (
-          organic.loading ? (
-            <div className="mb-4 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-              {Array.from({ length: 4 }).map((_, index) => <CardSkeleton key={index} rows={1} />)}
-            </div>
-          ) : organic.data ? (
-            <div className="mb-4">
-              {perf === 'combined' ? (
-                <p className="mb-2 text-[12px] font-semibold uppercase tracking-wide text-muted">
-                  {t('dash.perf.organic')}
-                </p>
-              ) : null}
-              {/*
-                * How many published posts these totals are drawn from.
-                *
-                * Without it, a row of zeros is ambiguous in exactly the way
-                * that matters: nothing was published, or things were published
-                * and no platform has reported on them yet. Phase 14 sums only
-                * measured figures, so both produce the same zeros, and the
-                * count is the only thing on screen that separates them.
-                */}
-              <p className="mb-2 text-[12px] text-muted">
-                {t('dash.organicBasis')
-                  .replace('{count}', num(organic.data.publishedPosts, lang))}
-              </p>
-              <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-                <OrganicTile label={t('kpi.reach')} value={organic.data.periodTotals.reach} />
-                <OrganicTile label={t('kpi.impressions')} value={organic.data.periodTotals.impressions} />
-                <OrganicTile label={t('report.metric.engagements')} value={organic.data.periodTotals.engagements} />
-                <OrganicTile label={t('kpi.clicks')} value={organic.data.periodTotals.clicks} />
-              </div>
-            </div>
-          ) : null
-        ) : null}
-
-        {perf !== 'organic' ? (
-          loading || !kpis ? (
-            <div className="mb-4 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-              {Array.from({ length: 4 }).map((_, index) => <CardSkeleton key={index} rows={1} />)}
-            </div>
-          ) : (
-            <div className="mb-4">
-              {perf === 'combined' ? (
-                <p className="mb-2 text-[12px] font-semibold uppercase tracking-wide text-muted">
-                  {t('dash.perf.paid')}
-                </p>
-              ) : null}
-              <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-                <PaidTile metric={paidMetric('spend', kpis.spend)} label={t('kpi.spend')} />
-                <PaidTile metric={paidMetric('impressions', kpis.impressions)} label={t('kpi.impressions')} />
-                <PaidTile metric={paidMetric('clicks', kpis.clicks)} label={t('kpi.clicks')} />
-                <PaidTile metric={paidMetric('ctr', kpis.ctr, kpis.reasons?.ctr)} label={t('kpi.ctr')} />
-              </div>
-            </div>
-          )
-        ) : null}
-
-        {/* The financial trend, which is a paid series. Hidden on the organic
-            tab because putting spend under an organic heading is the same
-            category error the tabs exist to prevent. */}
-        {perf !== 'organic' ? (
-          <div className="grid gap-4 lg:grid-cols-3">
-            <Card className="lg:col-span-2">
+      {/* ------------------------------------------------- workspace + rail */}
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0 space-y-4">
+          {/* Performance over the period, beside what performed best in it. */}
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+            <Card className="min-w-0">
               <CardHeader
                 title={t('dash.performance')}
-                subtitle={data ? `${t('kpi.ctr')} ${pct(data.kpis.ctr)} · ${t('kpi.cpc')} ${money(data.kpis.cpc, lang)} · ${t('kpi.roas')} ${ratio(data.kpis.roas)}` : undefined}
-                icon={Activity}
+                subtitle={data ? `${data.range.from} → ${data.range.to} · ${t('common.vsPrevious')}` : undefined}
+                icon={ChartNoAxesCombined}
               />
               <div className="p-3 sm:p-4">
                 {loading ? (
                   <div className="skeleton h-[260px]" />
-                ) : data && data.series.some((point) => point.spend > 0) ? (
+                ) : data && data.series.some((point) => point.spend > 0 || point.revenue > 0) ? (
                   <TrendChart
                     data={data.series}
                     keys={[
-                      { key: 'spend', label: t('kpi.spend') },
                       { key: 'revenue', label: t('kpi.revenue') },
+                      { key: 'spend', label: t('kpi.spend') },
                     ]}
                     currency
                   />
                 ) : (
-                  <p className="py-16 text-center text-sm text-muted">{t('common.noData')}</p>
+                  <p className="py-20 text-center text-sm text-muted">{t('common.noData')}</p>
                 )}
               </div>
             </Card>
 
-            <Card>
-              <CardHeader title={t('dash.spendByPlatform')} icon={TrendingUp} />
-              <div className="p-4">
-                {loading ? (
-                  <div className="skeleton h-[240px]" />
-                ) : data && data.platforms.length > 0 ? (
-                  <>
-                    <DonutChart data={data.platforms.map((row) => ({ label: row.label, value: row.spend, platform: row.platform }))} />
-                    <div className="mt-3 space-y-1.5">
-                      {data.platforms.slice(0, 4).map((row) => (
-                        <div key={row.platform} className="flex items-center justify-between gap-2 text-[13px]">
-                          <PlatformChip platform={row.platform} size="sm" />
-                          <span className="tabular text-muted">
-                            {money(row.spend, lang, true)} · {ratio(row.roas)}
+            <Card className="min-w-0">
+              <CardHeader
+                title={t('dash.topContent')}
+                icon={BarChart3}
+                action={
+                  <Link to={`${base}/analytics`} className="text-[13px] text-brand hover:underline">
+                    {t('common.viewAll')}
+                  </Link>
+                }
+              />
+              {organic.loading ? (
+                <div className="space-y-2 p-4">
+                  {Array.from({ length: 4 }).map((_, index) => <div key={index} className="skeleton h-12" />)}
+                </div>
+              ) : organic.data && organic.data.topPosts.length > 0 ? (
+                <div className="divide-y divide-line/60">
+                  {organic.data.topPosts.slice(0, 4).map((post) => {
+                    const engagements = post.metrics.engagements;
+                    const reach = post.metrics.reach;
+                    return (
+                      <Link
+                        key={post.platformPostId}
+                        to={portal ? `${base}/content` : `/app/social/${post.postGroupId}`}
+                        className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-elevated"
+                      >
+                        <PlatformChip platform={post.platform} size="sm" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[13px] font-medium text-fg" dir="auto">
+                            {post.caption?.trim() || t('common.none')}
                           </span>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <p className="py-16 text-center text-sm text-muted">{t('common.noData')}</p>
-                )}
-              </div>
+                          <span className="block text-[11.5px] text-muted">
+                            {reach.value === null
+                              ? t('dash.notMeasured')
+                              : `${num(reach.value, lang, true)} ${t('kpi.reach').toLowerCase()}`}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-[13px] font-medium tabular text-fg" dir="ltr">
+                          {engagements.value === null ? '—' : num(engagements.value, lang, true)}
+                        </span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              ) : (
+                <EmptyState compact icon={BarChart3} title={t('dash.topContent')} body={t('dash.noTopContent')} />
+              )}
             </Card>
           </div>
-        ) : null}
 
-        {/* The pipeline counters, which are neither organic nor paid delivery. */}
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-          {loading || !kpis ? (
-            Array.from({ length: 4 }).map((_, index) => <CardSkeleton key={index} rows={1} />)
+          {/* The week ahead. The same calendar the unified view uses — one
+              engine, two placements. */}
+          {!portal ? (
+            <Card className="min-w-0 overflow-hidden">
+              <CardHeader
+                title={t('dash.contentCalendar')}
+                subtitle={t('dash.contentCalendarSub')}
+                icon={CalendarDays}
+                action={
+                  <div className="flex items-center gap-2">
+                    <Link to="/app/social" className="text-[13px] text-brand hover:underline">
+                      {t('create.button')}
+                    </Link>
+                    <Link to="/app/marketing/calendar" className="text-[13px] text-brand hover:underline">
+                      {t('common.viewAll')}
+                    </Link>
+                  </div>
+                }
+              />
+              <div className="p-3 sm:p-4">
+                <MarketingCalendar clientId={clientId} initialView="week" />
+              </div>
+            </Card>
           ) : (
-            <>
-              {portal ? (
-                <KpiCard label={t('kpi.impressions')} value={kpis.impressions} icon={Eye} compact previous={previous?.impressions} />
-              ) : current ? (
-                // One project is selected, so counting projects is noise.
-                <KpiCard label={t('kpi.inReview')} value={kpis.pendingApprovals} icon={ThumbsUp} />
-              ) : (
-                <KpiCard label={t('kpi.restaurants')} value={kpis.clients} icon={Store} />
-              )}
-              <KpiCard label={t('kpi.campaigns')} value={kpis.activeCampaigns} icon={Megaphone} />
-              <KpiCard label={t('kpi.scheduled')} value={kpis.scheduled} icon={CalendarClock} />
-              {portal || !current ? (
-                <KpiCard label={t('kpi.pending')} value={kpis.pendingApprovals} icon={ThumbsUp} />
-              ) : (
-                <KpiCard label={t('kpi.roas')} value={kpis.roas} format="ratio" icon={TrendingUp} previous={previous?.roas} unavailableReason={kpis.reasons?.roas} />
-              )}
-            </>
+            <Card>
+              <CardHeader
+                title={t('dash.contentCalendar')}
+                icon={CalendarDays}
+                action={
+                  <Link to={`${base}/calendar`} className="text-[13px] text-brand hover:underline">
+                    {t('common.viewAll')}
+                  </Link>
+                }
+              />
+              <EmptyState
+                icon={CalendarPlus}
+                title={t('empty.calendar.title')}
+                body={t('empty.calendar.body')}
+                action={<Button onClick={() => navigate(`${base}/calendar`)}>{t('common.viewAll')}</Button>}
+              />
+            </Card>
           )}
-        </div>
-      </section>
 
-      {/* MARKETING CALENDAR — the same component the unified calendar uses. */}
-      {!portal ? (
-        <section className="mb-6">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[13px] font-medium text-muted">{t('dash.calendarHeading')}</p>
-            <Link to="/app/marketing/calendar" className="text-[13px] text-brand hover:underline">
-              {t('common.viewAll')}
-            </Link>
-          </div>
-          <MarketingCalendar clientId={clientId} initialView="week" />
-        </section>
-      ) : (
-        <section className="mb-6">
-          <Card>
+          {/* What is running, and what it costs. */}
+          <Card className="min-w-0">
             <CardHeader
-              title={t('dash.publishingWeek')}
-              icon={CalendarClock}
+              title={t('dash.activeCampaigns')}
+              icon={Activity}
               action={
-                <Link to={`${base}/calendar`} className="text-[13px] text-brand hover:underline">
+                <Link to={`${base}/campaigns`} className="text-[13px] text-brand hover:underline">
                   {t('common.viewAll')}
                 </Link>
               }
             />
-            <EmptyState icon={CalendarClock} title={t('empty.calendar.title')} body={t('empty.calendar.body')} />
-          </Card>
-        </section>
-      )}
-
-      {/* AI RECOMMENDATIONS — only what the data supports. §11. */}
-      {isAgency ? (
-        <section className="mb-6">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[13px] font-medium text-muted">{t('dash.aiHeading')}</p>
-            <Link to="/app/marketing/advertising/ai" className="text-[13px] text-brand hover:underline">
-              {t('common.viewAll')}
-            </Link>
-          </div>
-          {recommendations.loading ? (
-            <CardSkeleton rows={3} />
-          ) : recommendations.data && recommendations.data.items.length > 0 ? (
-            <div className="grid gap-3 lg:grid-cols-3">
-              {recommendations.data.items.slice(0, 3).map((item) => (
-                <Link key={item.id} to="/app/marketing/advertising/ai" className="block h-full">
-                  <Card className="h-full p-3.5 transition-colors hover:border-brand/40">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge tone={item.priority === 'P0' ? 'danger' : item.priority === 'P1' ? 'warn' : 'neutral'}>
-                        {item.priority}
-                      </Badge>
-                      {item.platform ? <PlatformChip platform={item.platform} size="sm" /> : null}
-                    </div>
-                    <p className="mt-2 text-[13px] font-medium leading-snug text-fg" dir="auto">{item.title}</p>
-                    {item.expectedImpact ? (
-                      <p className="mt-1 line-clamp-2 text-[12px] leading-snug text-muted" dir="auto">
-                        {item.expectedImpact}
-                      </p>
-                    ) : null}
-                  </Card>
-                </Link>
-              ))}
-            </div>
-          ) : (
-            /* An honest empty state, not a filler card: the engine looked and
-               the data did not carry a claim. */
-            <Card>
-              <EmptyState icon={Sparkles} title={t('dash.aiHeading')} body={t('dash.noRecommendations')} />
-            </Card>
-          )}
-        </section>
-      ) : null}
-
-      {/* Alerts and activity */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader title={t('dash.alerts')} icon={Bell} subtitle={t('dash.alertsSub')} />
-          <div className="space-y-2 p-4">
-            {loading ? (
-              <>
-                <div className="skeleton h-16" />
-                <div className="skeleton h-16" />
-              </>
-            ) : data && data.alerts.length > 0 ? (
-              data.alerts.slice(0, 5).map((alert, index) => (
-                <motion.div key={index} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.05 }}>
-                  <AlertRow alert={alert} onNavigate={(link) => navigate(portal ? link.replace('/app', '/client') : link)} />
-                </motion.div>
-              ))
-            ) : (
-              <p className="py-10 text-center text-sm text-muted">{t('dash.noAlerts')}</p>
-            )}
-          </div>
-        </Card>
-
-        <Card>
-          <CardHeader title={t('dash.recentActivity')} icon={Activity} />
-          <div className="divide-y divide-line/60">
             {loading ? (
               <div className="space-y-2 p-4">
-                <div className="skeleton h-10" />
-                <div className="skeleton h-10" />
+                {Array.from({ length: 3 }).map((_, index) => <div key={index} className="skeleton h-11" />)}
               </div>
-            ) : data && data.recentActivity.length > 0 ? (
-              data.recentActivity.slice(0, 7).map((entry) => (
-                <div key={entry.id} className="flex items-center gap-3 px-4 py-2.5">
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[13px] text-fg">{humanize(entry.action.replace('.', ' '))}</p>
-                    <p className="text-[12px] text-muted">
-                      {entry.user} · {relative(entry.createdAt, lang)}
-                    </p>
-                  </div>
-                </div>
-              ))
+            ) : data && data.campaigns.length > 0 ? (
+              <TableWrap>
+                <thead>
+                  <tr>
+                    <Th>{t('common.campaign')}</Th>
+                    <Th>{t('common.platform')}</Th>
+                    <Th>{t('common.status')}</Th>
+                    <Th align="end">{t('common.budget')}</Th>
+                    <Th align="end">{t('kpi.spend')}</Th>
+                    <Th align="end">{t('kpi.roas')}</Th>
+                    <Th align="end">{t('common.actions')}</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.campaigns.map((row) => (
+                    <tr key={row.id}>
+                      <Td>
+                        <span className="block max-w-[16rem] truncate font-medium text-fg" dir="auto">
+                          {row.name}
+                        </span>
+                        <span className="block truncate text-[11.5px] text-muted" dir="auto">
+                          {row.client?.businessName ?? humanize(row.objective.toLowerCase())}
+                        </span>
+                      </Td>
+                      <Td>
+                        <span className="flex flex-wrap gap-1">
+                          {row.platforms.length === 0 ? (
+                            <span className="text-muted">—</span>
+                          ) : (
+                            row.platforms.slice(0, 3).map((platform) => (
+                              <PlatformChip key={platform} platform={platform} size="sm" />
+                            ))
+                          )}
+                        </span>
+                      </Td>
+                      <Td><StatusBadge status={row.status} kind="campaign" /></Td>
+                      <Td align="end"><span dir="ltr">{money(row.budget, lang, true)}</span></Td>
+                      <Td align="end"><span dir="ltr">{money(row.spend, lang, true)}</span></Td>
+                      <Td align="end">
+                        {row.roas === null ? (
+                          <span className="text-muted" title={row.roasReason ?? undefined}>—</span>
+                        ) : (
+                          <span dir="ltr">{ratio(row.roas)}</span>
+                        )}
+                      </Td>
+                      <Td align="end">
+                        <Link
+                          to={`${base}/campaigns/${row.id}`}
+                          className="rounded-lg border border-line px-2.5 py-1 text-[12.5px] text-muted transition-colors hover:border-brand/40 hover:text-brand"
+                        >
+                          {t('common.view')}
+                        </Link>
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </TableWrap>
             ) : (
-              <p className="px-4 py-10 text-center text-sm text-muted">{t('dash.noActivity')}</p>
+              <EmptyState compact icon={Activity} title={t('dash.activeCampaigns')} body={t('dash.noCampaigns')} />
             )}
-          </div>
-        </Card>
-      </div>
+          </Card>
+        </div>
 
-      {/* Campaign status strip */}
-      {data && Object.keys(data.campaignsByStatus).length > 0 ? (
-        <Card className="mt-4 p-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-[13px] font-medium text-muted">{t('dash.campaignsLabel')}</span>
-            {Object.entries(data.campaignsByStatus).map(([status, count]) => (
-              <span key={status} className="flex items-center gap-1.5">
-                <StatusBadge status={status} kind="campaign" />
-                <span className="tabular text-[13px] text-fg">{num(count, lang)}</span>
-              </span>
-            ))}
-            <Link to={`${base}/campaigns`} className="ms-auto text-[13px] text-brand hover:underline">
-              {t('common.viewAll')}
-            </Link>
-          </div>
-        </Card>
-      ) : null}
+        {/* ------------------------------------------------------- the rail */}
+        <div className="min-w-0 space-y-4">
+          {isAgency ? (
+            <Card className="min-w-0">
+              <CardHeader
+                title={t('dash.assistant')}
+                subtitle={t('dash.assistantSub')}
+                icon={Sparkles}
+                action={
+                  <Link to="/app/marketing/advertising/ai" className="text-[13px] text-brand hover:underline">
+                    {t('common.viewAll')}
+                  </Link>
+                }
+              />
+              <div className="space-y-2.5 p-4">
+                {recommendations.loading ? (
+                  <>
+                    <div className="skeleton h-20" />
+                    <div className="skeleton h-20" />
+                  </>
+                ) : recommendations.data && recommendations.data.items.length > 0 ? (
+                  recommendations.data.items.slice(0, 3).map((item) => (
+                    <Link
+                      key={item.id}
+                      to="/app/marketing/advertising/ai"
+                      className="block rounded-[10px] border border-line p-3 transition-colors hover:border-brand/40"
+                    >
+                      <span className="flex flex-wrap items-center gap-2">
+                        <Badge tone={item.priority === 'P0' ? 'danger' : item.priority === 'P1' ? 'warn' : 'neutral'}>
+                          {item.priority}
+                        </Badge>
+                        {item.platform ? <PlatformChip platform={item.platform} size="sm" /> : null}
+                      </span>
+                      <span className="mt-2 block text-[13px] font-medium leading-snug text-fg" dir="auto">
+                        {item.title}
+                      </span>
+                      <span className="mt-1 block line-clamp-2 text-[12px] leading-snug text-muted" dir="auto">
+                        {item.reason}
+                      </span>
+                      {item.expectedImpact ? (
+                        <span className="mt-1 block text-[12px] leading-snug text-brand" dir="auto">
+                          {item.expectedImpact}
+                        </span>
+                      ) : null}
+                    </Link>
+                  ))
+                ) : (
+                  <p className="py-6 text-center text-[13px] text-muted">{t('dash.noRecommendations')}</p>
+                )}
+
+                {/* Alerts are derived from live rows, so they belong with the
+                    recommendations rather than in a card of their own. */}
+                {data && data.alerts.length > 0
+                  ? data.alerts.slice(0, 3).map((alert, index) => (
+                    <AlertRow
+                      key={`${alert.title}-${index}`}
+                      alert={alert}
+                      onNavigate={(link) => navigate(portal ? link.replace('/app', '/client') : link)}
+                    />
+                  ))
+                  : null}
+              </div>
+            </Card>
+          ) : null}
+
+          {/* Connected accounts, in whatever state they are actually in. */}
+          {!portal && isAgency ? (
+            <Card className="min-w-0">
+              <CardHeader
+                title={t('dash.connectedAccounts')}
+                icon={Plug}
+                action={
+                  <Link to="/app/integrations" className="text-[13px] text-brand hover:underline">
+                    {t('dash.manage')}
+                  </Link>
+                }
+              />
+              {integrations.loading ? (
+                <div className="space-y-2 p-4">
+                  {Array.from({ length: 4 }).map((_, index) => <div key={index} className="skeleton h-10" />)}
+                </div>
+              ) : integrations.data && integrations.data.items.length > 0 ? (
+                <div className="divide-y divide-line/60">
+                  {integrations.data.items.slice(0, 6).map((row) => (
+                    <div key={row.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
+                      <span className="min-w-0">
+                        <PlatformChip platform={row.platform} size="sm" />
+                        {row.accountName ?? (!clientId && row.client) ? (
+                          <span className="mt-0.5 block truncate text-[11.5px] text-muted" dir="auto">
+                            {row.accountName ?? row.client?.name}
+                          </span>
+                        ) : null}
+                      </span>
+                      <Badge tone={INTEGRATION_TONES[row.status] ?? 'neutral'}>
+                        {humanize(row.status.toLowerCase())}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState
+                  icon={Plug}
+                  title={t('dash.connectedAccounts')}
+                  body={t('dash.noAccounts')}
+                  action={<Button onClick={() => navigate('/app/integrations')}>{t('dash.manage')}</Button>}
+                />
+              )}
+            </Card>
+          ) : null}
+
+          <Card className="min-w-0">
+            <CardHeader title={t('dash.recentActivity')} icon={Activity} />
+            <div className="divide-y divide-line/60">
+              {loading ? (
+                <div className="space-y-2 p-4">
+                  <div className="skeleton h-10" />
+                  <div className="skeleton h-10" />
+                  <div className="skeleton h-10" />
+                </div>
+              ) : data && data.recentActivity.length > 0 ? (
+                data.recentActivity.slice(0, 8).map((entry) => (
+                  <div key={entry.id} className="flex items-start gap-2.5 px-4 py-2.5">
+                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] text-fg">{humanize(entry.action.replace('.', ' '))}</p>
+                      <p className="text-[11.5px] text-muted">
+                        {entry.user} · {relative(entry.createdAt, lang)}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="px-4 py-10 text-center text-sm text-muted">{t('dash.noActivity')}</p>
+              )}
+            </div>
+          </Card>
+
+          {/* Campaign mix, when there is one to describe. */}
+          {data && Object.keys(data.campaignsByStatus).length > 0 ? (
+            <Card className="p-4">
+              <p className="mb-2 text-[13px] font-medium text-muted">{t('dash.campaignsLabel')}</p>
+              <div className="flex flex-wrap items-center gap-2.5">
+                {Object.entries(data.campaignsByStatus).map(([status, count]) => (
+                  <span key={status} className="flex items-center gap-1.5">
+                    <StatusBadge status={status} kind="campaign" />
+                    <span className="tabular text-[13px] text-fg">{num(count, lang)}</span>
+                  </span>
+                ))}
+              </div>
+            </Card>
+          ) : null}
+        </div>
+      </div>
 
       {!loading && data && data.kpis.clients === 0 && !portal ? (
         <Card className="mt-4">
@@ -624,12 +622,10 @@ export function DashboardPage({ portal = false }: { portal?: boolean }) {
         </Card>
       ) : null}
 
-      {data ? (
-        <p className="mt-6 text-center text-[12px] text-muted">
-          <Badge>{t('dash.liveLabel')}</Badge>{' '}
-          <span className="ms-2">{t('dash.liveNote')}</span>
-        </p>
-      ) : null}
+      <p className={cn('mt-6 text-center text-[12px] text-muted', !data && 'hidden')}>
+        <Badge>{t('dash.liveLabel')}</Badge>{' '}
+        <span className="ms-2">{t('dash.liveNote')}</span>
+      </p>
     </>
   );
 }

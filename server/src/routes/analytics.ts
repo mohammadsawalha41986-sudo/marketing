@@ -336,6 +336,44 @@ analyticsRouter.get(
     const previousTotals = derive(sumSnapshots(previous));
     const activeCampaigns = campaigns.find((row) => row.status === CampaignStatus.RUNNING)?._count._all ?? 0;
 
+    /*
+     * The campaigns actually in flight, with the money beside them.
+     *
+     * Budget and spend live on the campaign row; return on ad spend does not,
+     * because it is a ratio of two measured sums and only exists where spend
+     * was measured. It is computed here from the same snapshots that draw the
+     * chart above it — one grouped query, not one request per campaign — and
+     * left null with a reason where the period recorded no spend, so the table
+     * says "not measured" instead of printing a confident 0.00x.
+     */
+    const campaignRows = await prisma.campaign.findMany({
+      where: {
+        organizationId: orgId(actor),
+        ...(clientId ? { clientId } : {}),
+        status: { in: [CampaignStatus.RUNNING, CampaignStatus.SCHEDULED, CampaignStatus.PAUSED] },
+      },
+      orderBy: [{ status: 'asc' }, { startDate: 'desc' }],
+      take: 6,
+      select: {
+        id: true, name: true, objective: true, status: true, budget: true, spend: true,
+        client: { select: { id: true, businessName: true, logoUrl: true } },
+        platforms: { select: { platform: true } },
+      },
+    });
+
+    const measured = campaignRows.length > 0
+      ? await prisma.analyticsSnapshot.groupBy({
+        by: ['campaignId'],
+        where: {
+          ...scope,
+          campaignId: { in: campaignRows.map((row) => row.id) },
+          date: { gte: range.from, lte: range.to },
+        },
+        _sum: { spend: true, revenue: true },
+      })
+      : [];
+    const measuredById = new Map(measured.map((row) => [row.campaignId, row]));
+
     res.json({
       range: { from: range.from.toISOString().slice(0, 10), to: range.to.toISOString().slice(0, 10) },
       kpis: {
@@ -349,6 +387,23 @@ analyticsRouter.get(
       series: byDay(current, range.from, range.to),
       platforms: byPlatform(current),
       campaignsByStatus: Object.fromEntries(campaigns.map((row) => [row.status, row._count._all])),
+      campaigns: campaignRows.map((row) => {
+        const sums = measuredById.get(row.id);
+        const measuredSpend = Number(sums?._sum.spend ?? 0);
+        const measuredRevenue = Number(sums?._sum.revenue ?? 0);
+        return {
+          id: row.id,
+          name: row.name,
+          objective: row.objective,
+          status: row.status,
+          client: row.client,
+          platforms: row.platforms.map((entry) => entry.platform),
+          budget: Number(row.budget),
+          spend: Number(row.spend),
+          roas: measuredSpend > 0 ? measuredRevenue / measuredSpend : null,
+          roasReason: measuredSpend > 0 ? null : 'No spend measured in this period',
+        };
+      }),
       alerts: await buildAlerts(orgId(actor), clientId),
       recentActivity: recentActivity.map((entry) => ({
         id: entry.id,
