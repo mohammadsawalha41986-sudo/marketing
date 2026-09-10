@@ -28,7 +28,9 @@ import { hashPassword, passwordProblems } from '../lib/password.js';
 import { recordAudit } from '../services/audit.js';
 import { aiStatus } from '../services/ai/index.js';
 import { testPublish } from '../services/publishing/service.js';
-import { noTargetMessage, resolveTargetForIntegration } from '../services/publishing/target.js';
+import {
+  missingPublishGrant, noTargetMessage, resolveTargetForIntegration,
+} from '../services/publishing/target.js';
 
 // ------------------------------------------------------------------ notifications
 
@@ -388,6 +390,15 @@ integrationsRouter.post(
       platform: integration.platform,
     });
     if (!account) throw badRequest(noTargetMessage(integration.platform));
+
+    /*
+     * The grant was recorded when the account was attached, so a connection
+     * authorised without the publishing permission is knowable before a request
+     * is sent — and worth naming exactly, rather than spending a call to have
+     * the provider say it less clearly.
+     */
+    const missingGrant = missingPublishGrant(integration.platform, account);
+    if (missingGrant) throw badRequest(missingGrant);
 
     const result = await testPublish({
       prisma,

@@ -21,7 +21,9 @@ import { ExternalAccountKind, IntegrationStatus, Platform } from '@prisma/client
 
 import { agent, createTenant, prisma, resetDatabase, type Tenant } from './helpers.js';
 import {
+  missingPublishGrant,
   noTargetMessage,
+  publishGrantFor,
   resolvePublishingTarget,
   resolveTargetForIntegration,
   targetKindFor,
@@ -178,6 +180,52 @@ describe('publishing target resolution', () => {
      */
     expect(response.status).toBe(502);
     expect(response.body.error.message).toMatch(/image/i);
+  });
+
+  // ------------------------------------------------ the permission, named
+
+  it('names instagram_business_content_publish for a direct connection', () => {
+    const direct = { api: INSTAGRAM_LOGIN_API };
+    expect(publishGrantFor(Platform.INSTAGRAM, direct)).toBe('instagram_business_content_publish');
+    // Not the legacy Facebook-Login permission, which this app never requests
+    // on the Instagram Login product.
+    expect(publishGrantFor(Platform.INSTAGRAM, direct)).not.toBe('instagram_content_publish');
+    // An account attached through Meta needs the Facebook app's permission.
+    expect(publishGrantFor(Platform.INSTAGRAM, {})).toBe('instagram_content_publish');
+    expect(publishGrantFor(Platform.FACEBOOK)).toBe('pages_manage_posts');
+  });
+
+  it('reports the exact missing permission instead of a missing Page', async () => {
+    // A connection authorised without publishing: the grant was recorded when
+    // the account was attached, so this is knowable before any request.
+    await prisma.integrationAccount.updateMany({
+      where: { integrationId: directIntegrationId },
+      data: { tokenStatus: 'MISSING_PERMISSION' },
+    });
+
+    const target = await resolveTargetForIntegration({
+      prisma,
+      integrationId: directIntegrationId,
+      platform: Platform.INSTAGRAM,
+    });
+    const message = missingPublishGrant(Platform.INSTAGRAM, target!);
+    expect(message).toMatch(/instagram_business_content_publish/);
+    expect(message).not.toMatch(/Page/);
+
+    const client = agent();
+    await client.login(direct.adminEmail);
+    const response = await client.post(`/api/integrations/${directIntegrationId}/test-publish`, {
+      message: 'Marketing OS connection check.',
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.message).toMatch(/instagram_business_content_publish/);
+    expect(response.body.error.message).not.toMatch(/No Page is attached/);
+
+    await prisma.integrationAccount.updateMany({
+      where: { integrationId: directIntegrationId },
+      data: { tokenStatus: 'UNKNOWN' },
+    });
   });
 
   // --------------------------------------------------- the Meta flow, intact

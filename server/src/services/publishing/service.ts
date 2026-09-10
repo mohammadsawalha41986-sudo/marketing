@@ -22,7 +22,7 @@ import { decryptSecret } from '../../lib/crypto.js';
 import { readObject } from '../storage/objects.js';
 import { isRetryable, type FetchLike, type PublishMedia } from './contract.js';
 import { publisherFor } from './registry.js';
-import { noTargetMessage, resolvePublishingTarget } from './target.js';
+import { missingPublishGrant, noTargetMessage, resolvePublishingTarget } from './target.js';
 
 /**
  * How many times a retryable failure is tried before it becomes a person's
@@ -58,6 +58,7 @@ export type ReadinessProblem =
   | 'NO_PLATFORM_SUPPORT'
   | 'NO_ACCOUNT_SELECTED'
   | 'ACCOUNT_NEEDS_REAUTH'
+  | 'ACCOUNT_MISSING_GRANT'
   | 'NO_CAPTION'
   | 'MEDIA_UNREADABLE'
   | 'UNSUPPORTED_MEDIA_COUNT';
@@ -73,6 +74,8 @@ const READINESS_MESSAGE: Record<ReadinessProblem, string> = {
     'No account is attached for this platform. Connect it and choose one under Integrations.',
   ACCOUNT_NEEDS_REAUTH:
     'The connected account has no usable publishing token. Reconnect it under Integrations.',
+  ACCOUNT_MISSING_GRANT:
+    'The connection was authorised without the permission publishing needs. Reconnect it and grant it.',
   NO_CAPTION: 'The post has no text. Add a caption before scheduling.',
   MEDIA_UNREADABLE: 'The attached media could not be read from storage.',
   UNSUPPORTED_MEDIA_COUNT:
@@ -141,6 +144,10 @@ export async function checkReadiness(input: {
   if (!account) problems.push('NO_ACCOUNT_SELECTED');
   else if (!account.accessTokenEnc || account.tokenStatus === AccountTokenStatus.REAUTH_REQUIRED) {
     problems.push('ACCOUNT_NEEDS_REAUTH');
+  } else if (account.tokenStatus === AccountTokenStatus.MISSING_PERMISSION) {
+    // The token works; the app was never granted the permission that publishes.
+    // A different problem with a different fix, so it gets its own.
+    problems.push('ACCOUNT_MISSING_GRANT');
   }
 
   if (!composeCaption(content.caption, content.headline)) problems.push('NO_CAPTION');
@@ -171,7 +178,10 @@ export async function checkReadiness(input: {
       // to: "No Instagram account is attached", never "No Page".
       message: problem === 'NO_ACCOUNT_SELECTED'
         ? noTargetMessage(content.platform)
-        : READINESS_MESSAGE[problem],
+        // Names the exact permission for this platform and connection.
+        : problem === 'ACCOUNT_MISSING_GRANT' && account
+          ? missingPublishGrant(content.platform, account) ?? READINESS_MESSAGE[problem]
+          : READINESS_MESSAGE[problem],
     })),
   };
 }

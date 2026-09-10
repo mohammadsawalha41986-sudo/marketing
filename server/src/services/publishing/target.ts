@@ -29,7 +29,13 @@
  * connection has no Page, is not given one, and is never asked for one.
  */
 
-import { ExternalAccountKind, Platform, type PrismaClient } from '@prisma/client';
+import { AccountTokenStatus, ExternalAccountKind, Platform, type PrismaClient } from '@prisma/client';
+
+import { PAGE_PUBLISH_PERMISSION } from '../integrations/meta.js';
+import { PUBLISH_SCOPE as INSTAGRAM_PUBLISH_SCOPE, isInstagramLoginAccount } from '../integrations/instagram.js';
+import { PUBLISH_SCOPE as TIKTOK_PUBLISH_SCOPE } from '../integrations/tiktok.js';
+import { PUBLISH_SCOPE as LINKEDIN_PUBLISH_SCOPE } from '../integrations/linkedin.js';
+import { UPLOAD_SCOPE as YOUTUBE_UPLOAD_SCOPE } from '../integrations/youtube.js';
 
 /** The account kind a post on this platform is delivered to. */
 const TARGET_KIND: Record<Platform, ExternalAccountKind> = {
@@ -172,4 +178,54 @@ export async function resolveTargetForIntegration(input: {
     select: TARGET_SELECT,
   });
   return row ? shape(row) : null;
+}
+
+/**
+ * The permission that decides whether this target can be posted to.
+ *
+ * Instagram has two answers because it is two products: a direct Instagram
+ * Login connection needs `instagram_business_content_publish`, and an Instagram
+ * account reached through the Facebook connection needs the Facebook app's
+ * `instagram_content_publish`. Naming the wrong one sends an operator to
+ * request a permission their app does not use.
+ *
+ * Read from each provider module rather than restated, so the permission named
+ * in an error is the one the authorization actually asked for.
+ */
+export function publishGrantFor(platform: Platform, metadata?: unknown): string | null {
+  switch (platform) {
+    case Platform.FACEBOOK:
+      return PAGE_PUBLISH_PERMISSION;
+    case Platform.INSTAGRAM:
+      return isInstagramLoginAccount(metadata) ? INSTAGRAM_PUBLISH_SCOPE : 'instagram_content_publish';
+    case Platform.TIKTOK:
+      return TIKTOK_PUBLISH_SCOPE;
+    case Platform.LINKEDIN:
+      return LINKEDIN_PUBLISH_SCOPE;
+    case Platform.YOUTUBE:
+      return YOUTUBE_UPLOAD_SCOPE;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Whether the connection itself already says this cannot publish.
+ *
+ * The grant was recorded when the account was attached — providers grant
+ * per-permission, so a login can succeed with publishing declined — which means
+ * this is knowable before a request is sent. Returning the exact permission
+ * here is the difference between "the platform refused the post" and a sentence
+ * naming what to go and ask for.
+ */
+export function missingPublishGrant(
+  platform: Platform,
+  target: Pick<PublishingTarget, 'tokenStatus' | 'metadata'>,
+): string | null {
+  if (target.tokenStatus !== AccountTokenStatus.MISSING_PERMISSION) return null;
+  const grant = publishGrantFor(platform, target.metadata);
+  return grant
+    ? `This connection was authorised without ${grant}, so it cannot publish. `
+      + 'Reconnect it and grant that permission.'
+    : 'This connection was authorised without the permission publishing needs. Reconnect it.';
 }
