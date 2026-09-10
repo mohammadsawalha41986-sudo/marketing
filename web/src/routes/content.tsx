@@ -14,7 +14,7 @@ import { useRestaurant } from '../lib/restaurant';
 import { date, humanize } from '../lib/format';
 import {
   Badge, Button, Card, CardHeader, CardSkeleton, EmptyState, ErrorState, Field, Input, Modal,
-  PageHeader, Pagination, Select, Tabs, Textarea, useToast,
+  PageBar, PageHeader, Pagination, Select, Tabs, Textarea, useToast,
 } from '../components/ui';
 import { AiBadge, AiNotice, PlatformChip, StatusBadge } from '../components/domain';
 import { ContentPreview } from '../components/content-preview';
@@ -337,7 +337,7 @@ export function StudioPage() {
         }
       />
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-4">
           {/* Brief */}
           <Card>
@@ -877,7 +877,12 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
 
   return (
     <>
+      {/* Title, status and tabs stay put while the record scrolls: on a long
+          record the body is one tall card, and losing the heading reads as
+          losing the page. */}
+      <PageBar>
       <PageHeader
+        className="mb-3"
         title={content.name}
         subtitle={`${content.client.name} · ${humanize(content.platform)} · ${humanize(content.type)}`}
         action={
@@ -891,7 +896,6 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
       />
 
       <Tabs
-        className="mb-4"
         value={tab}
         onChange={setTab}
         tabs={[
@@ -901,9 +905,10 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
           { value: 'history', label: 'History', count: content.approvals.length + content.comments.length },
         ]}
       />
+      </PageBar>
 
       {tab === 'copy' ? (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid items-start gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader title="Written copy" />
             <div className="space-y-4 p-5">
@@ -954,7 +959,7 @@ export function ContentDetailPage({ portal = false }: { portal?: boolean }) {
       ) : null}
 
       {tab === 'preview' ? (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
           {/*
             Editable while the content is still the author's to change. Once it is
             approved or later, the creative is part of what was approved, so

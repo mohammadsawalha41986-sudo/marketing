@@ -213,7 +213,7 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
       />
 
       {tab === 'dna' ? (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid items-start gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader title="The business" icon={Sparkles} />
             <div className="grid gap-4 p-5">
@@ -264,7 +264,7 @@ export function BrandPage({ portal = false }: { portal?: boolean }) {
           </Card>
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
           <div className="space-y-4">
             <Card>
               <CardHeader

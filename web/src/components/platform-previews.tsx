@@ -92,13 +92,27 @@ function Frame({
 }
 
 /** Caption plus hashtags, which every platform renders as one block of text. */
-function Body({ caption, hashtags, className }: { caption?: string | null; hashtags?: string[]; className?: string }) {
+/**
+ * Caption and hashtags.
+ *
+ * `clamp` is for the overlay variants — Reels and TikTok draw the caption *over*
+ * the video, where the room is whatever the gradient covers. Unclamped, a long
+ * caption runs past the frame and is cut mid-word by the frame's own clipping,
+ * which looks like a broken preview rather than a long caption.
+ */
+function Body({ caption, hashtags, className, clamp }: {
+  caption?: string | null; hashtags?: string[]; className?: string; clamp?: boolean;
+}) {
   if (!caption && (!hashtags || hashtags.length === 0)) return null;
   return (
     <div className={cn('space-y-1', className)}>
-      {caption ? <p className="whitespace-pre-wrap break-words">{caption}</p> : null}
+      {caption ? (
+        <p className={cn('whitespace-pre-wrap break-words', clamp && 'line-clamp-3')}>{caption}</p>
+      ) : null}
       {hashtags && hashtags.length > 0 ? (
-        <p className="break-words text-brand">{hashtags.map((tag) => `#${tag}`).join(' ')}</p>
+        <p className={cn('break-words text-brand', clamp && 'line-clamp-1')}>
+          {hashtags.map((tag) => `#${tag}`).join(' ')}
+        </p>
       ) : null}
     </div>
   );
@@ -228,7 +242,7 @@ export function InstagramReelPreview({ input }: { input: PreviewInput }) {
         {/* Reels put everything over the video, so the caption competes with it. */}
         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent p-3 pt-10 text-white">
           <p className="text-[12px] font-semibold">{handle}</p>
-          <Body caption={input.caption} hashtags={input.hashtags} className="mt-1 text-[11px] leading-snug" />
+          <Body clamp caption={input.caption} hashtags={input.hashtags} className="mt-1 text-[11px] leading-snug" />
           <p className="mt-1.5 flex items-center gap-1 text-[10px] opacity-90">
             <Music className="h-3 w-3" />Original audio
           </p>
@@ -253,7 +267,7 @@ export function TikTokPreview({ input }: { input: PreviewInput }) {
         <Frame media={input.media} ratio={9 / 16} />
         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-3 pt-12 text-white">
           <p className="text-[13px] font-semibold">@{handle}</p>
-          <Body caption={input.caption} hashtags={input.hashtags} className="mt-1 text-[12px] leading-snug" />
+          <Body clamp caption={input.caption} hashtags={input.hashtags} className="mt-1 text-[12px] leading-snug" />
           <p className="mt-1.5 flex items-center gap-1 text-[10px] opacity-90">
             <Music className="h-3 w-3" />original sound — {handle}
           </p>
