@@ -36,6 +36,7 @@ import {
   ApprovalsPage, CalendarPage, IntegrationsPage, MediaPage, NotificationsPage, SettingsPage,
 } from './routes/workspace';
 import { AnalyticsPage, ReportDetailPage, ReportsPage } from './routes/insights';
+import { TeamPage } from './routes/team';
 import {
   AdminAuditPage, AdminClientsPage, AdminDashboardPage, AdminPlansPage, AdminSettingsPage,
   AdminSubscriptionsPage, AdminUsersPage,
@@ -156,6 +157,7 @@ export default function App() {
                 <Route path="approvals" element={<ApprovalsPage />} />
                 <Route path="notifications" element={<NotificationsPage />} />
                 <Route path="integrations" element={<IntegrationsPage />} />
+                <Route path="team" element={<TeamPage />} />
                 <Route path="settings" element={<SettingsPage />} />
                 <Route path="*" element={<Navigate to="dashboard" replace />} />
               </Routes>

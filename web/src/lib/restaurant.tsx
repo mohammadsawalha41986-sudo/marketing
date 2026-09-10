@@ -38,6 +38,8 @@ export interface RestaurantOption {
    */
   businessType: string | null;
   logoUrl: string | null;
+  /** Where the business operates, when it has told us. Shown beside its name. */
+  location: string | null;
   status: string;
 }
 
