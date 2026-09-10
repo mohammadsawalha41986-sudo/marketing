@@ -47,6 +47,17 @@ interface RestaurantValue {
   /** Every project the signed-in operator can act on. */
   restaurants: RestaurantOption[];
   loading: boolean;
+  /**
+   * Why the list is empty, when the reason is a failed request.
+   *
+   * An empty list and a failed fetch used to be the same thing to every caller:
+   * the error was swallowed so the picker would not block the app, which left
+   * screens that need a project — Integrations most of all — showing "choose a
+   * project" over a list that could not be loaded and no way to find out why.
+   */
+  error: string | null;
+  /** Ask for the list again after a failure. */
+  reload: () => void;
   /** Empty string means "all projects", which several pages support. */
   currentId: string;
   current: RestaurantOption | null;
@@ -60,6 +71,8 @@ export function RestaurantProvider({ children }: { children: ReactNode }) {
   const { user, isAgency, isClientUser } = useAuth();
   const [restaurants, setRestaurants] = useState<RestaurantOption[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [params, setParams] = useSearchParams();
 
   // A deep link wins over whatever was chosen last: someone sent that URL
@@ -75,14 +88,19 @@ export function RestaurantProvider({ children }: { children: ReactNode }) {
     }
     let cancelled = false;
     setLoading(true);
+    setError(null);
     api
       .get<Paginated<RestaurantOption>>(`/clients${qs({ pageSize: 100 })}`)
       .then((data) => {
         if (!cancelled) setRestaurants(data.items);
       })
-      .catch(() => {
-        // A failed list leaves the picker empty rather than blocking the app.
-        if (!cancelled) setRestaurants([]);
+      .catch((cause: unknown) => {
+        // A failed list still leaves the picker empty rather than blocking the
+        // app — but it now says so, so a screen that needs a project can offer
+        // a retry instead of implying the tenant has none.
+        if (cancelled) return;
+        setRestaurants([]);
+        setError(cause instanceof Error ? cause.message : 'Could not load your projects.');
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -90,7 +108,7 @@ export function RestaurantProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [isAgency]);
+  }, [isAgency, attempt]);
 
   // A project that was deleted, or that belongs to another organization,
   // must not linger as the active selection.
@@ -130,9 +148,11 @@ export function RestaurantProvider({ children }: { children: ReactNode }) {
     [restaurants, currentId],
   );
 
+  const reload = useCallback(() => setAttempt((value) => value + 1), []);
+
   const value = useMemo<RestaurantValue>(
-    () => ({ restaurants, loading, currentId, current, setCurrentId }),
-    [restaurants, loading, currentId, current, setCurrentId],
+    () => ({ restaurants, loading, error, reload, currentId, current, setCurrentId }),
+    [restaurants, loading, error, reload, currentId, current, setCurrentId],
   );
 
   return <RestaurantContext.Provider value={value}>{children}</RestaurantContext.Provider>;
