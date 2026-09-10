@@ -58,27 +58,178 @@ export interface TikTokConfig {
   redirectUri: string;
 }
 
+/**
+ * What a TikTok client key looks like — for *reporting*, not for refusing.
+ *
+ * The keys TikTok issues are alphanumeric, but this is an opaque identifier
+ * whose format is the provider's to change, and a rule tighter than the format
+ * warrants would refuse a legitimate key with total confidence. So an unusual
+ * charset is reported in diagnostics and never blocks a connection. The
+ * separate check below refuses only what cannot be a credential at all.
+ */
+const CLIENT_KEY_FORMAT = /^[A-Za-z0-9_-]{4,64}$/;
+
+/**
+ * Characters that mean the value was pasted wrong, not that the key is unusual.
+ *
+ * An interior space, a quote or a line break cannot be part of any identifier:
+ * they arrive from copying a `.env` line or a rendered page, they survive
+ * `.trim()`, and they reach TikTok percent-encoded — which is reported as an
+ * invalid `client_key` with no mention of a quote.
+ */
+const IMPOSSIBLE_IN_CREDENTIAL = /["'\s]/;
+
+/**
+ * Sandbox keys are a different app.
+ *
+ * TikTok issues a separate key for an application's sandbox, prefixed `sbaw`,
+ * and the live authorization endpoint does not accept it — it answers with the
+ * same "correct the following: client_key" page as a key that does not exist.
+ * Worth naming, because the two keys sit side by side in the same console.
+ */
+const SANDBOX_PREFIX = 'sbaw';
+
+/**
+ * Strip what a hosting dashboard adds and a person cannot see.
+ *
+ * `.trim()` alone is not enough. A value pasted from a `.env` line arrives
+ * wrapped in quotes, and quotes survive trimming — `client_key="aw…"` is then
+ * sent to TikTok with the quote characters percent-encoded into it. Zero-width
+ * and control characters come the same way, from copying out of a rendered web
+ * page rather than an input field.
+ */
+function normalizeCredential(raw: string | undefined): string {
+  if (!raw) return '';
+  // eslint-disable-next-line no-control-regex
+  const stripped = raw.replace(/[\u0000-\u001f\u007f\u200b-\u200f\ufeff]/g, '').trim();
+  const unquoted = /^(["']).*\1$/.test(stripped) ? stripped.slice(1, -1).trim() : stripped;
+  return unquoted;
+}
+
 export function tiktokConfig(env: NodeJS.ProcessEnv = process.env): TikTokConfig {
   const missing = (['TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET', 'TIKTOK_REDIRECT_URI'] as const).filter(
-    (key) => !env[key]?.trim(),
+    (key) => !normalizeCredential(env[key]),
   );
   if (missing.length > 0) throw new ProviderNotConfiguredError(Platform.TIKTOK, 'TikTok', missing);
+
+  const clientKey = normalizeCredential(env.TIKTOK_CLIENT_KEY);
+
+  /*
+   * Refuse a malformed client key here rather than at TikTok.
+   *
+   * TikTok's login page answers with "correct the following: client_key" and
+   * nothing else — no mention of which of our variables carries it, and only
+   * after the operator has already been redirected away. The common way to get
+   * there is pasting the right value with the wrong characters around it.
+   *
+   * The value never appears in the message. It is not the secret, but the two
+   * sit next to each other in the same console and echoing either one trains
+   * everybody to expect credentials in error text.
+   */
+  if (IMPOSSIBLE_IN_CREDENTIAL.test(clientKey)) {
+    throw new ProviderNotConfiguredError(Platform.TIKTOK, 'TikTok', ['TIKTOK_CLIENT_KEY'], {
+      detail:
+        'TIKTOK_CLIENT_KEY carries a quote, a space or a line break inside the value, which no client key '
+        + 'contains. Re-paste it from the TikTok developer console without the surrounding quotes.',
+    });
+  }
 
   // Trimmed on the way in, for the same reason Meta's are: these are pasted by
   // hand into a hosting dashboard, and a trailing newline is invisible in every
   // UI that edits them but fatal in an OAuth parameter.
   return {
-    clientKey: env.TIKTOK_CLIENT_KEY!.trim(),
-    clientSecret: env.TIKTOK_CLIENT_SECRET!.trim(),
-    redirectUri: env.TIKTOK_REDIRECT_URI!.trim(),
+    clientKey,
+    clientSecret: normalizeCredential(env.TIKTOK_CLIENT_SECRET),
+    redirectUri: normalizeCredential(env.TIKTOK_REDIRECT_URI),
   };
 }
 
 /** Whether TikTok is configured at all, without throwing. For diagnostics. */
 export function tiktokConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
   return (['TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET', 'TIKTOK_REDIRECT_URI'] as const).every(
-    (key) => Boolean(env[key]?.trim()),
+    (key) => Boolean(normalizeCredential(env[key])),
   );
+}
+
+/**
+ * Enough of a credential to recognise it, never enough to use it.
+ *
+ * First three and last three characters. A TikTok client key is checkable
+ * against the console at a glance from that much, and an operator comparing
+ * "what the server holds" against "what the console shows" needs nothing more.
+ */
+export function redactCredential(value: string): string {
+  if (value.length === 0) return 'unset';
+  if (value.length < 8) return '***';
+  return `${value.slice(0, 3)}…${value.slice(-3)}`;
+}
+
+/** The callback path a TikTok redirect URI has to end at. */
+const CALLBACK_PATH = '/api/integrations/tiktok/callback';
+
+/**
+ * What can be said about the TikTok configuration without saying any of it.
+ *
+ * Every field is a shape or a verdict, which is what makes it safe to log at
+ * boot: an operator whose login was refused needs to know whether the server
+ * holds the key they think it does, whether anything invisible rode along with
+ * it, and whether it is the sandbox key — and never needs the value.
+ */
+export interface TikTokConfigDiagnostics {
+  clientKeyConfigured: boolean;
+  clientKeyLength: number;
+  /** First three and last three characters, or `unset`. */
+  clientKeyRedacted: string;
+  clientKeyCharsetValid: boolean;
+  /** True when the raw variable carried quotes, whitespace or invisible characters. */
+  clientKeyNeededCleaning: boolean;
+  /** True for a key issued to the application's sandbox, which cannot log in live. */
+  clientKeyLooksSandbox: boolean;
+  clientSecretConfigured: boolean;
+  redirectUriConfigured: boolean;
+  /** True when the redirect URI ends at the callback route that is mounted. */
+  redirectUriPathValid: boolean;
+  /** True when everything needed to build an authorization URL is present and sane. */
+  valid: boolean;
+}
+
+export function tiktokConfigDiagnostics(env: NodeJS.ProcessEnv = process.env): TikTokConfigDiagnostics {
+  const rawKey = env.TIKTOK_CLIENT_KEY ?? '';
+  const clientKey = normalizeCredential(rawKey);
+  const redirectUri = normalizeCredential(env.TIKTOK_REDIRECT_URI);
+
+  const clientKeyConfigured = clientKey.length > 0;
+  // A warning, not a verdict: an unfamiliar shape is worth reporting and never
+  // worth refusing a connection over.
+  const clientKeyCharsetValid = CLIENT_KEY_FORMAT.test(clientKey);
+  const clientSecretConfigured = normalizeCredential(env.TIKTOK_CLIENT_SECRET).length > 0;
+  const redirectUriConfigured = redirectUri.length > 0;
+
+  let redirectUriPathValid = false;
+  if (redirectUriConfigured) {
+    try {
+      redirectUriPathValid = new URL(redirectUri).pathname.endsWith(CALLBACK_PATH);
+    } catch {
+      redirectUriPathValid = false;
+    }
+  }
+
+  return {
+    clientKeyConfigured,
+    // A length is not a value, and it is the one number that separates "pasted
+    // the secret" from "pasted the key" without revealing either.
+    clientKeyLength: clientKey.length,
+    clientKeyRedacted: redactCredential(clientKey),
+    clientKeyCharsetValid,
+    clientKeyNeededCleaning: clientKeyConfigured && rawKey !== clientKey,
+    clientKeyLooksSandbox: clientKey.toLowerCase().startsWith(SANDBOX_PREFIX),
+    clientSecretConfigured,
+    redirectUriConfigured,
+    redirectUriPathValid,
+    valid:
+      clientKeyConfigured && !IMPOSSIBLE_IN_CREDENTIAL.test(clientKey) && clientSecretConfigured
+      && redirectUriConfigured && redirectUriPathValid,
+  };
 }
 
 export function authorizationUrl(input: { config: TikTokConfig; state: string }): string {
