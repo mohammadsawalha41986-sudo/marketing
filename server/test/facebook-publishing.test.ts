@@ -466,7 +466,8 @@ describe('Facebook publishing', () => {
     expect(report.refused.some((row) => row.contentId === content.id)).toBe(true);
     const after = await prisma.content.findUniqueOrThrow({ where: { id: content.id } });
     expect(after.status).toBe(ContentStatus.SCHEDULED);
-    expect(after.failureReason).toMatch(/No account is attached/i);
+    // The refusal names the platform's own target rather than "an account".
+    expect(after.failureReason).toMatch(/No Facebook Page is attached/i);
   });
 
   it('drains the queue and publishes', async () => {
