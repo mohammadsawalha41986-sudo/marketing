@@ -19,16 +19,22 @@
  * an honest READY-but-blocked state, not a broken one: the flow is correct and
  * proven against mocks; what is missing is public media delivery and App Review
  * for `instagram_content_publish`.
+ *
+ * Two connections reach this adapter and it treats them as one: an Instagram
+ * account discovered through the Facebook connection, and an account connected
+ * directly through Instagram Login (which needs no Page). The call sequence is
+ * identical; only the Graph host differs, and that is read from the account's
+ * own metadata rather than branched on here.
  */
 
 import { Platform } from '@prisma/client';
 
 import { GRAPH_VERSION } from '../integrations/meta.js';
+import { instagramGraphBase } from '../integrations/instagram.js';
 import type {
   FetchLike, PlatformPublisher, PublishError, PublishErrorKind, PublishRequest, PublishResult,
 } from './contract.js';
 
-const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`;
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 /** Meta's error codes, mapped the same way the Facebook adapter maps them. */
@@ -68,7 +74,8 @@ const EXPLANATION: Record<PublishErrorKind, string> = {
   PROVIDER_UNAVAILABLE: 'Instagram is temporarily unavailable; the post will be retried.',
   INVALID_TOKEN: 'The Instagram connection has expired. Reconnect the account to publish.',
   MISSING_PERMISSION:
-    'The connected Meta app cannot publish to this Instagram account (instagram_content_publish).',
+    'The connected app cannot publish to this Instagram account. A Page-linked connection needs '
+    + 'instagram_content_publish; a direct Instagram Login connection needs instagram_business_content_publish.',
   INVALID_ACCOUNT: 'Instagram does not recognise this professional account for the connected app.',
   INVALID_MEDIA: 'Instagram could not fetch the image. It must be a publicly reachable URL.',
   INVALID_REQUEST: 'Instagram rejected the post.',
@@ -110,6 +117,16 @@ export const instagramPublisher: PlatformPublisher = {
   async publish(request: PublishRequest): Promise<PublishResult> {
     const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const igUserId = request.account.externalId;
+    /*
+     * Which Graph host to call.
+     *
+     * The two Instagram connections issue tokens that are not interchangeable:
+     * a Page-derived token works only on graph.facebook.com, an Instagram-Login
+     * token only on graph.instagram.com. The account's own metadata says which
+     * one attached it, so the two calls below are the same two calls either
+     * way — one flow, not a fork.
+     */
+    const graph = instagramGraphBase(request.account.metadata, GRAPH_VERSION);
     const image = request.media.find((item) => item.kind === 'IMAGE');
 
     // A feed post needs an image, and that image needs a public URL Meta can
@@ -127,7 +144,7 @@ export const instagramPublisher: PlatformPublisher = {
 
     // Step 1 — the container.
     const container = await post(
-      `${GRAPH}/${igUserId}/media`,
+      `${graph}/${igUserId}/media`,
       { image_url: image.publicUrl, caption: request.caption, access_token: request.account.accessToken },
       request.fetchImpl,
       timeoutMs,
@@ -141,7 +158,7 @@ export const instagramPublisher: PlatformPublisher = {
 
     // Step 2 — publish the container.
     const published = await post(
-      `${GRAPH}/${igUserId}/media_publish`,
+      `${graph}/${igUserId}/media_publish`,
       { creation_id: creationId, access_token: request.account.accessToken },
       request.fetchImpl,
       timeoutMs,

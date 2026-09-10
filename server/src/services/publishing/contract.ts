@@ -116,6 +116,16 @@ export interface PublishRequest {
      * Publishers must not log it, echo it, or put it in a PublishError.
      */
     accessToken: string;
+    /**
+     * The account's own provider metadata, straight from
+     * `IntegrationAccount.metadata`. Never credentials — those are the field
+     * above — but facts about the account a publisher cannot infer from a
+     * token: today, which Instagram connection issued it, because an
+     * Instagram-Login token is served by a different Graph host than a
+     * Page-derived one and calling the wrong host fails with an error that
+     * names neither.
+     */
+    metadata?: Record<string, unknown>;
   };
   fetchImpl: FetchLike;
   /** Abandon the call after this long. Absent means the publisher's default. */

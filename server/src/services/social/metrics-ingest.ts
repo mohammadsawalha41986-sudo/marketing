@@ -33,6 +33,7 @@ import { Platform, PlatformPostStatus, Prisma, type PrismaClient } from '@prisma
 
 import { decryptSecret } from '../../lib/crypto.js';
 import type { FetchLike } from '../publishing/contract.js';
+import { instagramGraphBase } from '../integrations/instagram.js';
 
 /** The eight metrics Phase 14 reports. Named here only to shape the payload. */
 export type MetricName =
@@ -77,6 +78,15 @@ export interface MetricsFetchInput {
   accessToken: string;
   fetchImpl: FetchLike;
   timeoutMs?: number;
+  /**
+   * The account's own provider metadata, never its credentials.
+   *
+   * Instagram is the reason it exists: an account connected through Instagram
+   * Login is read from graph.instagram.com, one discovered through the Facebook
+   * connection from graph.facebook.com, and the token alone does not say which.
+   * A fetcher that does not need it ignores it.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 export interface MetricsFetcher {
@@ -151,7 +161,9 @@ function classifyMeta(status: number, code: number | null): MetricsErrorKind {
   return 'INVALID_REQUEST';
 }
 
-const GRAPH = 'https://graph.facebook.com/v21.0';
+/** Pinned here rather than shared: this file's calls were written against it. */
+const GRAPH_VERSION = 'v21.0';
+const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`;
 
 async function readMeta(
   response: Awaited<ReturnType<FetchLike>>,
@@ -277,7 +289,10 @@ export const instagramMetricsFetcher: MetricsFetcher = {
 
     try {
       return await withTimeout(timeoutMs, async (signal) => {
-        const url = new URL(`${GRAPH}/${input.externalPostId}/insights`);
+        // Same insights call on either host; the account says which issued its
+        // token. See `instagramGraphBase`.
+        const base = instagramGraphBase(input.metadata, GRAPH_VERSION);
+        const url = new URL(`${base}/${input.externalPostId}/insights`);
         url.searchParams.set('metric', 'impressions,reach,likes,comments,saved,shares');
         url.searchParams.set('access_token', input.accessToken);
 
@@ -544,7 +559,7 @@ export async function ingestMetricsTick(input: {
       platform: true,
       externalPostId: true,
       config: true,
-      integrationAccount: { select: { accessTokenEnc: true } },
+      integrationAccount: { select: { accessTokenEnc: true, metadata: true } },
     },
   });
 
@@ -582,6 +597,7 @@ export async function ingestMetricsTick(input: {
       externalPostId: post.externalPostId!,
       // Decrypted immediately before the call and never held longer.
       accessToken: decryptSecret(encrypted),
+      metadata: (post.integrationAccount?.metadata ?? {}) as Record<string, unknown>,
       fetchImpl,
     });
 

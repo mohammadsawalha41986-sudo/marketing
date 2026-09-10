@@ -36,8 +36,16 @@ const META = {
   META_CONFIG_ID: 'login-config-1',
 };
 
+/** Instagram Login's own app product, separate from the Facebook app above. */
+const INSTAGRAM = {
+  INSTAGRAM_APP_ID: '1122334455667788',
+  INSTAGRAM_APP_SECRET: 'instagram-secret',
+  INSTAGRAM_REDIRECT_URI: 'https://example.test/api/integrations/instagram/callback',
+};
+
 const PROVIDER_VARS = [
   ...Object.keys(META),
+  ...Object.keys(INSTAGRAM),
   'TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET', 'TIKTOK_REDIRECT_URI',
   'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI', 'GOOGLE_ADS_DEVELOPER_TOKEN',
   'LINKEDIN_CLIENT_ID', 'LINKEDIN_CLIENT_SECRET',
@@ -92,11 +100,16 @@ describe('capability matrix', () => {
     // set a client secret would go and do the slower of the two tasks.
     const unconfigured = surface(matrixFor(Platform.INSTAGRAM), 'organic', 'PUBLISHING');
     expect(unconfigured.state).toBe('NOT_CONFIGURED');
+    // Its own credentials, not Meta's: Instagram Login is a separate app
+    // product, and an Instagram-only deployment sets only these.
+    expect(unconfigured.requiredEnv).toEqual([
+      'INSTAGRAM_APP_ID', 'INSTAGRAM_APP_SECRET', 'INSTAGRAM_REDIRECT_URI',
+    ]);
 
-    Object.assign(process.env, META);
+    Object.assign(process.env, INSTAGRAM);
     const configured = surface(matrixFor(Platform.INSTAGRAM), 'organic', 'PUBLISHING');
     expect(configured.state).toBe('REQUIRES_APPROVAL');
-    expect(configured.approval).toMatch(/instagram_content_publish/);
+    expect(configured.approval).toMatch(/instagram_business_content_publish/);
     expect(configured.requiredEnv).toEqual([]);
   });
 
@@ -184,7 +197,7 @@ describe('capability matrix', () => {
   });
 
   it('summarises a platform by its better channel', () => {
-    Object.assign(process.env, META);
+    Object.assign(process.env, META, INSTAGRAM);
     const instagram = matrixFor(Platform.INSTAGRAM);
 
     // Organic needs App Review; paid does not, because it is a Meta ad set.

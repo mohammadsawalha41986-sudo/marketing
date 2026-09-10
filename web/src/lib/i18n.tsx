@@ -838,6 +838,9 @@ const en = {
   'cal.more': 'more',
   'cal.flight': 'Runs {from} → {to}',
 
+  'integration.instagramDirect': 'Connects with Instagram Login. Works for any Instagram Professional account — a Facebook Page is not required.',
+  'integration.metaScope': 'Connects Facebook Pages, ad accounts, and any Instagram account already linked to a Page.',
+
   'notif.title': 'Notifications',
   'notif.markAll': 'Mark all read',
   'notif.empty': 'Nothing yet.',
@@ -1697,6 +1700,9 @@ const ar: Record<keyof typeof en, string> = {
   'cal.badge.paid': 'مدفوع',
   'cal.more': 'أخرى',
   'cal.flight': 'تعمل من {from} إلى {to}',
+
+  'integration.instagramDirect': 'يتم الربط عبر تسجيل الدخول بإنستغرام. يعمل مع أي حساب إنستغرام احترافي — لا حاجة لصفحة فيسبوك.',
+  'integration.metaScope': 'يربط صفحات فيسبوك والحسابات الإعلانية وأي حساب إنستغرام مرتبط بصفحة.',
 
   'notif.title': 'الإشعارات',
   'notif.markAll': 'تعليم الكل كمقروء',

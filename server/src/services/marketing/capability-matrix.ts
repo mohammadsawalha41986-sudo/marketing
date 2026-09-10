@@ -42,6 +42,7 @@ import { publisherFor } from '../publishing/registry.js';
 import { metricsFetcherFor } from '../social/metrics-ingest.js';
 import { WORKSPACE_PLATFORMS } from '../social/capabilities.js';
 import { metaConfigDiagnostics } from '../integrations/meta.js';
+import { instagramConfigured } from '../integrations/instagram.js';
 import { tiktokConfigured } from '../integrations/tiktok.js';
 import { googleConfigured } from '../integrations/google.js';
 import { youtubeConfigured } from '../integrations/youtube.js';
@@ -127,6 +128,15 @@ const CREDENTIALS = {
     // a real and common paste error, and a connection built from it fails at
     // the provider with a message that does not name the cause.
     configured: () => metaConfigDiagnostics().valid,
+  },
+  /*
+   * Instagram Login is its own app product in the Meta console, with its own id
+   * and secret. Sharing META's group would report an Instagram-only deployment
+   * as configured because a Facebook app happened to be set up.
+   */
+  INSTAGRAM: {
+    env: ['INSTAGRAM_APP_ID', 'INSTAGRAM_APP_SECRET', 'INSTAGRAM_REDIRECT_URI'],
+    configured: () => instagramConfigured(),
   },
   TIKTOK: {
     env: ['TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET', 'TIKTOK_REDIRECT_URI'],
@@ -214,13 +224,18 @@ const ORGANIC: Partial<Record<Platform, ChannelDeclaration>> = {
   },
 
   [Platform.INSTAGRAM]: {
-    OAUTH: built('Shares the Meta connection; no separate Instagram login.'),
-    ACCOUNTS: built('Instagram business accounts discovered through their linked Page.'),
+    OAUTH: built(
+      'Instagram API with Instagram Login — the account authorises directly, so a Professional '
+        + 'account with no Facebook Page can connect. Page-linked accounts still arrive through '
+        + 'the Meta connection as well.',
+    ),
+    ACCOUNTS: built('The one Instagram Professional account the login is; no Page is required.'),
     ...workspaceOrganic(Platform.INSTAGRAM),
     PUBLISHING: built(
-      'Two-step container/publish against the Content Publishing API. The adapter refuses '
-        + 'an authenticated media link rather than send Meta one it cannot fetch.',
-      'Meta App Review for instagram_content_publish, plus a publicly reachable media URL.',
+      'Two-step container/publish against the Content Publishing API, on whichever Graph host '
+        + 'issued the account\'s token. The adapter refuses an authenticated media link rather '
+        + 'than send Meta one it cannot fetch.',
+      'Meta App Review for instagram_business_content_publish, plus a publicly reachable media URL.',
     ),
   },
 
@@ -390,7 +405,8 @@ const PAID: Partial<Record<Platform, ChannelDeclaration>> = {
 /** Which credential group each platform's channel depends on. */
 const CREDENTIAL_FOR: Record<Platform, { organic: CredentialKey; paid: CredentialKey }> = {
   [Platform.FACEBOOK]: { organic: 'META', paid: 'META' },
-  [Platform.INSTAGRAM]: { organic: 'META', paid: 'META' },
+  // Organic Instagram connects on its own; Instagram ads are a Meta ad set.
+  [Platform.INSTAGRAM]: { organic: 'INSTAGRAM', paid: 'META' },
   [Platform.TIKTOK]: { organic: 'TIKTOK', paid: 'TIKTOK' },
   [Platform.YOUTUBE]: { organic: 'YOUTUBE', paid: 'GOOGLE_ADS' },
   [Platform.LINKEDIN]: { organic: 'LINKEDIN', paid: 'NONE' },
