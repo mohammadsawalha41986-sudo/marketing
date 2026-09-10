@@ -30,7 +30,7 @@
 import { Platform } from '@prisma/client';
 
 import { GRAPH_VERSION } from '../integrations/meta.js';
-import { instagramGraphBase } from '../integrations/instagram.js';
+import { instagramGraphBase, isInstagramLoginAccount } from '../integrations/instagram.js';
 import type {
   FetchLike, PlatformPublisher, PublishError, PublishErrorKind, PublishRequest, PublishResult,
 } from './contract.js';
@@ -52,19 +52,34 @@ function classify(code: number | null, subcode: number | null, status: number): 
 
 interface GraphError { message?: string; code?: number; error_subcode?: number; error_user_msg?: string }
 
-function toPublishError(payload: unknown, status: number): PublishError {
+function toPublishError(payload: unknown, status: number, metadata?: unknown): PublishError {
   const error = (payload as { error?: GraphError } | undefined)?.error;
   const code = typeof error?.code === 'number' ? error.code : null;
   const subcode = typeof error?.error_subcode === 'number' ? error.error_subcode : null;
   const kind = classify(code, subcode, status);
   const providerText = error?.error_user_msg ?? error?.message ?? `Instagram returned HTTP ${status}`;
+  const explanation = kind === 'MISSING_PERMISSION' ? permissionLine(metadata) : EXPLANATION[kind];
 
   return {
     kind,
     code: code === null ? null : String(code),
-    message: `${EXPLANATION[kind]} Instagram said: ${providerText}`,
+    message: `${explanation} Instagram said: ${providerText}`,
     httpStatus: status,
   };
+}
+
+/**
+ * The permission a refusal is about, named for the connection that hit it.
+ *
+ * A direct Instagram Login connection has no Facebook app permission to fix;
+ * telling its operator about `instagram_content_publish` sends them to request
+ * something their app does not use.
+ */
+function permissionLine(metadata: unknown): string {
+  return isInstagramLoginAccount(metadata)
+    ? 'The connected app cannot publish to this Instagram account: it was authorised without '
+      + 'instagram_business_content_publish. Reconnect it and grant that permission.'
+    : 'The connected Meta app cannot publish to this Instagram account (instagram_content_publish).';
 }
 
 const EXPLANATION: Record<PublishErrorKind, string> = {
@@ -74,8 +89,8 @@ const EXPLANATION: Record<PublishErrorKind, string> = {
   PROVIDER_UNAVAILABLE: 'Instagram is temporarily unavailable; the post will be retried.',
   INVALID_TOKEN: 'The Instagram connection has expired. Reconnect the account to publish.',
   MISSING_PERMISSION:
-    'The connected app cannot publish to this Instagram account. A Page-linked connection needs '
-    + 'instagram_content_publish; a direct Instagram Login connection needs instagram_business_content_publish.',
+    'The connected app cannot publish to this Instagram account. See permissionLine() — the exact '
+    + 'permission depends on which connection attached it.',
   INVALID_ACCOUNT: 'Instagram does not recognise this professional account for the connected app.',
   INVALID_MEDIA: 'Instagram could not fetch the image. It must be a publicly reachable URL.',
   INVALID_REQUEST: 'Instagram rejected the post.',
@@ -87,6 +102,7 @@ async function post(
   body: Record<string, string>,
   fetchImpl: FetchLike,
   timeoutMs: number,
+  metadata?: unknown,
 ): Promise<{ ok: true; payload: Record<string, unknown> } | { ok: false; error: PublishError }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -98,7 +114,7 @@ async function post(
       signal: controller.signal,
     });
     const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!response.ok) return { ok: false, error: toPublishError(payload, response.status) };
+    if (!response.ok) return { ok: false, error: toPublishError(payload, response.status, metadata) };
     return { ok: true, payload };
   } catch (cause) {
     const aborted = (cause as { name?: string }).name === 'AbortError';
@@ -148,6 +164,7 @@ export const instagramPublisher: PlatformPublisher = {
       { image_url: image.publicUrl, caption: request.caption, access_token: request.account.accessToken },
       request.fetchImpl,
       timeoutMs,
+      request.account.metadata,
     );
     if (!container.ok) return { success: false, platform: Platform.INSTAGRAM, error: container.error };
 
@@ -162,6 +179,7 @@ export const instagramPublisher: PlatformPublisher = {
       { creation_id: creationId, access_token: request.account.accessToken },
       request.fetchImpl,
       timeoutMs,
+      request.account.metadata,
     );
     if (!published.ok) return { success: false, platform: Platform.INSTAGRAM, error: published.error };
 

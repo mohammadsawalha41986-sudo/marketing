@@ -5,7 +5,7 @@
 
 import { Router } from 'express';
 import {
-  ExternalAccountKind, IntegrationStatus, Language, Platform, Prisma, Role,
+  IntegrationStatus, Language, Platform, Prisma, Role,
 } from '@prisma/client';
 import { z } from 'zod';
 
@@ -28,6 +28,9 @@ import { hashPassword, passwordProblems } from '../lib/password.js';
 import { recordAudit } from '../services/audit.js';
 import { aiStatus } from '../services/ai/index.js';
 import { testPublish } from '../services/publishing/service.js';
+import {
+  missingPublishGrant, noTargetMessage, resolveTargetForIntegration,
+} from '../services/publishing/target.js';
 
 // ------------------------------------------------------------------ notifications
 
@@ -369,19 +372,33 @@ integrationsRouter.post(
 
     const integration = await prisma.integration.findFirst({
       where: { id: req.params.id, organizationId: orgId(actor) },
-      select: {
-        id: true,
-        platform: true,
-        accounts: {
-          where: { selected: true, kind: ExternalAccountKind.PAGE },
-          select: { id: true, externalId: true, name: true, accessTokenEnc: true, tokenStatus: true },
-        },
-      },
+      select: { id: true, platform: true },
     });
     if (!integration) throw notFound('Integration');
 
-    const account = integration.accounts[0];
-    if (!account) throw badRequest('No Page is attached to this connection. Choose one first.');
+    /*
+     * What this connection publishes to, asked of the one resolver that knows.
+     *
+     * This used to select accounts of kind PAGE and nothing else, which is
+     * right for Facebook and wrong for every other platform — an Instagram
+     * Login connection, whose target is the Instagram Professional account
+     * itself, was told to choose a Page it can never have.
+     */
+    const account = await resolveTargetForIntegration({
+      prisma,
+      integrationId: integration.id,
+      platform: integration.platform,
+    });
+    if (!account) throw badRequest(noTargetMessage(integration.platform));
+
+    /*
+     * The grant was recorded when the account was attached, so a connection
+     * authorised without the publishing permission is knowable before a request
+     * is sent — and worth naming exactly, rather than spending a call to have
+     * the provider say it less clearly.
+     */
+    const missingGrant = missingPublishGrant(integration.platform, account);
+    if (missingGrant) throw badRequest(missingGrant);
 
     const result = await testPublish({
       prisma,
@@ -396,10 +413,10 @@ integrationsRouter.post(
       action: 'integration.test-publish',
       entity: 'Integration',
       entityId: integration.id,
-      // The Page and the outcome, never the credential or the message body.
+      // The target and the outcome, never the credential or the message body.
       meta: {
         platform: integration.platform,
-        pageId: account.externalId,
+        accountId: account.externalId,
         success: result.published,
         externalPostId: result.published ? result.externalPostId : null,
       },
@@ -417,11 +434,11 @@ integrationsRouter.post(
       return;
     }
 
-    // A real post now exists on the Page. The id is the provider's.
+    // A real post now exists on the account. The id is the provider's.
     res.json({
       published: true,
-      pageId: account.externalId,
-      pageName: account.name,
+      accountId: account.externalId,
+      accountName: account.name,
       externalPostId: result.externalPostId,
       permalink: result.permalink,
       publishedAt: result.publishedAt,

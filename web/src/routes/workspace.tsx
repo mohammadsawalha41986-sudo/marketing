@@ -853,6 +853,23 @@ export function ApprovalsPage({ portal = false }: { portal?: boolean }) {
 // ---------------------------------------------------------------- integrations
 
 /** What the dialog starts with, and what the operator can edit before sending. */
+/**
+ * What each platform publishes to, for UI copy.
+ *
+ * The server owns the same mapping for the resolver and its error messages
+ * (`services/publishing/target.ts`); this one exists so a dialog can name the
+ * target before any request is made. Both must agree, and the one they must
+ * never both say is "Page" for Instagram.
+ */
+const PUBLISH_TARGET_NOUN: Partial<Record<Platform, string>> = {
+  FACEBOOK: 'Facebook Page',
+  INSTAGRAM: 'Instagram account',
+  TIKTOK: 'TikTok account',
+  YOUTUBE: 'YouTube channel',
+  LINKEDIN: 'LinkedIn page',
+  GOOGLE_BUSINESS: 'business location',
+};
+
 const TEST_POST_DEFAULT = 'Marketing OS test post';
 
 /**
@@ -863,7 +880,7 @@ const TEST_POST_DEFAULT = 'Marketing OS test post';
  * would leave the operator no better off than the silence this replaces.
  */
 type TestPublishResult =
-  | { ok: true; externalPostId: string; permalink: string | null; pageName: string }
+  | { ok: true; externalPostId: string; permalink: string | null; accountName: string }
   | { ok: false; message: string };
 
 interface AdapterInfo {
@@ -1270,7 +1287,7 @@ export function IntegrationsPage() {
    * useful part is the provider's post id, and a toast that disappears is no
    * good to someone who needs to copy it into Facebook to check the post.
    */
-  const [testing, setTesting] = useState<{ id: string; label: string } | null>(null);
+  const [testing, setTesting] = useState<{ id: string; label: string; platform: Platform } | null>(null);
   const [testMessage, setTestMessage] = useState(TEST_POST_DEFAULT);
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState<TestPublishResult | null>(null);
@@ -1348,14 +1365,14 @@ export function IntegrationsPage() {
     setTestResult(null);
     try {
       const response = await api.post<{
-        externalPostId: string; permalink: string | null; pageName: string;
+        externalPostId: string; permalink: string | null; accountName: string;
       }>(`/integrations/${testing.id}/test-publish`, { message: testMessage.trim() });
 
       setTestResult({
         ok: true,
         externalPostId: response.externalPostId,
         permalink: response.permalink,
-        pageName: response.pageName,
+        accountName: response.accountName,
       });
       refetch();
     } catch (err) {
@@ -1558,7 +1575,7 @@ export function IntegrationsPage() {
                       size="sm"
                       variant="secondary"
                       icon={Send}
-                      onClick={() => setTesting({ id: integration.id, label: adapter.label })}
+                      onClick={() => setTesting({ id: integration.id, label: adapter.label, platform: adapter.platform })}
                     >
                       Test publish
                     </Button>
@@ -1614,11 +1631,25 @@ export function IntegrationsPage() {
         }
       >
         <div className="space-y-4">
-          {/* Said plainly, before the button rather than after it. */}
+          {/* Said plainly, before the button rather than after it — and named
+              for what this connection publishes to. A direct Instagram
+              connection has no Page and must never be told about one. */}
           <p className="rounded-lg border border-warn/25 bg-warn/10 p-3 text-[13px] text-fg">
-            This publishes a real post to the connected Page. It stays there until
-            you delete it on the platform.
+            This publishes a real post to the connected {testing ? PUBLISH_TARGET_NOUN[testing.platform] ?? 'account' : 'account'}.
+            It stays there until you delete it on the platform.
           </p>
+
+          {/* Instagram's API has no text-only post: every post is a media
+              container. Saying so here costs one sentence; finding out from a
+              provider error after pressing the button costs a round trip and
+              reads like a bug in the connection. */}
+          {testing?.platform === 'INSTAGRAM' ? (
+            <p className="rounded-lg border border-line bg-elevated p-3 text-[13px] text-muted">
+              Instagram has no text-only post — every post carries media, and the media must be at a
+              publicly reachable URL. A test post here will be refused for that reason; publish through
+              the content workflow with an image instead.
+            </p>
+          ) : null}
 
           <Field label="Message" hint="Sent as the post's text.">
             <Textarea
@@ -1632,7 +1663,7 @@ export function IntegrationsPage() {
           {testResult?.ok ? (
             <div className="space-y-2 rounded-lg border border-ok/25 bg-ok/10 p-3">
               <p className="text-[13px] font-medium text-ok">
-                Published to {testResult.pageName}
+                Published to {testResult.accountName}
               </p>
               <p className="text-[13px] text-fg">
                 <span className="text-muted">Post ID </span>

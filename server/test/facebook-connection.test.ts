@@ -356,7 +356,9 @@ describe('connecting a Facebook Page', () => {
     });
 
     expect(response.status).toBe(400);
-    expect(response.body.error.message).toMatch(/no page is attached/i);
+    // Named for what a Facebook connection publishes to. An Instagram Login
+    // connection gets the same sentence about an Instagram account.
+    expect(response.body.error.message).toMatch(/no facebook page is attached/i);
   });
 
   it('cannot test-publish through another tenant\'s connection', async () => {
