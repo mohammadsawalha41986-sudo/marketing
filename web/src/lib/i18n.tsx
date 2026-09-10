@@ -838,6 +838,11 @@ const en = {
   'cal.more': 'more',
   'cal.flight': 'Runs {from} → {to}',
 
+  'integration.chooseProject': 'Choose a project',
+  'integration.selected': 'Selected',
+  'integration.selectFirst': 'Choose a project to see and connect its accounts. A connection is stored against one project.',
+  'integration.noProjects': 'No projects available',
+  'integration.noProjectsBody': 'Create a project first — an account is always connected to one.',
   'integration.instagramDirect': 'Connects with Instagram Login. Works for any Instagram Professional account — a Facebook Page is not required.',
   'integration.metaScope': 'Connects Facebook Pages, ad accounts, and any Instagram account already linked to a Page.',
 
@@ -1701,6 +1706,11 @@ const ar: Record<keyof typeof en, string> = {
   'cal.more': 'أخرى',
   'cal.flight': 'تعمل من {from} إلى {to}',
 
+  'integration.chooseProject': 'اختر مشروعاً',
+  'integration.selected': 'المحدد',
+  'integration.selectFirst': 'اختر مشروعاً لعرض حساباته وربطها. يُحفظ الربط لمشروع واحد فقط.',
+  'integration.noProjects': 'لا توجد مشاريع متاحة',
+  'integration.noProjectsBody': 'أنشئ مشروعاً أولاً — يُربط كل حساب بمشروع واحد.',
   'integration.instagramDirect': 'يتم الربط عبر تسجيل الدخول بإنستغرام. يعمل مع أي حساب إنستغرام احترافي — لا حاجة لصفحة فيسبوك.',
   'integration.metaScope': 'يربط صفحات فيسبوك والحسابات الإعلانية وأي حساب إنستغرام مرتبط بصفحة.',
 

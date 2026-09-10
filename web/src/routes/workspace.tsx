@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
-  Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Film, FileText, Image as ImageIcon,
+  Bell, Building2, CalendarDays, Check, ChevronLeft, ChevronRight, Film, FileText, Image as ImageIcon,
   Link2, MessageSquare, Plug, Search, Send, ThumbsUp, Trash2, Upload, X,
 } from 'lucide-react';
 
@@ -1171,6 +1171,89 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
   );
 }
 
+/**
+ * Which project these connections belong to.
+ *
+ * This page is the one place where "all projects" is not a usable answer: a
+ * token is stored against exactly one client, so Connect cannot proceed until a
+ * project is named. The picker therefore lives on the page rather than only in
+ * the top bar — but it is the *same* selection, read and written through the
+ * existing restaurant context, so choosing here moves the top bar too and there
+ * is no second source of truth to drift.
+ */
+function ProjectPicker() {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const { restaurants, current, currentId, setCurrentId, loading, error, reload } = useRestaurant();
+
+  if (loading) {
+    return (
+      <Card className="mb-4 p-4">
+        <div className="skeleton h-10 w-full max-w-md" />
+      </Card>
+    );
+  }
+
+  // A failed list is not an empty tenant, and telling the operator to create a
+  // project they already have would be the wrong instruction entirely.
+  if (error) {
+    return (
+      <Card className="mb-4 p-4">
+        <p className="text-[13px] text-danger">{error}</p>
+        <Button size="sm" variant="secondary" className="mt-2" onClick={reload}>
+          {t('common.retry')}
+        </Button>
+      </Card>
+    );
+  }
+
+  if (restaurants.length === 0) {
+    return (
+      <Card className="mb-4">
+        <EmptyState
+          compact
+          icon={Building2}
+          title={t('integration.noProjects')}
+          body={t('integration.noProjectsBody')}
+          action={<Button onClick={() => navigate('/app/restaurants')}>{t('dash.addFirstProject')}</Button>}
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="mb-4 p-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="min-w-[16rem] flex-1">
+          <span className="mb-1.5 block text-[12px] font-medium text-muted">
+            {t('integration.chooseProject')}
+          </span>
+          <Select value={currentId} onChange={(event) => setCurrentId(event.target.value)}>
+            <option value="">{t('integration.chooseProject')}</option>
+            {restaurants.map((row) => (
+              <option key={row.id} value={row.id}>
+                {row.businessName}
+                {row.location ? ` — ${row.location}` : ''}
+              </option>
+            ))}
+          </Select>
+        </label>
+
+        <p className="text-[13px] text-muted" dir="auto">
+          {current ? (
+            <>
+              {t('integration.selected')}:{' '}
+              <span className="font-medium text-fg">{current.businessName}</span>
+            </>
+          ) : (
+            t('integration.selectFirst')
+          )}
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 export function IntegrationsPage() {
   const { t, lang } = useI18n();
   const { push } = useToast();
@@ -1335,9 +1418,11 @@ export function IntegrationsPage() {
         subtitle={
           current
             ? `Connections for ${current.businessName}. A provider connects once its credentials are set.`
-            : `Connection architecture for every ad platform. ${t('common.pickProject')}`
+            : t('integration.selectFirst')
         }
       />
+
+      <ProjectPicker />
 
       <Card className="mb-4 p-4">
         <div className="flex flex-wrap items-center gap-3 text-[13px]">
@@ -1352,7 +1437,24 @@ export function IntegrationsPage() {
         </div>
       </Card>
 
-      {loading || catalog.loading ? (
+      {!clientId ? (
+        /*
+         * No cards until a project is chosen.
+         *
+         * Showing them would mean showing a connection status merged across
+         * every project — one row per platform, whichever came back first —
+         * which reads as "Instagram is connected" when it is connected for a
+         * different restaurant entirely.
+         */
+        <Card>
+          <EmptyState
+            compact
+            icon={Plug}
+            title={t('integration.chooseProject')}
+            body={t('integration.selectFirst')}
+          />
+        </Card>
+      ) : loading || catalog.loading ? (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {Array.from({ length: 6 }).map((_, index) => <CardSkeleton key={index} />)}
         </div>
