@@ -31,6 +31,7 @@ import { encryptionConfigured } from '../../lib/crypto.js';
  * call time — both sides use the other only inside function bodies, never at
  * module evaluation — which is the same shape meta.ts already has.
  */
+import { INSTAGRAM_SCOPES } from './instagram.js';
 import { TIKTOK_SCOPES } from './tiktok.js';
 import { GOOGLE_SCOPES } from './google.js';
 import { YOUTUBE_SCOPES } from './youtube.js';
@@ -231,6 +232,50 @@ class MetaAdapter extends BaseAdapter {
 }
 
 /**
+ * Instagram, connected directly.
+ *
+ * The Meta adapter above still covers Facebook, and an Instagram account linked
+ * to a Page still arrives through it as a discovered asset. This one exists for
+ * the account that has no Page — which cannot complete Facebook Login for
+ * Business at all, and for whom the Meta connection is not a slower path but an
+ * impossible one.
+ *
+ * Its credentials are the Instagram app product's, not the Facebook app's, and
+ * its tokens are served from graph.instagram.com. Publishing and organic
+ * insights run through the existing adapters, which pick the host from the
+ * account's own metadata rather than being duplicated.
+ */
+class InstagramLoginAdapter extends BaseAdapter {
+  readonly platform = 'INSTAGRAM' as Platform;
+  readonly label = 'Instagram';
+  // Instagram advertising is bought through the Meta ad account, never through
+  // this connection, so audiences stay false here.
+  override readonly capabilities = { publish: true, metrics: true, audiences: false };
+  override readonly implementation: ImplementationReport = {
+    oauth: 'IMPLEMENTED',
+    accountDiscovery: 'IMPLEMENTED',
+    publish: 'IMPLEMENTED',
+    /*
+     * Organic post insights are read by the shared ingestion path, which knows
+     * this connection's host. Ad-level metrics are not this connection's to
+     * report — they belong to the Meta ad account — so this is partial rather
+     * than complete.
+     */
+    metrics: 'PARTIALLY_IMPLEMENTED',
+    conversions: 'NOT_SUPPORTED',
+  };
+
+  override oauth(): OAuthDescriptor {
+    return {
+      authorizeUrl: 'https://www.instagram.com/oauth/authorize',
+      scopes: [...INSTAGRAM_SCOPES],
+      requiredEnv: ['INSTAGRAM_APP_ID', 'INSTAGRAM_APP_SECRET', 'INSTAGRAM_REDIRECT_URI'],
+      docsUrl: 'https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login',
+    };
+  }
+}
+
+/**
  * TikTok, which is two products behind one Platform value.
  *
  * Organic posting goes through Login Kit and the Content Posting API, and that
@@ -405,7 +450,7 @@ class XAdapter extends BaseAdapter {
 
 const adapters: Record<string, PlatformAdapter> = {
   FACEBOOK: new MetaAdapter('FACEBOOK' as Platform, 'Facebook'),
-  INSTAGRAM: new MetaAdapter('INSTAGRAM' as Platform, 'Instagram'),
+  INSTAGRAM: new InstagramLoginAdapter(),
   TIKTOK: new TikTokAdapter(),
   SNAPCHAT: new SnapchatAdapter(),
   GOOGLE_ADS: new GoogleAdsAdapter(),

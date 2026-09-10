@@ -38,6 +38,7 @@ import {
   type FetchLike,
   type TokenSet,
 } from './meta.js';
+import * as instagram from './instagram.js';
 import * as tiktok from './tiktok.js';
 import * as google from './google.js';
 import * as youtube from './youtube.js';
@@ -47,7 +48,13 @@ import * as linkedin from './linkedin.js';
 export function callbackPath(platform: Platform): string {
   const slug: Partial<Record<Platform, string>> = {
     FACEBOOK: 'meta',
-    INSTAGRAM: 'meta',
+    /*
+     * Instagram authorises through Instagram Login — its own app product, its
+     * own token host — so it lands on its own route. Sharing Meta's would mean
+     * a state minted for one provider being redeemed on the other's callback,
+     * which is the binding check, deleted.
+     */
+    INSTAGRAM: 'instagram',
     GOOGLE_ADS: 'google',
     GOOGLE_BUSINESS: 'google',
     TIKTOK: 'tiktok',
@@ -90,11 +97,17 @@ export interface AuthorizeResult {
  * receiving Meta's authorization URL — which is exactly what happened while
  * TikTok was routed through `metaConfig()`.
  */
-export type OAuthProvider = 'META' | 'TIKTOK' | 'GOOGLE' | 'YOUTUBE' | 'LINKEDIN';
+export type OAuthProvider = 'META' | 'INSTAGRAM' | 'TIKTOK' | 'GOOGLE' | 'YOUTUBE' | 'LINKEDIN';
 
 const OAUTH_PROVIDER: Partial<Record<Platform, OAuthProvider>> = {
   [Platform.FACEBOOK]: 'META',
-  [Platform.INSTAGRAM]: 'META',
+  /*
+   * Instagram connects on its own, because a great many Instagram Professional
+   * accounts have no Facebook Page and cannot complete Facebook Login for
+   * Business at all. An Instagram account that *is* Page-linked still arrives
+   * through the Meta connection as a discovered asset — that path is untouched.
+   */
+  [Platform.INSTAGRAM]: 'INSTAGRAM',
   [Platform.TIKTOK]: 'TIKTOK',
   [Platform.GOOGLE_BUSINESS]: 'GOOGLE',
   // Google's OAuth client, a YouTube-shaped grant. See `youtube.ts`.
@@ -163,6 +176,27 @@ const PROVIDERS: Record<OAuthProvider, () => BoundProvider> = {
         grantedPermissions({ accessToken: tokens.accessToken, fetchImpl }),
       publishScope: PAGE_PUBLISH_PERMISSION,
       discover: (input) => discoverAccounts(input),
+    };
+  },
+
+  /*
+   * Instagram API with Instagram Login. Everything token-shaped is
+   * `instagram.ts`; the grant arrives with the token, so `grantedScopes` asks
+   * no second question, and discovery returns the single account the login is.
+   */
+  INSTAGRAM: () => {
+    const config = instagram.instagramConfig();
+    return {
+      redirectUri: config.redirectUri,
+      redirectVariable: 'INSTAGRAM_REDIRECT_URI',
+      authorize: ({ state, redirectUri }) =>
+        instagram.authorizationUrl({ config: { ...config, redirectUri }, state }),
+      exchange: ({ code, redirectUri, fetchImpl }) =>
+        instagram.exchangeCode({ config: { ...config, redirectUri }, code, fetchImpl }),
+      validate: (input) => instagram.validateToken(input),
+      grantedScopes: async ({ tokens }) => tokens.scopes,
+      publishScope: instagram.PUBLISH_SCOPE,
+      discover: (input) => instagram.discoverAccounts(input),
     };
   },
 

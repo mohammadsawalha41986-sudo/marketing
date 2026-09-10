@@ -1387,6 +1387,23 @@ export function IntegrationsPage() {
                   </Badge>
                 </div>
 
+                {/*
+                  * Which login this card starts.
+                  *
+                  * The two Meta-family cards are the ones an operator has to
+                  * choose between, and the choice is not obvious from the
+                  * platform name: an Instagram account with no Facebook Page
+                  * can only be connected here, and one that has a Page can be
+                  * connected either way.
+                  */}
+                {adapter.platform === 'INSTAGRAM' || adapter.platform === 'FACEBOOK' ? (
+                  <p className="mt-2 text-[12px] leading-snug text-muted">
+                    {adapter.platform === 'INSTAGRAM'
+                      ? t('integration.instagramDirect')
+                      : t('integration.metaScope')}
+                  </p>
+                ) : null}
+
                 <div className="mt-4 space-y-1.5 text-[13px] text-muted">
                   <p className="flex justify-between gap-2">
                     <span>Account</span><span className="text-fg">{integration?.accountName ?? '—'}</span>

@@ -477,7 +477,7 @@ describe('integrations', () => {
     // rather than being told the feature does not exist.
     expect(response.status).toBe(503);
     expect(response.body.error.code).toBe('PROVIDER_NOT_CONFIGURED');
-    expect(response.body.error.details.missingEnv).toContain('META_APP_ID');
+    expect(response.body.error.details.missingEnv).toContain('INSTAGRAM_APP_ID');
     expect(response.body.error.details.readiness).toBe('NOT_CONFIGURED');
     expect(response.body.error.message).not.toMatch(/not implemented/i);
 

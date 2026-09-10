@@ -126,6 +126,11 @@ function mountCallback(input: { slug: string; platform: Platform; label: string 
  * keyed on FACEBOOK.
  */
 mountCallback({ slug: 'meta', platform: Platform.FACEBOOK, label: 'Meta' });
+/*
+ * Instagram Login, which is not Meta's callback: a different app product, a
+ * different token host, and a state bound to Platform.INSTAGRAM.
+ */
+mountCallback({ slug: 'instagram', platform: Platform.INSTAGRAM, label: 'Instagram' });
 mountCallback({ slug: 'tiktok', platform: Platform.TIKTOK, label: 'TikTok' });
 mountCallback({ slug: 'google', platform: Platform.GOOGLE_BUSINESS, label: 'Google' });
 mountCallback({ slug: 'youtube', platform: Platform.YOUTUBE, label: 'YouTube' });

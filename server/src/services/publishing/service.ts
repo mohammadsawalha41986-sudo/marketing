@@ -16,7 +16,7 @@
  * than a new branch through this logic.
  */
 
-import { AccountTokenStatus, ContentStatus, MediaType, Platform, PrismaClient, PublishingAttemptResult, PublishingJobStatus } from '@prisma/client';
+import { AccountTokenStatus, ContentStatus, ExternalAccountKind, MediaType, Platform, PrismaClient, PublishingAttemptResult, PublishingJobStatus } from '@prisma/client';
 
 import { decryptSecret } from '../../lib/crypto.js';
 import { readObject } from '../storage/objects.js';
@@ -79,6 +79,19 @@ const READINESS_MESSAGE: Record<ReadinessProblem, string> = {
 };
 
 /** The account this content will publish to, if there is one. */
+/**
+ * What a post is published to, per platform.
+ *
+ * A Page is the answer for Facebook, and was the only answer while Facebook was
+ * the only publisher wired to this resolver. It is not the answer for Instagram
+ * connected through Instagram Login: that connection has no Page at all, and
+ * its target is the Instagram Professional account itself. Ad accounts and
+ * businesses are never publish targets on any platform.
+ */
+const PUBLISH_TARGET_KIND: Partial<Record<Platform, ExternalAccountKind>> = {
+  [Platform.INSTAGRAM]: ExternalAccountKind.INSTAGRAM,
+};
+
 async function resolveAccount(input: {
   prisma: PrismaClient;
   organizationId: string;
@@ -89,9 +102,7 @@ async function resolveAccount(input: {
     where: {
       clientId: input.clientId,
       selected: true,
-      // A Page is what a Facebook post is published to; ad accounts and
-      // businesses are for the paid side and are never publish targets.
-      kind: 'PAGE',
+      kind: PUBLISH_TARGET_KIND[input.platform] ?? ExternalAccountKind.PAGE,
       integration: { organizationId: input.organizationId, platform: input.platform },
     },
     select: { id: true, externalId: true, name: true, accessTokenEnc: true, tokenStatus: true },
@@ -273,7 +284,7 @@ export async function testPublish(input: {
 
   const account = await prisma.integrationAccount.findUniqueOrThrow({
     where: { id: accountId },
-    select: { id: true, externalId: true, name: true, accessTokenEnc: true },
+    select: { id: true, externalId: true, name: true, accessTokenEnc: true, metadata: true },
   });
 
   if (!account.accessTokenEnc) {
@@ -293,6 +304,7 @@ export async function testPublish(input: {
       name: account.name,
       // Decrypted here, used once, never returned to the caller.
       accessToken: decryptSecret(account.accessTokenEnc),
+      metadata: (account.metadata ?? {}) as Record<string, unknown>,
     },
     fetchImpl: input.fetchImpl,
   });
@@ -404,7 +416,7 @@ export async function runJob(input: {
   const account = job.accountId
     ? await prisma.integrationAccount.findUnique({
         where: { id: job.accountId },
-        select: { externalId: true, name: true, accessTokenEnc: true },
+        select: { externalId: true, name: true, accessTokenEnc: true, metadata: true },
       })
     : null;
 
@@ -488,6 +500,7 @@ export async function runJob(input: {
       name: account.name,
       // Decrypted here and nowhere else, immediately before the call.
       accessToken: decryptSecret(account.accessTokenEnc),
+      metadata: (account.metadata ?? {}) as Record<string, unknown>,
     },
     fetchImpl,
   });

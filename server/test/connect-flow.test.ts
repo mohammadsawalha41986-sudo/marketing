@@ -127,7 +127,9 @@ describe('connection lifecycle', () => {
 
   it('documents the callback URL an app console must be given', () => {
     expect(callbackUrl(BASE, Platform.FACEBOOK)).toBe(`${BASE}/api/integrations/meta/callback`);
-    expect(callbackUrl(BASE, Platform.INSTAGRAM)).toBe(`${BASE}/api/integrations/meta/callback`);
+    // Instagram Login is its own product with its own callback; the Meta route
+    // above still serves the Facebook connection unchanged.
+    expect(callbackUrl(BASE, Platform.INSTAGRAM)).toBe(`${BASE}/api/integrations/instagram/callback`);
     expect(callbackUrl(BASE, Platform.GOOGLE_ADS)).toBe(`${BASE}/api/integrations/google/callback`);
     expect(callbackUrl(BASE, Platform.TIKTOK)).toBe(`${BASE}/api/integrations/tiktok/callback`);
   });
