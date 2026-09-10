@@ -31,6 +31,7 @@ import { Platform } from '@prisma/client';
 
 import { GRAPH_VERSION } from '../integrations/meta.js';
 import { instagramGraphBase, isInstagramLoginAccount } from '../integrations/instagram.js';
+import { missingDeliveryEnv } from '../storage/public-delivery.js';
 import type {
   FetchLike, PlatformPublisher, PublishError, PublishErrorKind, PublishRequest, PublishResult,
 } from './contract.js';
@@ -152,9 +153,20 @@ export const instagramPublisher: PlatformPublisher = {
       return refuse('Instagram requires an image. Attach one to this post.');
     }
     if (!image.publicUrl) {
+      /*
+       * Meta fetches the image itself, so an authenticated Marketing OS URL can
+       * never work — it answers 9004, "media could not be fetched". The public
+       * delivery copy is made just before publishing; where its host is not
+       * configured, say which variables are missing rather than leaving an
+       * operator to infer it from a provider error code.
+       */
+      const missing = missingDeliveryEnv();
       return refuse(
-        'Instagram fetches the image itself, so it needs a publicly reachable URL. ' +
-        'This creative is served from an authenticated endpoint and has no public URL yet.',
+        'Instagram fetches the image itself, so it needs a publicly reachable URL, and this creative is '
+        + 'served from an authenticated endpoint. '
+        + (missing.length > 0
+          ? `Set ${missing.join(', ')} so a public delivery copy can be made for publishing.`
+          : 'The public delivery copy could not be made for this image.'),
       );
     }
 

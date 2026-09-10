@@ -20,6 +20,7 @@ import { AccountTokenStatus, ContentStatus, MediaType, Platform, PrismaClient, P
 
 import { decryptSecret } from '../../lib/crypto.js';
 import { readObject } from '../storage/objects.js';
+import { deliveryConfig, publishableImageUrl } from '../storage/public-delivery.js';
 import { isRetryable, type FetchLike, type PublishMedia } from './contract.js';
 import { publisherFor } from './registry.js';
 import { missingPublishGrant, noTargetMessage, resolvePublishingTarget } from './target.js';
@@ -486,7 +487,7 @@ export async function runJob(input: {
 
   let media: PublishMedia[] = [];
   try {
-    media = await loadMedia(content.mediaLinks);
+    media = await loadMedia(content.mediaLinks, job.platform);
   } catch {
     return finishFailed({
       prisma, job, now, attemptId: attempt.id, retryable: false,
@@ -537,19 +538,56 @@ export async function runJob(input: {
   });
 }
 
+/**
+ * Platforms that fetch the image rather than receive it.
+ *
+ * Instagram's Content Publishing API is URL-only: it takes a link and Meta's
+ * own servers fetch it, so an authenticated Marketing OS endpoint can never
+ * satisfy it. Every other publisher here uploads the bytes and needs nothing
+ * public, which is why this is a list of one and not a default.
+ */
+const NEEDS_PUBLIC_URL: Platform[] = [Platform.INSTAGRAM];
+
 /** Read each image out of storage. Only images, and only the first, today. */
 async function loadMedia(
   links: Array<{ media: { type: MediaType; mimeType: string; filename: string; originalName: string } }>,
+  platform: Platform,
 ): Promise<PublishMedia[]> {
   const image = links.find((link) => link.media.type === MediaType.IMAGE);
   if (!image?.media.filename) return [];
 
+  const data = await readObject(image.media.filename);
+
+  /*
+   * A publishable copy, made only where the platform cannot work without one.
+   *
+   * The object of record does not move and its authenticated route does not
+   * change: this is a second, public copy of one image, created at the moment a
+   * post needs Meta to be able to fetch it. Where the delivery host is not
+   * configured, no URL is attached and the publisher refuses honestly rather
+   * than handing Meta a link it will fail to fetch.
+   */
+  let publicUrl: string | null = null;
+  if (NEEDS_PUBLIC_URL.includes(platform)) {
+    const config = deliveryConfig();
+    if (config) {
+      publicUrl = await publishableImageUrl({
+        storageKey: image.media.filename,
+        data,
+        mimeType: image.media.mimeType,
+        filename: image.media.originalName,
+        config,
+      });
+    }
+  }
+
   return [
     {
       kind: 'IMAGE',
-      data: await readObject(image.media.filename),
+      data,
       mimeType: image.media.mimeType,
       filename: image.media.originalName,
+      publicUrl,
     },
   ];
 }
