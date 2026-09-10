@@ -28,6 +28,7 @@ import { startDatabaseProbe } from './lib/db-health.js';
 import { prisma } from './lib/prisma.js';
 import { runtimeReport } from './lib/runtime-report.js';
 import { metaConfigDiagnostics } from './services/integrations/meta.js';
+import { tiktokConfigDiagnostics } from './services/integrations/tiktok.js';
 import { publishingTick } from './services/publishing/scheduler.js';
 import { ingestMetricsTick } from './services/social/metrics-ingest.js';
 import { pruneExpiredSessions } from './lib/session.js';
@@ -114,6 +115,34 @@ function metaAppIdSummary(): string {
 }
 
 /**
+ * The TikTok line of the startup banner.
+ *
+ * TikTok answers a client key it does not accept with "correct the following:
+ * client_key" and nothing else — no reason, no mention of which variable
+ * carries it, and only after the operator has been redirected away. This line
+ * puts what the server actually holds into our own logs at boot: enough of the
+ * key to compare against the console at a glance, its length, whether anything
+ * invisible rode along with it, and whether it is the sandbox key, which the
+ * live authorization endpoint refuses.
+ */
+function tiktokClientKeySummary(): string {
+  const tiktok = tiktokConfigDiagnostics();
+  if (!tiktok.clientKeyConfigured) return 'not configured (TIKTOK_CLIENT_KEY unset)';
+
+  const faults = [
+    tiktok.clientKeyCharsetValid ? null : 'contains characters a client key cannot have',
+    tiktok.clientKeyNeededCleaning ? 'arrived wrapped in quotes or whitespace (stripped)' : null,
+    tiktok.clientKeyLooksSandbox ? 'looks like a sandbox key, which cannot log in live' : null,
+    tiktok.redirectUriPathValid ? null : 'TIKTOK_REDIRECT_URI does not end at the callback route',
+  ].filter(Boolean);
+
+  const shape = `${tiktok.clientKeyLength} chars, ${tiktok.clientKeyRedacted}`;
+  return faults.length === 0
+    ? `configured (${shape})`
+    : `CHECK — ${faults.join('; ')} (${shape})`;
+}
+
+/**
  * The AI line of the startup banner.
  *
  * Names the mode *and* what to do about it, because this is the line an
@@ -154,6 +183,8 @@ const server = app.listen(env.PORT, '0.0.0.0', () => {
       // Shape only, never the value. This line is what turns a Facebook-side
       // PLATFORM_INVALID_APP_ID into something diagnosable from our own logs.
       `  meta app id    ${metaAppIdSummary()}`,
+      // The same, for the credential TikTok rejects by name and never explains.
+      `  tiktok key     ${tiktokClientKeySummary()}`,
       `  database       checking in the background…`,
       // The engine panics on a constrained host when it cannot spawn a thread,
       // and the Prisma error never names the budget that caused it.
