@@ -346,6 +346,8 @@ export class UploadPostError extends Error {
   readonly stage: UploadPostStage | null;
   /** Whether the API itself answered, as opposed to something in front of it. */
   readonly jsonBody: boolean;
+  /** A verdict stated at the throw site, where a status cannot imply one. */
+  readonly connectVerdict: UploadPostConnectFailure | null;
 
   constructor(
     status: number,
@@ -355,6 +357,15 @@ export class UploadPostError extends Error {
       endpoint?: string | null;
       stage?: UploadPostStage | null;
       jsonBody?: boolean;
+      /**
+       * The connect verdict, where the failure is not an HTTP status at all.
+       *
+       * A 2xx whose body does not carry what the step needed cannot be
+       * classified from a status — the status says it worked. Stating the
+       * verdict at the throw site is the only honest answer, and it is why this
+       * exists rather than a status invented to land on the right branch.
+       */
+      connect?: UploadPostConnectFailure;
     },
   ) {
     super(message);
@@ -364,6 +375,7 @@ export class UploadPostError extends Error {
     this.endpoint = options?.endpoint ?? null;
     this.stage = options?.stage ?? null;
     this.jsonBody = options?.jsonBody ?? true;
+    this.connectVerdict = options?.connect ?? null;
   }
 
   /**
@@ -375,6 +387,7 @@ export class UploadPostError extends Error {
    * give and says the request was refused, which is the truthful minimum.
    */
   get connectFailure(): UploadPostConnectFailure {
+    if (this.connectVerdict) return this.connectVerdict;
     if (!isConnectStage(this.stage)) return 'INVALID_REQUEST';
     return classifyConnectFailure({
       stage: this.stage as UploadPostStage,
@@ -490,11 +503,102 @@ function logUploadPostFailure(input: {
   );
 }
 
+/**
+ * The body a field is read from.
+ *
+ * Upload-Post's documented responses are flat — `{ success, profiles }`,
+ * `{ success, jwt, connection_url }` — and that is the shape read first. An
+ * `data` envelope is checked second because it is the one variation an API
+ * gateway commonly adds in front of an unchanged service, and checking two
+ * named places in a fixed order is deterministic. Nothing deeper is searched:
+ * hunting a URL through arbitrary nesting is the blind guessing that turns one
+ * wrong field into a redirect somewhere unintended.
+ */
+function bodies(payload: Record<string, unknown>): Record<string, unknown>[] {
+  const nested = payload.data;
+  return nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? [payload, nested as Record<string, unknown>]
+    : [payload];
+}
+
+/** The first non-empty string at any of these keys, in the order given. */
+function pickString(payload: Record<string, unknown>, keys: string[]): string | null {
+  for (const body of bodies(payload)) {
+    for (const key of keys) {
+      const value = body[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+  }
+  return null;
+}
+
+/** The first array at any of these keys, in the order given. */
+function pickArray(payload: Record<string, unknown>, keys: string[]): unknown[] | null {
+  for (const body of bodies(payload)) {
+    for (const key of keys) {
+      if (Array.isArray(body[key])) return body[key] as unknown[];
+    }
+  }
+  return null;
+}
+
+/**
+ * What a body *looks* like, with nothing of what it says.
+ *
+ * The names of keys and the types of their values, one level into objects and
+ * no further. That is enough to tell "the URL moved to another field" from
+ * "the response carried no link at all" — the two outcomes that otherwise cost
+ * a deploy each to tell apart — while being structurally incapable of printing
+ * a JWT, a token or a URL, because no value is ever read.
+ */
+function describeShape(value: unknown, depth = 0): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return `array[${value.length}]`;
+  if (typeof value !== 'object') return typeof value;
+  if (depth >= 1) return 'object';
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    .slice(0, 20)
+    .map(([key, item]) => `${key}:${describeShape(item, depth + 1)}`);
+  return `{${entries.join(' ')}}`;
+}
+
+/**
+ * A 2xx that did not carry what the step needed.
+ *
+ * The other half of the observability gap this module had: an HTTP failure
+ * logged a line, a successful response of the wrong shape logged nothing, so a
+ * Connect that failed here left no trace at all and the next diagnosis had to
+ * start from a deploy. One line, same prefix, and structure only.
+ */
+function logUploadPostShape(input: {
+  stage: UploadPostStage;
+  method: string;
+  path: string;
+  status: number;
+  contentType: string | null;
+  payload: Record<string, unknown>;
+  missing: string;
+}): void {
+  console.error(
+    `[upload-post] ${input.stage} ${input.method} ${input.path} unusable: HTTP ${input.status}`
+    + ` content-type=${input.contentType ?? 'none'} missing=${input.missing}`
+    + ` shape=${describeShape(input.payload).slice(0, 300)}`,
+  );
+}
+
+/** A successful call: what it said, and the facts a shape log needs. */
+export interface UploadPostResponse {
+  payload: Record<string, unknown>;
+  status: number;
+  contentType: string | null;
+}
+
 async function readJson(
   response: Awaited<ReturnType<UploadPostFetch>>,
   context: string,
   call?: { method: string; path: string; apiKey: string; stage: UploadPostStage },
-): Promise<Record<string, unknown>> {
+): Promise<UploadPostResponse> {
   const text = await response.text();
 
   /*
@@ -559,7 +663,7 @@ async function readJson(
       { endpoint: call?.path ?? null, stage: call?.stage ?? null, jsonBody: true },
     );
   }
-  return payload;
+  return { payload, status: response.status, contentType };
 }
 
 async function request(input: {
@@ -575,7 +679,7 @@ async function request(input: {
   fetchImpl: UploadPostFetch;
   context: string;
   timeoutMs?: number;
-}): Promise<Record<string, unknown>> {
+}): Promise<UploadPostResponse> {
   const url = new URL(`${BASE_URL}${input.path}`);
   for (const [key, value] of Object.entries(input.query ?? {})) url.searchParams.set(key, value);
 
@@ -645,7 +749,7 @@ export async function listProfiles(input: {
   config: UploadPostConfig;
   fetchImpl: UploadPostFetch;
 }): Promise<UploadPostProfile[]> {
-  const payload = await request({
+  const response = await request({
     config: input.config,
     path: '/uploadposts/users',
     method: 'GET',
@@ -654,8 +758,37 @@ export async function listProfiles(input: {
     stage: 'LIST_PROFILES',
   });
 
-  const profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
-  return profiles
+  const rows = pickArray(response.payload, ['profiles']);
+  if (!rows) {
+    /*
+     * A 2xx with no `profiles` array at all. Not treated as "no profiles":
+     * that answer sends Connect on to create a profile that may already exist,
+     * and the real cause — a response shape this code cannot read — would never
+     * be written down. Structure only, then a verdict stated outright, because
+     * a 200 cannot imply one.
+     */
+    logUploadPostShape({
+      stage: 'LIST_PROFILES',
+      method: 'GET',
+      path: '/uploadposts/users',
+      status: response.status,
+      contentType: response.contentType,
+      payload: response.payload,
+      missing: 'profiles',
+    });
+    throw new UploadPostError(
+      502,
+      'Upload-Post profiles: the response carried no profile list.',
+      {
+        endpoint: '/uploadposts/users',
+        stage: 'LIST_PROFILES',
+        jsonBody: true,
+        connect: 'INVALID_PROVIDER_RESPONSE',
+      },
+    );
+  }
+
+  return rows
     .map((row) => toProfile((row ?? {}) as Record<string, unknown>))
     .filter((profile): profile is UploadPostProfile => profile !== null);
 }
@@ -725,6 +858,32 @@ export async function deleteProfile(input: {
 
 // -------------------------------------------------------------- connection
 
+/** The one endpoint that mints a hosted linking page. Named once, used thrice. */
+const LINK_PATH = '/uploadposts/users/generate-jwt';
+
+/**
+ * Upload-Post's own domain, and only over HTTPS.
+ *
+ * The hosted linking page is served from Upload-Post (`api.`, `app.` and
+ * `www.` all appear in their own clients), so the check is the registrable
+ * domain rather than one hostname — pinning a single host would break the day
+ * they move the page, and accepting any host would make a changed field an open
+ * redirect for a browser this response is about to send there.
+ */
+const LINK_HOST = 'upload-post.com';
+
+function isUploadPostLink(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === 'https:'
+      && (parsed.hostname === LINK_HOST || parsed.hostname.endsWith(`.${LINK_HOST}`))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export interface ConnectionLink {
   /** Where the operator links their social accounts. Short-lived. */
   url: string;
@@ -750,9 +909,9 @@ export async function connectionUrl(input: {
   platforms?: string[];
   fetchImpl: UploadPostFetch;
 }): Promise<ConnectionLink> {
-  const payload = await request({
+  const response = await request({
     config: input.config,
-    path: '/uploadposts/users/generate-jwt',
+    path: LINK_PATH,
     method: 'POST',
     json: {
       username: input.username,
@@ -764,11 +923,73 @@ export async function connectionUrl(input: {
     stage: 'GENERATE_LINK',
   });
 
-  const url = payload.connection_url;
-  if (typeof url !== 'string' || !url.trim()) {
-    throw new UploadPostError(502, 'Upload-Post connection link: no connection URL was returned.');
+  /*
+   * The documented field is `connection_url` (the official client types the
+   * response as `{ success, jwt?, connection_url? }`, both optional). `access_url`
+   * and `url` are accepted as alternative spellings, and each is looked for in
+   * the flat body first and a `data` envelope second — a fixed, short,
+   * ordered search rather than a hunt through arbitrary nesting. Whichever
+   * matches is then checked to be an Upload-Post HTTPS address before a browser
+   * is sent to it, so a wrong field cannot become a redirect somewhere else.
+   *
+   * This is the defect the live Connect failed on: the URL was read only from
+   * the flat `connection_url`, and a 2xx that did not carry it there threw an
+   * error with no stage attached, which `connectFailure` could only report as
+   * "Upload-Post rejected the connection request" — while logging nothing at
+   * all, because the call itself had succeeded.
+   */
+  const url = pickString(response.payload, ['connection_url', 'access_url', 'url']);
+  if (!url) {
+    logUploadPostShape({
+      stage: 'GENERATE_LINK',
+      method: 'POST',
+      path: LINK_PATH,
+      status: response.status,
+      contentType: response.contentType,
+      payload: response.payload,
+      missing: 'connection_url',
+    });
+    throw new UploadPostError(
+      502,
+      'Upload-Post connection link: the response carried no linking URL.',
+      {
+        endpoint: LINK_PATH,
+        stage: 'GENERATE_LINK',
+        jsonBody: true,
+        connect: 'INVALID_PROVIDER_RESPONSE',
+      },
+    );
   }
-  return { url: url.trim() };
+
+  if (!isUploadPostLink(url)) {
+    /*
+     * A browser is about to be sent here. A link that is not HTTPS, or not on
+     * Upload-Post's own domain, is refused rather than followed: the operator
+     * is redirected by this response, and a field that changed meaning must
+     * never become an open redirect. The URL itself is not logged.
+     */
+    logUploadPostShape({
+      stage: 'GENERATE_LINK',
+      method: 'POST',
+      path: LINK_PATH,
+      status: response.status,
+      contentType: response.contentType,
+      payload: response.payload,
+      missing: 'connection_url(not an https upload-post.com URL)',
+    });
+    throw new UploadPostError(
+      502,
+      'Upload-Post connection link: the linking URL was not an Upload-Post address.',
+      {
+        endpoint: LINK_PATH,
+        stage: 'GENERATE_LINK',
+        jsonBody: true,
+        connect: 'INVALID_PROVIDER_RESPONSE',
+      },
+    );
+  }
+
+  return { url };
 }
 
 // --------------------------------------------------------------- discovery
@@ -1014,7 +1235,7 @@ export async function publish(input: UploadPostPublishInput): Promise<UploadPost
     path = '/upload_text';
   }
 
-  const payload = await request({
+  const response = await request({
     config: input.config,
     path,
     method: 'POST',
@@ -1026,6 +1247,7 @@ export async function publish(input: UploadPostPublishInput): Promise<UploadPost
     timeoutMs: input.timeoutMs,
   });
 
+  const { payload } = response;
   const platforms = readPlatformResults(payload);
 
   /*
@@ -1057,7 +1279,7 @@ export async function uploadStatus(input: {
   fetchImpl: UploadPostFetch;
   timeoutMs?: number;
 }): Promise<{ status: string | null; platforms: UploadPostPublishResult['platforms'] }> {
-  const payload = await request({
+  const response = await request({
     config: input.config,
     path: '/uploadposts/status',
     method: 'GET',
@@ -1068,6 +1290,7 @@ export async function uploadStatus(input: {
     timeoutMs: input.timeoutMs,
   });
 
+  const { payload } = response;
   const status = typeof payload.status === 'string' ? payload.status : null;
   return { status, platforms: readPlatformResults(payload) };
 }

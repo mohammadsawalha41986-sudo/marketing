@@ -34,6 +34,7 @@ import {
 
 import { createTenant, prisma, resetDatabase, type Tenant } from './helpers.js';
 import {
+  UploadPostError,
   classifyUploadPostError,
   discoverFromProfile,
   platformForUploadPost,
@@ -77,6 +78,10 @@ function uploadPostStub(script: {
   upload?: { status?: number; body: unknown };
   status?: { body: unknown };
   connectionUrl?: string;
+  /** The whole generate-jwt body, for asserting a shape rather than a value. */
+  jwtBody?: unknown;
+  /** The whole GET /uploadposts/users body, for the same reason. */
+  usersBody?: unknown;
 } = {}) {
   const calls: Call[] = [];
   const profiles = script.profiles ? [...script.profiles] : [];
@@ -99,6 +104,7 @@ function uploadPostStub(script: {
     });
 
     if (url.includes('/uploadposts/users/generate-jwt')) {
+      if (script.jwtBody !== undefined) return answer(script.jwtBody);
       return answer({
         success: true,
         jwt: 'jwt-not-a-real-token',
@@ -118,6 +124,7 @@ function uploadPostStub(script: {
         if (index >= 0) profiles.splice(index, 1);
         return answer({ success: true });
       }
+      if (script.usersBody !== undefined) return answer(script.usersBody);
       return answer({ success: true, profiles });
     }
     if (url.includes('/uploadposts/status')) {
@@ -1362,8 +1369,222 @@ describe('upload-post', () => {
     expect(platforms).not.toContain(Platform.GOOGLE_ADS);
     expect(platforms).not.toContain(Platform.UPLOAD_POST);
   });
-});
 
+  // ------------------------------- a 2xx that did not carry what Connect needed
+
+  /** Connect for `alpha`, against a scripted Upload-Post. */
+  const connectWith = (script: Parameters<typeof uploadPostStub>[0]) => {
+    const stub = uploadPostStub(script);
+    return {
+      stub,
+      run: () => beginUploadPostConnection({
+        prisma,
+        organizationId: alpha.organizationId,
+        clientId: alpha.clientId,
+        returnUrl: `${BASE}/app/integrations`,
+        fetchImpl: stub.fetchImpl,
+      }),
+    };
+  };
+
+  it('reads the linking URL from the field the official client documents', async () => {
+    const username = profileUsernameFor(alpha.clientId);
+    const { run } = connectWith({
+      profiles: [{ username, social_accounts: {} }],
+      // `{ success, jwt?, connection_url? }` — the shape upload-post@2.14.0 types.
+      jwtBody: { success: true, jwt: 'jwt-not-a-real-token', connection_url: 'https://app.upload-post.com/c/abc' },
+    });
+
+    await expect(run()).resolves.toMatchObject({ redirectTo: 'https://app.upload-post.com/c/abc' });
+  });
+
+  it('reads it from a data envelope, or from the "url" spelling', async () => {
+    /*
+     * Two shapes rather than a search: the flat body and a `data` envelope, and
+     * `connection_url` or `url` within each. Deterministic, and the most a
+     * response may vary before it is reported as unreadable instead of guessed
+     * at.
+     */
+    const username = profileUsernameFor(alpha.clientId);
+
+    for (const body of [
+      { success: true, data: { connection_url: 'https://app.upload-post.com/c/env' } },
+      { success: true, url: 'https://app.upload-post.com/c/env' },
+      { success: true, data: { url: 'https://app.upload-post.com/c/env' } },
+      { success: true, access_url: 'https://app.upload-post.com/c/env' },
+    ]) {
+      const { run } = connectWith({ profiles: [{ username, social_accounts: {} }], jwtBody: body });
+      await expect(run()).resolves.toMatchObject({ redirectTo: 'https://app.upload-post.com/c/env' });
+    }
+  });
+
+  it('reports a 2xx with no linking URL as unreadable, naming the stage', async () => {
+    /*
+     * The live defect, pinned.
+     *
+     * generate-jwt answered 200 with JSON that carried no `connection_url`. The
+     * throw carried no stage, so the connect verdict fell through to
+     * INVALID_REQUEST — "Upload-Post rejected the connection request" — about a
+     * call Upload-Post had accepted, and `readJson` logged nothing because
+     * nothing had failed at the HTTP level. The operator saw a refusal that had
+     * not happened, and the server had no record of the attempt at all.
+     */
+    const username = profileUsernameFor(alpha.clientId);
+    const { run } = connectWith({
+      profiles: [{ username, social_accounts: {} }],
+      jwtBody: { success: true, jwt: 'jwt-not-a-real-token' },
+    });
+
+    const error = await run().catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(UploadPostError);
+    const failure = error as UploadPostError;
+
+    expect(failure.stage).toBe('GENERATE_LINK');
+    expect(failure.connectFailure).toBe('INVALID_PROVIDER_RESPONSE');
+    expect(failure.connectExplanation).not.toMatch(/rejected the connection request/);
+    // Never the publishing verdict, and never a post.
+    expect(failure.connectFailure).not.toBe('INVALID_MEDIA');
+    expect(failure.connectExplanation).not.toMatch(/\bthe post\b|will be retried|publish/i);
+  });
+
+  it('logs the shape of an unusable 2xx, and nothing that is in it', async () => {
+    const username = profileUsernameFor(alpha.clientId);
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
+
+    try {
+      const { run } = connectWith({
+        profiles: [{ username, social_accounts: {} }],
+        jwtBody: { success: true, jwt: 'jwt-not-a-real-token', expires_at: '2026-01-01' },
+      });
+      await run().catch(() => undefined);
+    } finally {
+      console.error = original;
+    }
+
+    const line = logged.find((entry) => entry.includes('[upload-post]'));
+    expect(line).toBeDefined();
+
+    // Enough to diagnose without another deploy: the stage, the call, the
+    // status, the content type, what was missing, and the key names present.
+    expect(line).toContain('GENERATE_LINK');
+    expect(line).toContain('POST /uploadposts/users/generate-jwt');
+    expect(line).toContain('HTTP 200');
+    expect(line).toContain('missing=connection_url');
+    expect(line).toContain('jwt:string');
+    expect(line).toContain('expires_at:string');
+
+    // And none of the values behind those names.
+    expect(line).not.toContain('jwt-not-a-real-token');
+    expect(line).not.toContain(API_KEY);
+    expect(line).not.toMatch(/Apikey|authorization/i);
+    expect(line).not.toContain('2026-01-01');
+  });
+
+  it('refuses a linking URL that is not an Upload-Post https address', async () => {
+    /*
+     * This response redirects a browser. A field that changed meaning — or a
+     * provider account that was tampered with — must not become an open
+     * redirect, so the destination is checked before it is handed over.
+     */
+    const username = profileUsernameFor(alpha.clientId);
+
+    for (const url of [
+      'https://evil.example.com/c/abc',
+      'http://app.upload-post.com/c/abc',
+      'https://upload-post.com.evil.example/c/abc',
+      'javascript:alert(1)',
+    ]) {
+      const { run } = connectWith({
+        profiles: [{ username, social_accounts: {} }],
+        jwtBody: { success: true, connection_url: url },
+      });
+
+      const error = await run().catch((thrown: unknown) => thrown) as UploadPostError;
+      expect(error).toBeInstanceOf(UploadPostError);
+      expect(error.connectFailure).toBe('INVALID_PROVIDER_RESPONSE');
+    }
+  });
+
+  it('accepts Upload-Post\'s own hosts, including one it has not moved to yet', async () => {
+    const username = profileUsernameFor(alpha.clientId);
+
+    for (const url of ['https://app.upload-post.com/c/a', 'https://upload-post.com/c/a', 'https://www.upload-post.com/c/a']) {
+      const { run } = connectWith({
+        profiles: [{ username, social_accounts: {} }],
+        jwtBody: { success: true, connection_url: url },
+      });
+      await expect(run()).resolves.toMatchObject({ redirectTo: url });
+    }
+  });
+
+  it('reports a profile list with no profiles array rather than creating a duplicate', async () => {
+    /*
+     * The same class of defect one stage earlier. Reading "no profiles" out of a
+     * body this code cannot parse would send Connect on to create a profile the
+     * restaurant may already have — and would lose the accounts linked to it.
+     */
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
+
+    let error: unknown;
+    let stub: ReturnType<typeof uploadPostStub>;
+    try {
+      const connect = connectWith({ usersBody: { success: true, items: [] } });
+      stub = connect.stub;
+      error = await connect.run().catch((thrown: unknown) => thrown);
+    } finally {
+      console.error = original;
+    }
+
+    expect(error).toBeInstanceOf(UploadPostError);
+    expect((error as UploadPostError).stage).toBe('LIST_PROFILES');
+    expect((error as UploadPostError).connectFailure).toBe('INVALID_PROVIDER_RESPONSE');
+    // No profile was created off the back of a body that could not be read.
+    expect(stub!.calls.some((call) => call.method === 'POST' && call.url.includes('/uploadposts/users') && !call.url.includes('generate-jwt'))).toBe(false);
+    expect(logged.some((entry) => entry.includes('LIST_PROFILES') && entry.includes('missing=profiles'))).toBe(true);
+  });
+
+  it('creates the profile when there is none, then asks for the link', async () => {
+    const { stub, run } = connectWith({ profiles: [] });
+    await expect(run()).resolves.toMatchObject({ profile: profileUsernameFor(alpha.clientId) });
+
+    const paths = stub.calls.map((call) => `${call.method} ${new URL(call.url).pathname}`);
+    expect(paths).toEqual([
+      'GET /api/uploadposts/users',
+      'POST /api/uploadposts/users',
+      'GET /api/uploadposts/users',
+      'POST /api/uploadposts/users/generate-jwt',
+    ]);
+  });
+
+  it('never answers any Connect stage with a publishing verdict', async () => {
+    /*
+     * The invariant, over every failure this flow can produce rather than the
+     * one that was reported: no stage may return INVALID_MEDIA, and no stage
+     * may speak about a post.
+     */
+    const username = profileUsernameFor(alpha.clientId);
+    const scripts: Array<Parameters<typeof uploadPostStub>[0]> = [
+      { profiles: [{ username, social_accounts: {} }], jwtBody: { success: true } },
+      { profiles: [{ username, social_accounts: {} }], jwtBody: { success: true, connection_url: 'https://evil.example.com/x' } },
+      { usersBody: { success: true, items: [] } },
+      { usersBody: { success: true, profiles: [], media: 'video files exceed the duration' } },
+    ];
+
+    for (const script of scripts) {
+      const { run } = connectWith(script);
+      const error = await run().catch((thrown: unknown) => thrown);
+      if (!(error instanceof UploadPostError)) continue;
+      expect(error.connectFailure).not.toBe('INVALID_MEDIA');
+      expect(error.connectExplanation).not.toMatch(/media|video|duration/i);
+      expect(error.connectExplanation).not.toMatch(/\bthe post\b|will be retried/i);
+    }
+  });
+
+});
 /**
  * Drive one post all the way through: connect, attach, author, publish.
  *
