@@ -29,6 +29,7 @@ import { prisma } from './lib/prisma.js';
 import { runtimeReport } from './lib/runtime-report.js';
 import { metaConfigDiagnostics } from './services/integrations/meta.js';
 import { tiktokConfigDiagnostics } from './services/integrations/tiktok.js';
+import { uploadPostConfigured } from './services/integrations/upload-post.js';
 import { publishingTick } from './services/publishing/scheduler.js';
 import { ingestMetricsTick } from './services/social/metrics-ingest.js';
 import { pruneExpiredSessions } from './lib/session.js';
@@ -185,6 +186,16 @@ const server = app.listen(env.PORT, '0.0.0.0', () => {
       `  meta app id    ${metaAppIdSummary()}`,
       // The same, for the credential TikTok rejects by name and never explains.
       `  tiktok key     ${tiktokClientKeySummary()}`,
+      /*
+       * Presence only — no length, no fragment, no value.
+       *
+       * Upload-Post's key is the deployment's single publishing credential, and
+       * the one thing an operator needs from a log is whether the container can
+       * see it at all: without it every routed publish refuses, and with a
+       * stale one every routed publish 401s. Neither question needs a
+       * character of the key to answer, so this line prints none.
+       */
+      `  upload-post    ${uploadPostConfigured() ? 'configured' : 'not configured (UPLOAD_POST_API_KEY unset)'}`,
       `  database       checking in the background…`,
       // The engine panics on a constrained host when it cannot spawn a thread,
       // and the Prisma error never names the budget that caused it.
