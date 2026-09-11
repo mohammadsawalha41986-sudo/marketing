@@ -87,6 +87,18 @@ enum Platform {
   /// and existing rows hold the values above; adding in the middle would rewrite
   /// their ordering.
   YOUTUBE
+
+  /// Not a social network — a publishing *route* to several of them.
+  ///
+  /// Upload-Post fans one post out to TikTok, Instagram, Facebook, LinkedIn, X,
+  /// YouTube and Google Business Profile through a single API. It earns a
+  /// Platform value because a connection to it is an `Integration` like any
+  /// other: one row per client, holding that client's own Upload-Post profile
+  /// and the social accounts linked to it, discovered and attached exactly as a
+  /// provider's assets are. Nothing is ever *authored* for this platform —
+  /// content keeps naming the real network it is going to — so it never appears
+  /// as a `Content.platform`, only as the integration a post was routed through.
+  UPLOAD_POST
 }
 
 /// Campaign objectives.

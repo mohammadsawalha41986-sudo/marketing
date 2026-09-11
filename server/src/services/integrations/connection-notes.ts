@@ -28,6 +28,7 @@ import { targetNounFor } from '../publishing/target.js';
 
 /** What discovery attaches on this platform, plural, as an operator says it. */
 const DISCOVERED_NOUN: Record<Platform, string> = {
+  [Platform.UPLOAD_POST]: 'linked social accounts',
   [Platform.FACEBOOK]: 'Facebook Pages and ad accounts',
   [Platform.INSTAGRAM]: 'Instagram Professional accounts',
   [Platform.TIKTOK]: 'TikTok accounts',

@@ -114,6 +114,12 @@ export interface PublishRequest {
     /**
      * Decrypted immediately before the call and never held longer.
      * Publishers must not log it, echo it, or put it in a PublishError.
+     *
+     * Empty for a route whose credential belongs to the deployment rather than
+     * to the account — Upload-Post authorises with one API key and addresses
+     * the account by name under a profile, so there is nothing per-account to
+     * decrypt. Such a publisher must not read this field; one that did would
+     * fail naming a missing token instead of the real problem.
      */
     accessToken: string;
     /**
@@ -140,6 +146,19 @@ export interface PublishRequest {
    * account and are never addressable from a post's config.
    */
   config?: Record<string, unknown>;
+  /**
+   * A stable identifier for *this post*, for providers that deduplicate.
+   *
+   * The same value on every attempt at one post, and different for every other
+   * post — the durable row id of the job or platform post, never a fresh
+   * random. Upload-Post collapses two uploads carrying the same key within 24
+   * hours into a single post, which is what makes a retry safe there; a key
+   * regenerated per attempt would defeat it exactly when it is needed.
+   *
+   * Optional because a direct adapter whose provider offers no such mechanism
+   * has no use for it, not because a caller may omit it.
+   */
+  idempotencyKey?: string;
 }
 
 export type PublishResult =

@@ -128,6 +128,22 @@ const COPY: Partial<Record<Platform, Partial<AccountPickerCopy>>> = {
     empty: 'TikTok returned no account for this login.',
     kindOrder: ['PROFILE'],
   },
+  UPLOAD_POST: {
+    provider: 'Upload-Post',
+    intro: () =>
+      'These are the social accounts linked to this restaurant\'s Upload-Post profile. Attach the ones it '
+      + 'should publish to — a network you also connect directly is published to directly, never twice.',
+    empty:
+      'No social accounts are linked to this restaurant\'s Upload-Post profile yet. Press Connect to open '
+      + 'Upload-Post and link them, then refresh.',
+    /*
+     * Every network at once, which is what makes this connection different from
+     * every other: one profile holds Instagram, TikTok, Facebook and the rest
+     * side by side, so the list is grouped by the kind each network maps onto
+     * and ordered the way an operator thinks about them.
+     */
+    kindOrder: ['INSTAGRAM', 'PAGE', 'PROFILE', 'BUSINESS'],
+  },
   LINKEDIN: {
     provider: 'LinkedIn',
     intro: (accountName) =>

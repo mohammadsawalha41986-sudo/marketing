@@ -13,6 +13,8 @@
 
 import { Platform } from '@prisma/client';
 
+import { routablePlatforms } from '../integrations/upload-post.js';
+
 import type { PlatformPublisher, PublishRequest, PublishResult } from './contract.js';
 import { facebookPublisher } from './facebook.js';
 import { googleBusinessPublisher } from './google-business.js';
@@ -20,6 +22,8 @@ import { instagramPublisher } from './instagram.js';
 import { linkedInPublisher } from './linkedin.js';
 import { tiktokPublisher } from './tiktok.js';
 import { youtubePublisher } from './youtube.js';
+import { uploadPostPublisher } from './upload-post.js';
+import type { PublishRoute } from './route.js';
 
 /** A publisher that refuses, and says why, for a platform with no adapter yet. */
 function notImplemented(platform: Platform, label: string): PlatformPublisher {
@@ -65,13 +69,48 @@ const PUBLISHERS: Partial<Record<Platform, PlatformPublisher>> = {
   [Platform.X]: notImplemented(Platform.X, 'X'),
 };
 
-export function publisherFor(platform: Platform): PlatformPublisher | null {
+/**
+ * The Upload-Post route's publisher for each network, built once.
+ *
+ * Bound per platform for the same reason the direct table is keyed by one:
+ * everything downstream takes a `PlatformPublisher` for a single network, and a
+ * publisher that had to be told which network at call time would be one more
+ * thing the service could get wrong.
+ */
+const UPLOAD_POST_PUBLISHERS = new Map<Platform, PlatformPublisher>(
+  routablePlatforms().map((platform) => [platform, uploadPostPublisher(platform)]),
+);
+
+/**
+ * The publisher for one network, on one route.
+ *
+ * `route` defaults to DIRECT so every existing caller keeps its exact previous
+ * behaviour: the direct table is consulted, and Upload-Post is reachable only
+ * by asking for it. A caller that resolves a route passes it; one that does not
+ * is asking the question it always asked.
+ */
+export function publisherFor(platform: Platform, route: PublishRoute = 'DIRECT'): PlatformPublisher | null {
+  if (route === 'UPLOAD_POST') return UPLOAD_POST_PUBLISHERS.get(platform) ?? null;
   return PUBLISHERS[platform] ?? null;
 }
 
-/** The platforms an operator can actually schedule organic content to today. */
+/**
+ * The platforms an operator can actually schedule organic content to today.
+ *
+ * Direct adapters *and* the networks Upload-Post can route to when it is
+ * configured: from the operator's side "can I schedule a post to X" has one
+ * answer, and which connection carries it is the route resolver's business. A
+ * deployment with no Upload-Post key contributes nothing here, because
+ * `canPublish` on those publishers answers for the deployment.
+ */
 export function publishablePlatforms(): Platform[] {
-  return Object.values(PUBLISHERS)
+  const direct = Object.values(PUBLISHERS)
     .filter((publisher): publisher is PlatformPublisher => Boolean(publisher?.canPublish))
     .map((publisher) => publisher.platform);
+
+  const routed = [...UPLOAD_POST_PUBLISHERS.values()]
+    .filter((publisher) => publisher.canPublish)
+    .map((publisher) => publisher.platform);
+
+  return [...new Set([...direct, ...routed])];
 }

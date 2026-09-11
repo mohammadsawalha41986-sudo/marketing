@@ -88,7 +88,13 @@ export type Role = 'SUPER_ADMIN' | 'AGENCY_ADMIN' | 'AGENCY_STAFF' | 'CLIENT_ADM
 export type Language = 'AR' | 'EN';
 export type Platform =
   | 'FACEBOOK' | 'INSTAGRAM' | 'TIKTOK' | 'SNAPCHAT'
-  | 'GOOGLE_ADS' | 'GOOGLE_BUSINESS' | 'X' | 'LINKEDIN' | 'YOUTUBE';
+  | 'GOOGLE_ADS' | 'GOOGLE_BUSINESS' | 'X' | 'LINKEDIN' | 'YOUTUBE'
+  /*
+   * A publishing route to several of the networks above, not a network itself.
+   * It never appears as a post's platform — content keeps naming where it is
+   * going — only as the connection a post was routed through.
+   */
+  | 'UPLOAD_POST';
 export type CampaignStatus = 'DRAFT' | 'SCHEDULED' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'CANCELLED';
 export type ContentStatus =
   | 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED'

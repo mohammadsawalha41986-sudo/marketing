@@ -20,7 +20,7 @@
  */
 
 import {
-  AccountTokenStatus, ExternalAccountKind, IntegrationStatus, Platform, Prisma, SyncStatus,
+  AccountTokenStatus, IntegrationStatus, Platform, Prisma, SyncStatus,
 } from '@prisma/client';
 
 import { prisma } from '../../lib/prisma.js';
@@ -46,6 +46,7 @@ import * as googleAds from './google-ads.js';
 import * as youtube from './youtube.js';
 import * as linkedin from './linkedin.js';
 import { discoveryNote, missingGrantNote, noUsableCredentialNote } from './connection-notes.js';
+import { KIND_FOR_DISCOVERY } from './account-kinds.js';
 
 /** Where each provider's callback lands. Documented so app consoles match. */
 export function callbackPath(platform: Platform): string {
@@ -396,13 +397,9 @@ export interface CallbackResult {
   discovered: DiscoveredAccount[];
 }
 
-const KIND: Record<DiscoveredAccount['kind'], ExternalAccountKind> = {
-  BUSINESS: ExternalAccountKind.BUSINESS,
-  PAGE: ExternalAccountKind.PAGE,
-  INSTAGRAM: ExternalAccountKind.INSTAGRAM,
-  AD_ACCOUNT: ExternalAccountKind.AD_ACCOUNT,
-  PROFILE: ExternalAccountKind.PROFILE,
-};
+// Shared with the Upload-Post flow, which discovers the same kinds through a
+// lifecycle that is not OAuth. See `account-kinds.ts`.
+const KIND = KIND_FOR_DISCOVERY;
 
 /**
  * Handle the provider's redirect back.
