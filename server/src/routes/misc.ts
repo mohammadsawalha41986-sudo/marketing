@@ -16,7 +16,7 @@ import { validateBody, validateParams, validateQuery } from '../middleware/valid
 import { idParam, pageResult, paginate, paginationQuery } from '../lib/http.js';
 import { assertWritable, orgId, resolveClientId } from '../lib/scope.js';
 import {
-  adapterFor, providerReadiness, allAdapters, supportsOAuth,
+  adapterFor, connectable, providerReadiness, allAdapters, supportsOAuth,
   ProviderNotConfiguredError, ProviderNotImplementedError,
 } from '../services/integrations/index.js';
 import { beginAuthorization, bindProvider, selectAccounts } from '../services/integrations/connect-flow.js';
@@ -134,7 +134,17 @@ integrationsRouter.get(
            * rather than showing a Connect button that returns 501.
            */
           implementation: adapter.implementation,
-          canConnect: supportsOAuth(adapter) && readiness.state === 'READY',
+          /*
+           * How this provider connects, and whether it can right now.
+           *
+           * `canConnect` asked `supportsOAuth` until Upload-Post — the first
+           * provider that connects without OAuth — was reported as unbuildable
+           * and had its Connect button disabled despite being implemented and
+           * configured. The question meant here has always been "can this be
+           * connected", not "is this OAuth", and now it asks that.
+           */
+          connectMethod: adapter.connectMethod,
+          canConnect: connectable(adapter) && readiness.state === 'READY',
           /*
            * Whether a *post* can be sent, as distinct from `capabilities.publish`.
            * Google Ads publishes advertisements and has no organic publisher at
@@ -169,6 +179,206 @@ integrationsRouter.get(
     });
 
     res.json({ items });
+  }),
+);
+
+/*
+ * Declared ABOVE the generic `/:clientId/:platform/connect` below, and it
+ * has to be.
+ *
+ * Express matches in registration order, and `/:clientId/:platform/connect`
+ * happily matches `/<client>/upload-post/connect` with `platform` bound to
+ * the literal string "upload-post". Registered after it, these routes were
+ * unreachable: pressing Connect answered 400 "Invalid path parameters,
+ * expected FACEBOOK | INSTAGRAM | ..." — a validation error about an enum
+ * the operator never chose, from a route they never meant to call.
+ *
+ * The same shadowing the social router already carries a note about, for the
+ * same reason: a literal segment that could also bind a parameter must be
+ * declared first or it is decoration.
+ */
+// ------------------------------------------------------ upload-post
+
+/**
+ * Upload-Post's own connect surface.
+ *
+ * Separate endpoints rather than the generic `/:clientId/:platform/connect`,
+ * because Upload-Post is not an OAuth provider: there is no authorize URL to
+ * redirect to, no code to exchange and no per-client token to store. The
+ * generic route correctly refuses it (`supportsOAuth` is false for this
+ * adapter) and these take over.
+ *
+ * Every one of them derives the profile name from the *path's* client id, which
+ * is itself checked against the caller's organisation first. No route here
+ * accepts a profile name, and that is the whole tenant boundary: an operator
+ * cannot name another restaurant's profile, and a browser returning from
+ * Upload-Post cannot cause this server to read one.
+ *
+ * The API key appears in no request and no response. What the browser receives
+ * is a hosted linking URL Upload-Post minted for one profile.
+ */
+const uploadPostFetch = fetch as unknown as UploadPostFetch;
+
+/** The client, if it belongs to this actor's organisation. 404 otherwise. */
+async function ownedClient(actor: ReturnType<typeof actorOf>, clientId: string) {
+  const client = await prisma.client.findFirst({
+    where: { id: clientId, organizationId: orgId(actor) },
+    select: { id: true },
+  });
+  if (!client) throw notFound('Client');
+  return client;
+}
+
+/** Upload-Post failures are the operator's or the deployment's, never a 500. */
+function rethrowUploadPost(error: unknown): never {
+  if (error instanceof UploadPostError) {
+    /*
+     * The connect explanation, never the raw message: both are written for a
+     * person and carry no key material, but only one of them is about the thing
+     * the operator was actually doing. The publishing wording leaked here and
+     * told someone pressing Connect that "the post will be retried".
+     */
+    throw badRequest(error.connectExplanation);
+  }
+  if (error instanceof ProviderNotConfiguredError) throw badRequest(error.message);
+  throw error;
+}
+
+integrationsRouter.post(
+  '/:clientId/upload-post/connect',
+  requireAgency,
+  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+    const { clientId } = req.params as unknown as { clientId: string };
+    await ownedClient(actor, clientId);
+
+    try {
+      const result = await beginUploadPostConnection({
+        prisma,
+        organizationId: orgId(actor),
+        clientId,
+        /*
+         * Where Upload-Post sends the operator when they are done. It carries
+         * the client so the page can finish the connection for the restaurant
+         * that started it, and nothing else — no token, no profile name, and
+         * nothing the server will trust without re-deriving it.
+         */
+        returnUrl: `${env.APP_URL}/app/integrations?uploadPost=linked&client=${encodeURIComponent(clientId)}`,
+        fetchImpl: uploadPostFetch,
+      });
+
+      await recordAudit({
+        actor, action: 'integration.connect', entity: 'Integration', entityId: result.integrationId,
+        meta: { platform: Platform.UPLOAD_POST }, ip: req.ip,
+      });
+
+      res.json({ redirectTo: result.redirectTo, integrationId: result.integrationId, profile: result.profile });
+    } catch (error) {
+      rethrowUploadPost(error);
+    }
+  }),
+);
+
+/**
+ * Re-read the profile and record what is linked to it.
+ *
+ * Called when the operator returns from the hosted page, and whenever they ask
+ * to look again. Discovery only — nothing is attached here, because attaching
+ * is the operator's choice and goes through the same `/:id/select` every
+ * provider uses.
+ */
+integrationsRouter.post(
+  '/:clientId/upload-post/refresh',
+  requireAgency,
+  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+    const { clientId } = req.params as unknown as { clientId: string };
+    await ownedClient(actor, clientId);
+
+    try {
+      const result = await refreshUploadPostAccounts({
+        prisma,
+        organizationId: orgId(actor),
+        clientId,
+        fetchImpl: uploadPostFetch,
+      });
+      res.json(result);
+    } catch (error) {
+      rethrowUploadPost(error);
+    }
+  }),
+);
+
+integrationsRouter.post(
+  '/:clientId/upload-post/disconnect',
+  requireAgency,
+  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
+  validateBody(z.object({
+    /*
+     * Off by default. Disconnecting usually means "stop publishing", and
+     * deleting the remote profile would make an operator re-link every network
+     * to undo it. Deleting is the deliberate, complete removal.
+     */
+    deleteProfile: z.boolean().default(false),
+  })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+    const { clientId } = req.params as unknown as { clientId: string };
+    await ownedClient(actor, clientId);
+
+    const result = await disconnectUploadPost({
+      prisma,
+      organizationId: orgId(actor),
+      clientId,
+      deleteRemoteProfile: (req.body as { deleteProfile: boolean }).deleteProfile,
+      fetchImpl: uploadPostFetch,
+    });
+
+    await recordAudit({
+      actor, action: 'integration.disconnect', entity: 'Client', entityId: clientId,
+      meta: { platform: Platform.UPLOAD_POST, profileDeleted: result.profileDeleted }, ip: req.ip,
+    });
+
+    res.json(result);
+  }),
+);
+
+/**
+ * Which connection each network would publish through for this restaurant.
+ *
+ * The question an operator cannot otherwise answer without publishing: a
+ * restaurant may hold a direct Instagram connection and an Upload-Post profile
+ * carrying Instagram, and exactly one of them carries the post. This reports
+ * the resolver's actual answer rather than a second opinion about it — so what
+ * the screen shows and what publishes can never disagree.
+ */
+integrationsRouter.get(
+  '/:clientId/publishing-routes',
+  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const { clientId } = req.params as unknown as { clientId: string };
+    await ownedClient(actor, clientId);
+
+    const routes = await routeCoverage({
+      prisma,
+      organizationId: orgId(actor),
+      clientId,
+      platforms: routablePlatforms(),
+    });
+
+    res.json({
+      configured: uploadPostConfigured(),
+      // Derived, never stored as a secret: it is a name, and the operator needs
+      // it to find the right profile in Upload-Post's own dashboard.
+      profile: profileUsernameFor(clientId),
+      routes,
+    });
   }),
 );
 
@@ -356,187 +566,6 @@ integrationsRouter.post(
     });
 
     res.json(result);
-  }),
-);
-
-// ------------------------------------------------------ upload-post
-
-/**
- * Upload-Post's own connect surface.
- *
- * Separate endpoints rather than the generic `/:clientId/:platform/connect`,
- * because Upload-Post is not an OAuth provider: there is no authorize URL to
- * redirect to, no code to exchange and no per-client token to store. The
- * generic route correctly refuses it (`supportsOAuth` is false for this
- * adapter) and these take over.
- *
- * Every one of them derives the profile name from the *path's* client id, which
- * is itself checked against the caller's organisation first. No route here
- * accepts a profile name, and that is the whole tenant boundary: an operator
- * cannot name another restaurant's profile, and a browser returning from
- * Upload-Post cannot cause this server to read one.
- *
- * The API key appears in no request and no response. What the browser receives
- * is a hosted linking URL Upload-Post minted for one profile.
- */
-const uploadPostFetch = fetch as unknown as UploadPostFetch;
-
-/** The client, if it belongs to this actor's organisation. 404 otherwise. */
-async function ownedClient(actor: ReturnType<typeof actorOf>, clientId: string) {
-  const client = await prisma.client.findFirst({
-    where: { id: clientId, organizationId: orgId(actor) },
-    select: { id: true },
-  });
-  if (!client) throw notFound('Client');
-  return client;
-}
-
-/** Upload-Post failures are the operator's or the deployment's, never a 500. */
-function rethrowUploadPost(error: unknown): never {
-  if (error instanceof UploadPostError) {
-    // The explanation, never the raw message: it is written for a person and
-    // is guaranteed to carry no key material.
-    throw badRequest(error.explanation);
-  }
-  if (error instanceof ProviderNotConfiguredError) throw badRequest(error.message);
-  throw error;
-}
-
-integrationsRouter.post(
-  '/:clientId/upload-post/connect',
-  requireAgency,
-  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
-  asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    assertWritable(actor);
-    const { clientId } = req.params as unknown as { clientId: string };
-    await ownedClient(actor, clientId);
-
-    try {
-      const result = await beginUploadPostConnection({
-        prisma,
-        organizationId: orgId(actor),
-        clientId,
-        /*
-         * Where Upload-Post sends the operator when they are done. It carries
-         * the client so the page can finish the connection for the restaurant
-         * that started it, and nothing else — no token, no profile name, and
-         * nothing the server will trust without re-deriving it.
-         */
-        returnUrl: `${env.APP_URL}/app/integrations?uploadPost=linked&client=${encodeURIComponent(clientId)}`,
-        fetchImpl: uploadPostFetch,
-      });
-
-      await recordAudit({
-        actor, action: 'integration.connect', entity: 'Integration', entityId: result.integrationId,
-        meta: { platform: Platform.UPLOAD_POST }, ip: req.ip,
-      });
-
-      res.json({ redirectTo: result.redirectTo, integrationId: result.integrationId, profile: result.profile });
-    } catch (error) {
-      rethrowUploadPost(error);
-    }
-  }),
-);
-
-/**
- * Re-read the profile and record what is linked to it.
- *
- * Called when the operator returns from the hosted page, and whenever they ask
- * to look again. Discovery only — nothing is attached here, because attaching
- * is the operator's choice and goes through the same `/:id/select` every
- * provider uses.
- */
-integrationsRouter.post(
-  '/:clientId/upload-post/refresh',
-  requireAgency,
-  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
-  asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    assertWritable(actor);
-    const { clientId } = req.params as unknown as { clientId: string };
-    await ownedClient(actor, clientId);
-
-    try {
-      const result = await refreshUploadPostAccounts({
-        prisma,
-        organizationId: orgId(actor),
-        clientId,
-        fetchImpl: uploadPostFetch,
-      });
-      res.json(result);
-    } catch (error) {
-      rethrowUploadPost(error);
-    }
-  }),
-);
-
-integrationsRouter.post(
-  '/:clientId/upload-post/disconnect',
-  requireAgency,
-  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
-  validateBody(z.object({
-    /*
-     * Off by default. Disconnecting usually means "stop publishing", and
-     * deleting the remote profile would make an operator re-link every network
-     * to undo it. Deleting is the deliberate, complete removal.
-     */
-    deleteProfile: z.boolean().default(false),
-  })),
-  asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    assertWritable(actor);
-    const { clientId } = req.params as unknown as { clientId: string };
-    await ownedClient(actor, clientId);
-
-    const result = await disconnectUploadPost({
-      prisma,
-      organizationId: orgId(actor),
-      clientId,
-      deleteRemoteProfile: (req.body as { deleteProfile: boolean }).deleteProfile,
-      fetchImpl: uploadPostFetch,
-    });
-
-    await recordAudit({
-      actor, action: 'integration.disconnect', entity: 'Client', entityId: clientId,
-      meta: { platform: Platform.UPLOAD_POST, profileDeleted: result.profileDeleted }, ip: req.ip,
-    });
-
-    res.json(result);
-  }),
-);
-
-/**
- * Which connection each network would publish through for this restaurant.
- *
- * The question an operator cannot otherwise answer without publishing: a
- * restaurant may hold a direct Instagram connection and an Upload-Post profile
- * carrying Instagram, and exactly one of them carries the post. This reports
- * the resolver's actual answer rather than a second opinion about it — so what
- * the screen shows and what publishes can never disagree.
- */
-integrationsRouter.get(
-  '/:clientId/publishing-routes',
-  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
-  asyncHandler(async (req, res) => {
-    const actor = actorOf(req);
-    const { clientId } = req.params as unknown as { clientId: string };
-    await ownedClient(actor, clientId);
-
-    const routes = await routeCoverage({
-      prisma,
-      organizationId: orgId(actor),
-      clientId,
-      platforms: routablePlatforms(),
-    });
-
-    res.json({
-      configured: uploadPostConfigured(),
-      // Derived, never stored as a secret: it is a name, and the operator needs
-      // it to find the right profile in Upload-Post's own dashboard.
-      profile: profileUsernameFor(clientId),
-      routes,
-    });
   }),
 );
 

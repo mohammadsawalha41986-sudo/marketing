@@ -1067,6 +1067,194 @@ describe('upload-post', () => {
     expect(key(second.calls)).toBe(post.id);
   });
 
+  // ------------------------------------------- the production connect failure
+
+  it('reports a Connect failure in Connect language, never a post\'s', async () => {
+    /*
+     * The exact production symptom. Pressing Connect answered:
+     *
+     *   "Upload-Post is temporarily unavailable. The post will be retried."
+     *
+     * — a sentence about a post, on a screen where no post exists and nothing
+     * will be retried. The wording came from the publishing map, which was the
+     * only one there was.
+     */
+    const { UploadPostError } = await import('../src/services/integrations/upload-post.js');
+    const error = new UploadPostError(503, 'Service Unavailable');
+
+    expect(error.failure).toBe('PROVIDER_UNAVAILABLE');
+    // Publishing keeps its own wording, which is correct where a post exists.
+    expect(error.explanation).toMatch(/post will be retried/i);
+    /*
+     * Connect must not borrow it. Matched against publishing *language* rather
+     * than the word "post", which the provider's own name contains.
+     */
+    expect(error.connectExplanation).not.toMatch(/\bthe post\b|will be retried|publish/i);
+    expect(error.connectExplanation).toMatch(/nothing was connected/i);
+  });
+
+  it('surfaces a 5xx on each connect call as a Connect error naming no post', async () => {
+    /*
+     * One case per call in the connect chain, because the production evidence
+     * could not say which of the three had failed — the server logged nothing.
+     * Each must fail as a connection problem, and none may talk about posts.
+     */
+    const username = profileUsernameFor(alpha.clientId);
+
+    for (const failing of ['list', 'create', 'jwt'] as const) {
+      const fetchImpl = (async (url: string, init?: { method?: string }) => {
+        const method = init?.method ?? 'GET';
+        const down = (failing === 'list' && url.includes('/uploadposts/users') && method === 'GET')
+          || (failing === 'create' && url.includes('/uploadposts/users') && method === 'POST')
+          || (failing === 'jwt' && url.includes('generate-jwt'));
+
+        if (down) {
+          return {
+            ok: false,
+            status: 503,
+            headers: { get: () => 'text/html' },
+            json: async () => ({}),
+            text: async () => '<html><body>Service Unavailable</body></html>',
+          };
+        }
+        // The list answers empty so the flow proceeds to create, then to jwt.
+        if (url.includes('generate-jwt')) {
+          return {
+            ok: true, status: 200, headers: { get: () => 'application/json' },
+            json: async () => ({ success: true, connection_url: 'https://app.upload-post.com/c/x' }),
+            text: async () => JSON.stringify({ success: true, connection_url: 'https://app.upload-post.com/c/x' }),
+          };
+        }
+        const body = { success: true, profiles: failing === 'jwt' ? [{ username, social_accounts: {} }] : [] };
+        return {
+          ok: true, status: 200, headers: { get: () => 'application/json' },
+          json: async () => body,
+          text: async () => JSON.stringify(body),
+        };
+      }) as UploadPostFetch;
+
+      await expect(beginUploadPostConnection({
+        prisma,
+        organizationId: alpha.organizationId,
+        clientId: alpha.clientId,
+        returnUrl: `${BASE}/app/integrations`,
+        fetchImpl,
+      })).rejects.toThrow();
+
+      const integration = await prisma.integration.findFirstOrThrow({
+        where: { clientId: alpha.clientId, platform: Platform.UPLOAD_POST },
+      });
+
+      // Parked in ERROR with a sentence about connecting, not about a post.
+      expect(integration.status).toBe(IntegrationStatus.ERROR);
+      expect(integration.lastError).toBeTruthy();
+      expect(integration.lastError).not.toMatch(/post will be retried/i);
+      expect(integration.lastError).not.toContain(API_KEY);
+    }
+  });
+
+  it('records which call failed, with its status and content type, and no key', async () => {
+    /*
+     * The absence of this is why the production failure could not be diagnosed:
+     * the browser showed a sentence and the server recorded nothing, so nobody
+     * could say which of three calls had failed or what it answered.
+     */
+    const lines: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+
+    try {
+      const fetchImpl = (async () => ({
+        ok: false,
+        status: 502,
+        headers: { get: () => 'text/html; charset=utf-8' },
+        json: async () => ({}),
+        text: async () => '<html><head><title>502 Bad Gateway</title></head></html>',
+      })) as UploadPostFetch;
+
+      await expect(beginUploadPostConnection({
+        prisma,
+        organizationId: alpha.organizationId,
+        clientId: alpha.clientId,
+        returnUrl: `${BASE}/app/integrations`,
+        fetchImpl,
+      })).rejects.toThrow();
+    } finally {
+      console.error = realError;
+    }
+
+    const line = lines.find((entry) => entry.includes('[upload-post]'));
+    expect(line).toBeDefined();
+    // Which call, what it answered, and what kind of thing answered.
+    expect(line).toContain('/uploadposts/users');
+    expect(line).toContain('HTTP 502');
+    expect(line).toContain('content-type=text/html; charset=utf-8');
+    expect(line).toMatch(/502 Bad Gateway/);
+    // And never the credential, in any field.
+    expect(line).not.toContain(API_KEY);
+    expect(line!.toLowerCase()).not.toContain('authorization');
+    expect(line!.toLowerCase()).not.toContain('apikey');
+  });
+
+  it('scrubs the key from a provider message that echoes it back', async () => {
+    const lines: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+
+    try {
+      const fetchImpl = (async () => {
+        // An upstream that echoes the request — including the credential.
+        const body = { success: false, message: `rejected request with key ${API_KEY}` };
+        return {
+          ok: false, status: 400, headers: { get: () => 'application/json' },
+          json: async () => body,
+          text: async () => JSON.stringify(body),
+        };
+      }) as UploadPostFetch;
+
+      await expect(beginUploadPostConnection({
+        prisma,
+        organizationId: alpha.organizationId,
+        clientId: alpha.clientId,
+        returnUrl: `${BASE}/app/integrations`,
+        fetchImpl,
+      })).rejects.toThrow();
+    } finally {
+      console.error = realError;
+    }
+
+    const line = lines.find((entry) => entry.includes('[upload-post]'));
+    expect(line).toBeDefined();
+    expect(line).not.toContain(API_KEY);
+    expect(line).toContain('[redacted]');
+  });
+
+  it('sends only the authorization header, and no invented source header', async () => {
+    /*
+     * The one respect in which this client's requests differed from a
+     * known-good one while production answered a consistent 5xx. Both official
+     * clients send `X-Upload-Post-Source` with a value from their own set to
+     * attribute an SDK; we are not one of theirs, so there is no correct value
+     * to send and this sends none.
+     */
+    const stub = uploadPostStub({ profiles: [] });
+
+    await beginUploadPostConnection({
+      prisma,
+      organizationId: alpha.organizationId,
+      clientId: alpha.clientId,
+      returnUrl: `${BASE}/app/integrations`,
+      fetchImpl: stub.fetchImpl,
+    });
+
+    expect(stub.calls.length).toBeGreaterThan(0);
+    for (const call of stub.calls) {
+      const names = Object.keys(call.headers).map((name) => name.toLowerCase());
+      expect(names).toContain('authorization');
+      expect(names).not.toContain('x-upload-post-source');
+    }
+  });
+
   // ------------------------------------------------ existing routes untouched
 
   it('leaves every direct provider resolving exactly as it did', async () => {

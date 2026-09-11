@@ -83,9 +83,35 @@ export interface ImplementationReport {
   conversions: ImplementationState;
 }
 
+/**
+ * How an operator connects a provider — if they can at all.
+ *
+ * Separate from `implementation.oauth`, and that separation is the point.
+ * Until Upload-Post, every connectable provider connected by OAuth, so "has an
+ * OAuth flow" and "can be connected" were the same question and the code asked
+ * only the first. Upload-Post connects through a hosted account-linking page
+ * and has no OAuth at all: asked the old question it answered "no", and a fully
+ * implemented, fully configured provider was rendered as NOT BUILT YET with its
+ * Connect button disabled.
+ *
+ *   OAUTH        the operator is redirected to the provider's authorization
+ *                screen and returns with a code
+ *   HOSTED_LINK  the operator links accounts on a page the provider hosts,
+ *                reached through a link this server mints
+ *   NONE         nothing is built. The honest answer for an adapter that is
+ *                only a descriptor, and the one the card reports as unbuilt.
+ */
+export type ConnectMethod = 'OAUTH' | 'HOSTED_LINK' | 'NONE';
+
 export interface PlatformAdapter {
   readonly platform: Platform;
   readonly label: string;
+  /**
+   * How this provider is connected. Derived from the OAuth surface unless the
+   * adapter says otherwise, so every provider that existed before this
+   * distinction keeps exactly the classification it had.
+   */
+  readonly connectMethod: ConnectMethod;
   /**
    * What this provider's API can do for us once connected. Declared from the
    * provider's real capabilities, not from whether we happen to hold a token —
@@ -145,6 +171,16 @@ export class ProviderNotConfiguredError extends Error {
 abstract class BaseAdapter implements PlatformAdapter {
   abstract readonly platform: Platform;
   abstract readonly label: string;
+
+  /**
+   * OAuth, or nothing — which was the only choice before Upload-Post and is
+   * still the right default. A getter rather than a field so it reads whatever
+   * `implementation` the subclass declared, without depending on the order the
+   * class fields happen to initialise in.
+   */
+  get connectMethod(): ConnectMethod {
+    return this.implementation.oauth === 'IMPLEMENTED' ? 'OAUTH' : 'NONE';
+  }
   readonly capabilities = { publish: false, metrics: false, audiences: false };
   /*
    * An adapter that declares only its OAuth descriptor is architecture. Saying
@@ -500,6 +536,17 @@ class UploadPostAdapter extends BaseAdapter {
     conversions: 'NOT_SUPPORTED',
   };
 
+  /*
+   * Connectable, without OAuth. This is the entry the whole distinction exists
+   * for: `implementation.oauth` stays NOT_SUPPORTED — which is true, and is
+   * what the generic OAuth connect route correctly refuses on — while the card
+   * and the catalogue learn that the provider connects perfectly well by
+   * another method.
+   */
+  override get connectMethod(): ConnectMethod {
+    return 'HOSTED_LINK';
+  }
+
   override oauth(): OAuthDescriptor {
     return {
       // The hosted page the operator links their accounts on. Minted per
@@ -546,6 +593,19 @@ export function allAdapters(): PlatformAdapter[] {
  */
 export function supportsOAuth(adapter: PlatformAdapter): boolean {
   return adapter.implementation.oauth === 'IMPLEMENTED';
+}
+
+/**
+ * Can an operator connect this provider at all, by any method?
+ *
+ * This is the question the Integrations card and the catalogue's `canConnect`
+ * actually mean, and asking `supportsOAuth` instead is what classified
+ * Upload-Post as unbuilt. `supportsOAuth` keeps its narrower meaning and its
+ * one remaining caller — the generic OAuth connect route, which must refuse a
+ * provider that has no authorization URL to redirect to.
+ */
+export function connectable(adapter: PlatformAdapter): boolean {
+  return adapter.connectMethod !== 'NONE';
 }
 
 /** Raised when a provider is configured but the surface is not built. */

@@ -302,8 +302,14 @@ export async function disconnectUploadPost(input: {
 
 /** Park the connection in ERROR with the provider's own, key-free explanation. */
 async function failConnection(prisma: PrismaClient, integrationId: string, error: unknown): Promise<void> {
+  /*
+   * Connect wording, not publishing's. `explanation` is written for a post that
+   * failed to go out and says so — "the post will be retried" — which is
+   * nonsense on a screen where nothing has been posted and the operator simply
+   * pressed a button that did not work.
+   */
   const message = error instanceof UploadPostError
-    ? error.explanation
+    ? error.connectExplanation
     : (error as Error).message.slice(0, 500);
 
   await prisma.integration.update({
