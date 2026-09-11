@@ -39,7 +39,7 @@
 import { Platform } from '@prisma/client';
 
 import { ProviderNotConfiguredError } from './index.js';
-import type { DiscoveredAccount, FetchLike } from './meta.js';
+import type { DiscoveredAccount, DiscoveryResult, FetchLike } from './meta.js';
 import type { GoogleConfig } from './google.js';
 
 /**
@@ -543,21 +543,28 @@ export async function listCustomers(input: {
  * called through the provider interface, which knows only about access tokens —
  * and refusing by name now is far better than letting every call fail later
  * with a message that reads like an expired login.
+ *
+ * The refusals travel with the accounts rather than being dropped. Google
+ * routinely names customer ids whose detail read it then denies, and an
+ * operator looking at a selection list four accounts shorter than they expected
+ * needs the provider's own reason for it. Throwing instead would be wrong: one
+ * denied account among five must not fail a connection the other four can
+ * complete — `listCustomers` already raises the case where none can be read.
  */
 export async function discoverAccounts(input: {
   accessToken: string;
   fetchImpl: FetchLike;
-}): Promise<DiscoveredAccount[]> {
+}): Promise<DiscoveryResult> {
   const config = googleAdsConfig();
 
-  const { customers } = await listCustomers({
+  const { customers, failures } = await listCustomers({
     accessToken: input.accessToken,
     developerToken: config.developerToken,
     loginCustomerId: config.loginCustomerId,
     fetchImpl: input.fetchImpl,
   });
 
-  return customers.map((customer) => ({
+  const accounts: DiscoveredAccount[] = customers.map((customer) => ({
     kind: 'AD_ACCOUNT' as DiscoveredAccount['kind'],
     externalId: customer.id,
     name: customer.manager ? `${customer.descriptiveName} (manager)` : customer.descriptiveName,
@@ -580,6 +587,14 @@ export async function discoverAccounts(input: {
       timeZone: customer.timeZone,
     },
   }));
+
+  return {
+    accounts,
+    refusals: failures.map((failure) => ({
+      externalId: formatCustomerId(failure.customerId),
+      message: failure.message,
+    })),
+  };
 }
 
 // ----------------------------------------------------------------- reading
