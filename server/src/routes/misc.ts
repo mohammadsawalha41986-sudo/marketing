@@ -232,9 +232,13 @@ async function ownedClient(actor: ReturnType<typeof actorOf>, clientId: string) 
 /** Upload-Post failures are the operator's or the deployment's, never a 500. */
 function rethrowUploadPost(error: unknown): never {
   if (error instanceof UploadPostError) {
-    // The explanation, never the raw message: it is written for a person and
-    // is guaranteed to carry no key material.
-    throw badRequest(error.explanation);
+    /*
+     * The connect explanation, never the raw message: both are written for a
+     * person and carry no key material, but only one of them is about the thing
+     * the operator was actually doing. The publishing wording leaked here and
+     * told someone pressing Connect that "the post will be retried".
+     */
+    throw badRequest(error.connectExplanation);
   }
   if (error instanceof ProviderNotConfiguredError) throw badRequest(error.message);
   throw error;
