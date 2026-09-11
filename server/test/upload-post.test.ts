@@ -830,6 +830,243 @@ describe('upload-post', () => {
     expect(stub.profiles).toHaveLength(0);
   });
 
+  // ------------------------------------------- the composer's own workflow
+
+  it('publishes a composed post with no account pinned, through the resolved route', async () => {
+    /*
+     * The workflow an operator actually uses. The composer asks which platforms
+     * a post goes to and never which account — so every post it creates has
+     * `integrationAccountId: null`, and until the route was resolved at publish
+     * time such a post could not go out at all, for any provider. This drives
+     * the real path: create the group, attach media, publish, read the result.
+     */
+    const { createGroup, publishPlatformPost } = await import('../src/services/social/post-groups.js');
+
+    await connectAndAttach({ tenant: alpha, socialAccounts: INSTAGRAM_LINKED.social_accounts });
+    const media = await testMedia(alpha, MediaType.IMAGE);
+
+    const group = await createGroup({
+      prisma,
+      organizationId: alpha.organizationId,
+      clientId: alpha.clientId,
+      createdById: alpha.adminId,
+      name: 'Composed post',
+      shared: { caption: 'Fresh mezze daily', mediaIds: [media.id] },
+      // Exactly what the composer sends: a platform, and no account.
+      platforms: [{ platform: Platform.INSTAGRAM }],
+    });
+
+    const post = await prisma.platformPost.findFirstOrThrow({ where: { postGroupId: group.id } });
+    expect(post.integrationAccountId).toBeNull();
+
+    const stub = uploadPostStub({
+      profiles: [{
+        username: profileUsernameFor(alpha.clientId),
+        social_accounts: INSTAGRAM_LINKED.social_accounts,
+      }],
+      upload: {
+        body: {
+          success: true,
+          request_id: 'req-composed',
+          data: { platforms: [{ name: 'instagram', url: 'https://instagram.com/p/composed' }] },
+        },
+      },
+    });
+
+    await approveAndQueue(alpha, post.id);
+
+    const result = await publishPlatformPost({
+      prisma,
+      platformPostId: post.id,
+      fetchImpl: stub.fetchImpl as never,
+    });
+
+    expect(result.published).toBe(true);
+    expect(result.externalPostId).toBe('req-composed');
+
+    const published = await prisma.platformPost.findUniqueOrThrow({ where: { id: post.id } });
+    expect(published.status).toBe('PUBLISHED');
+    // The connection it went out through is now on the row, so the record says
+    // what published it and the next attempt does not resolve again.
+    expect(published.integrationAccountId).not.toBeNull();
+    expect(published.externalPostId).toBe('req-composed');
+  });
+
+  it('keeps a pinned account rather than re-resolving it', async () => {
+    const { createGroup, publishPlatformPost } = await import('../src/services/social/post-groups.js');
+
+    const { integrationId } = await connectAndAttach({
+      tenant: alpha,
+      socialAccounts: INSTAGRAM_LINKED.social_accounts,
+    });
+    const pinned = await prisma.integrationAccount.findFirstOrThrow({ where: { integrationId } });
+    const media = await testMedia(alpha, MediaType.IMAGE);
+
+    const group = await createGroup({
+      prisma,
+      organizationId: alpha.organizationId,
+      clientId: alpha.clientId,
+      createdById: alpha.adminId,
+      name: 'Pinned post',
+      shared: { caption: 'Fresh mezze daily', mediaIds: [media.id] },
+      platforms: [{ platform: Platform.INSTAGRAM, integrationAccountId: pinned.id }],
+    });
+
+    const post = await prisma.platformPost.findFirstOrThrow({ where: { postGroupId: group.id } });
+    const stub = uploadPostStub({
+      profiles: [{
+        username: profileUsernameFor(alpha.clientId),
+        social_accounts: INSTAGRAM_LINKED.social_accounts,
+      }],
+      upload: {
+        body: {
+          success: true,
+          request_id: 'req-pinned',
+          data: { platforms: [{ name: 'instagram', url: 'https://instagram.com/p/pinned' }] },
+        },
+      },
+    });
+
+    await approveAndQueue(alpha, post.id);
+    await publishPlatformPost({ prisma, platformPostId: post.id, fetchImpl: stub.fetchImpl as never });
+
+    const published = await prisma.platformPost.findUniqueOrThrow({ where: { id: post.id } });
+    expect(published.integrationAccountId).toBe(pinned.id);
+  });
+
+  it('refuses a composed post for a network nothing is connected for', async () => {
+    const { createGroup, publishPlatformPost } = await import('../src/services/social/post-groups.js');
+
+    // Instagram linked; nothing for LinkedIn.
+    await connectAndAttach({ tenant: alpha, socialAccounts: INSTAGRAM_LINKED.social_accounts });
+    const media = await testMedia(alpha, MediaType.IMAGE);
+
+    const group = await createGroup({
+      prisma,
+      organizationId: alpha.organizationId,
+      clientId: alpha.clientId,
+      createdById: alpha.adminId,
+      name: 'Unconnected network',
+      shared: { caption: 'Fresh mezze daily', mediaIds: [media.id] },
+      platforms: [{ platform: Platform.LINKEDIN }],
+    });
+
+    const post = await prisma.platformPost.findFirstOrThrow({ where: { postGroupId: group.id } });
+    const stub = uploadPostStub();
+
+    const result = await publishPlatformPost({
+      prisma,
+      platformPostId: post.id,
+      fetchImpl: stub.fetchImpl as never,
+    });
+
+    expect(result.published).toBe(false);
+    // Named for what is missing — a connection — not for a token that was never
+    // going to exist. And nothing was sent.
+    expect(result.error).toMatch(/no LINKEDIN account is connected/i);
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  it('does not publish a composed post twice when a retry follows a success', async () => {
+    const { createGroup, publishPlatformPost } = await import('../src/services/social/post-groups.js');
+
+    await connectAndAttach({ tenant: alpha, socialAccounts: INSTAGRAM_LINKED.social_accounts });
+    const media = await testMedia(alpha, MediaType.IMAGE);
+
+    const group = await createGroup({
+      prisma,
+      organizationId: alpha.organizationId,
+      clientId: alpha.clientId,
+      createdById: alpha.adminId,
+      name: 'Retried post',
+      shared: { caption: 'Fresh mezze daily', mediaIds: [media.id] },
+      platforms: [{ platform: Platform.INSTAGRAM }],
+    });
+    const post = await prisma.platformPost.findFirstOrThrow({ where: { postGroupId: group.id } });
+
+    const stub = uploadPostStub({
+      profiles: [{
+        username: profileUsernameFor(alpha.clientId),
+        social_accounts: INSTAGRAM_LINKED.social_accounts,
+      }],
+      upload: {
+        body: {
+          success: true,
+          request_id: 'req-once',
+          data: { platforms: [{ name: 'instagram', url: 'https://instagram.com/p/once' }] },
+        },
+      },
+    });
+
+    await approveAndQueue(alpha, post.id);
+
+    await publishPlatformPost({ prisma, platformPostId: post.id, fetchImpl: stub.fetchImpl as never });
+    const uploadsAfterFirst = stub.calls.filter((call) => call.url.includes('/upload_photos')).length;
+
+    await publishPlatformPost({ prisma, platformPostId: post.id, fetchImpl: stub.fetchImpl as never });
+    const uploadsAfterSecond = stub.calls.filter((call) => call.url.includes('/upload_photos')).length;
+
+    expect(uploadsAfterFirst).toBe(1);
+    // The second call sends nothing: the post already carries an external id,
+    // so it is recognised as published before anything reaches the provider.
+    expect(uploadsAfterSecond).toBe(1);
+  });
+
+  it('sends the same idempotency key on every attempt at one post', async () => {
+    const { createGroup, publishPlatformPost } = await import('../src/services/social/post-groups.js');
+
+    await connectAndAttach({ tenant: alpha, socialAccounts: INSTAGRAM_LINKED.social_accounts });
+    const media = await testMedia(alpha, MediaType.IMAGE);
+
+    const group = await createGroup({
+      prisma,
+      organizationId: alpha.organizationId,
+      clientId: alpha.clientId,
+      createdById: alpha.adminId,
+      name: 'Flaky post',
+      shared: { caption: 'Fresh mezze daily', mediaIds: [media.id] },
+      platforms: [{ platform: Platform.INSTAGRAM }],
+    });
+    const post = await prisma.platformPost.findFirstOrThrow({ where: { postGroupId: group.id } });
+
+    const profiles = [{
+      username: profileUsernameFor(alpha.clientId),
+      social_accounts: INSTAGRAM_LINKED.social_accounts,
+    }];
+
+    await approveAndQueue(alpha, post.id);
+
+    // A retryable failure, then a success — the shape a real retry takes.
+    const first = uploadPostStub({ profiles, upload: { status: 503, body: { success: false, message: 'Service unavailable' } } });
+    await publishPlatformPost({ prisma, platformPostId: post.id, fetchImpl: first.fetchImpl as never });
+
+    // A retryable failure leaves the post back in QUEUED, ready for the next
+    // drain — so the retry is simply the next attempt, with no step between.
+
+    const second = uploadPostStub({
+      profiles,
+      upload: {
+        body: {
+          success: true,
+          request_id: 'req-retried',
+          data: { platforms: [{ name: 'instagram', url: 'https://instagram.com/p/retried' }] },
+        },
+      },
+    });
+    await publishPlatformPost({ prisma, platformPostId: post.id, fetchImpl: second.fetchImpl as never });
+
+    const key = (calls: typeof first.calls) =>
+      calls.find((call) => call.url.includes('/upload_photos'))?.headers['idempotency-key'];
+
+    /*
+     * Identical across attempts, and equal to the post's own id. This is what
+     * makes the retry safe at the provider: Upload-Post collapses the two into
+     * one post rather than publishing the second.
+     */
+    expect(key(first.calls)).toBe(post.id);
+    expect(key(second.calls)).toBe(post.id);
+  });
+
   // ------------------------------------------------ existing routes untouched
 
   it('leaves every direct provider resolving exactly as it did', async () => {
@@ -1026,4 +1263,52 @@ async function scheduleThroughUploadPost(input: { tenant: Tenant; scheduledAt: D
   });
 
   return { content, connectStub, integrationId };
+}
+
+/** One stored image or video for a tenant, with real bytes behind it. */
+async function testMedia(tenant: Tenant, type: MediaType) {
+  const originalName = type === MediaType.VIDEO ? 'reel.mp4' : 'dish.jpg';
+  const mimeType = type === MediaType.VIDEO ? 'video/mp4' : 'image/jpeg';
+
+  const { storage } = await import('../src/services/storage/index.js');
+  const stored = await storage.save(Buffer.from('not-real-media'), {
+    filename: originalName,
+    mimeType,
+    prefix: `clients/${tenant.clientId}/assets`,
+  });
+
+  return prisma.media.create({
+    data: {
+      organizationId: tenant.organizationId,
+      clientId: tenant.clientId,
+      type,
+      filename: stored.key,
+      originalName,
+      mimeType,
+      sizeBytes: stored.sizeBytes,
+      url: stored.url,
+    },
+    select: { id: true },
+  });
+}
+
+/**
+ * Walk one composed post through the real workflow to the point of publishing.
+ *
+ * DRAFT → IN_REVIEW → APPROVED → QUEUED, through `transition`, which is the
+ * same path the composer's own buttons take. Jumping straight to QUEUED would
+ * be a shortcut past the human approval gate that the state table exists to
+ * enforce — and a test that took it would not be testing the workflow.
+ */
+async function approveAndQueue(tenant: Tenant, platformPostId: string) {
+  const { transition } = await import('../src/services/social/post-groups.js');
+
+  for (const to of ['IN_REVIEW', 'APPROVED', 'QUEUED'] as const) {
+    await transition({
+      prisma,
+      organizationId: tenant.organizationId,
+      platformPostId,
+      to: to as never,
+    });
+  }
 }

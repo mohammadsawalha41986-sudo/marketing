@@ -26,7 +26,9 @@ import { readObject } from '../storage/objects.js';
 import type { FetchLike, PublishMedia } from '../publishing/contract.js';
 import { isRetryable } from '../publishing/contract.js';
 import { publisherFor } from '../publishing/registry.js';
-import { routeForIntegrationPlatform, routeNeedsAccountCredential } from '../publishing/route.js';
+import {
+  resolveRoute, routeForIntegrationPlatform, routeNeedsAccountCredential,
+} from '../publishing/route.js';
 import { canTransition, deriveGroupStatus, transitionError } from './state.js';
 
 /** Three tries, matching the single-platform pipeline rather than inventing a second policy. */
@@ -318,6 +320,9 @@ export async function publishPlatformPost(input: {
     select: {
       id: true, postGroupId: true, platform: true, status: true, caption: true, headline: true,
       hashtags: true, attemptCount: true, externalPostId: true, config: true,
+      // The tenancy this post belongs to, so a connection can be resolved for
+      // it when the operator never pinned one. Scoped reads need both.
+      postGroup: { select: { organizationId: true, clientId: true } },
       integrationAccount: {
         select: {
           externalId: true, name: true, accessTokenEnc: true, metadata: true,
@@ -341,14 +346,66 @@ export async function publishPlatformPost(input: {
   }
 
   /*
-   * The route is the attached account's, not a fresh resolution.
+   * The connection this post publishes through.
    *
-   * The account was chosen when the post was drafted; re-resolving here would
-   * let a connection made in between move the post to a different one, and a
-   * retry that switched routes is exactly how the same post goes out twice.
+   * Two cases, and the difference matters.
+   *
+   * *Already attached* — the operator pinned an account, or an earlier attempt
+   * resolved one. It is used as-is and never re-resolved: a connection made in
+   * between would otherwise move the post to a different one, and a retry that
+   * switched routes is exactly how the same post goes out twice.
+   *
+   * *Not attached* — which is every post the composer creates, because the
+   * composer asks for platforms and never for accounts. Until now that meant
+   * such a post could never publish at all: the check below found no account
+   * and reported a reauthorisation that would not have helped. So the route is
+   * resolved once, here, and *written to the row* — the post then carries the
+   * connection it went out through, and the next attempt takes the first
+   * branch rather than resolving again.
    */
-  const route = post.integrationAccount
-    ? routeForIntegrationPlatform(post.integrationAccount.integration.platform)
+  /** What the publish path needs of an account, however it was arrived at. */
+  interface ResolvedAccount {
+    externalId: string;
+    name: string;
+    accessTokenEnc: string | null;
+    metadata: unknown;
+    integration: { platform: Platform };
+  }
+
+  let account: ResolvedAccount | null = post.integrationAccount;
+  if (!account) {
+    const resolved = await resolveRoute({
+      prisma,
+      organizationId: post.postGroup.organizationId,
+      clientId: post.postGroup.clientId,
+      platform: post.platform,
+    });
+
+    if (resolved) {
+      await prisma.platformPost.update({
+        where: { id: post.id },
+        data: { integrationAccountId: resolved.target.id },
+      });
+      account = {
+        externalId: resolved.target.externalId,
+        name: resolved.target.name,
+        accessTokenEnc: resolved.target.accessTokenEnc,
+        metadata: resolved.target.metadata,
+        /*
+         * The route, expressed as the integration platform the check below
+         * reads. `routeForIntegrationPlatform` is the one function that maps
+         * between the two, so naming the platform here rather than the route
+         * keeps both branches answering the same question the same way.
+         */
+        integration: {
+          platform: resolved.route === 'UPLOAD_POST' ? Platform.UPLOAD_POST : post.platform,
+        },
+      };
+    }
+  }
+
+  const route = account
+    ? routeForIntegrationPlatform(account.integration.platform)
     : 'DIRECT';
 
   const publisher = publisherFor(post.platform, route);
@@ -360,8 +417,11 @@ export async function publishPlatformPost(input: {
   // Only a direct account publishes with its own credential. An Upload-Post
   // account has none by design, so demanding one would refuse every routed post
   // as needing a reauthorisation that cannot be performed.
-  if (!post.integrationAccount
-    || (routeNeedsAccountCredential(route) && !post.integrationAccount.accessTokenEnc)) {
+  if (!account) {
+    return fail(prisma, post, now, false, 'NO_ACCOUNT',
+      `No ${post.platform} account is connected for this restaurant. Connect one under Integrations.`);
+  }
+  if (routeNeedsAccountCredential(route) && !account.accessTokenEnc) {
     return fail(prisma, post, now, false, 'ACCOUNT_NEEDS_REAUTH',
       `No connected ${post.platform} account with a usable publishing token. Reconnect it under Integrations.`);
   }
@@ -429,18 +489,16 @@ export async function publishPlatformPost(input: {
     caption,
     media,
     account: {
-      externalId: post.integrationAccount.externalId,
-      name: post.integrationAccount.name,
+      externalId: account.externalId,
+      name: account.name,
       // Decrypted immediately before the call and never held longer. Empty
       // where the route's credential is the deployment's, never a placeholder
       // a publisher could mistake for a real token.
-      accessToken: post.integrationAccount.accessTokenEnc
-        ? decryptSecret(post.integrationAccount.accessTokenEnc)
-        : '',
+      accessToken: account.accessTokenEnc ? decryptSecret(account.accessTokenEnc) : '',
       // Provider-shaped facts about the account, never credentials — which
       // Instagram reads for its Graph host and Upload-Post for the profile and
       // network this post is addressed to.
-      metadata: (post.integrationAccount.metadata ?? {}) as Record<string, unknown>,
+      metadata: (account.metadata ?? {}) as Record<string, unknown>,
     },
     fetchImpl,
     // Provider-specific settings the operator chose, e.g. TikTok's privacy
