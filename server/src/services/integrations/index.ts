@@ -351,14 +351,17 @@ class GoogleAdsAdapter extends BaseAdapter {
       authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
       scopes: [...GOOGLE_ADS_SCOPES],
       /*
-       * `GOOGLE_REDIRECT_URI` is deliberately not required here. It belongs to
-       * Business Profile's callback route; Google Ads has its own, and its own
-       * optional variable that is derived from the request host when unset —
-       * the same arrangement YouTube has. Requiring Business Profile's variable
-       * would report Google Ads as unconfigured on a deployment that has
-       * everything Google Ads actually needs.
+       * Two variables, and only two.
+       *
+       * `GOOGLE_REDIRECT_URI` belongs to Business Profile's callback route;
+       * Google Ads has its own, derived from the request host when unset, as
+       * YouTube's is. And `GOOGLE_ADS_DEVELOPER_TOKEN` is no longer a
+       * credential at all: Google sunset developer tokens on 9 September 2026
+       * and access now attaches to the Cloud project behind the OAuth client.
+       * Requiring either would report a deployment that Google would happily
+       * answer as unconfigured.
        */
-      requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_ADS_DEVELOPER_TOKEN'],
+      requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'],
       docsUrl: 'https://developers.google.com/google-ads/api/docs/start',
     };
   }

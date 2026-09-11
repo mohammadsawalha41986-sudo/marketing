@@ -11,13 +11,21 @@
  * row. That is the same shape Business Profile and YouTube already have, and it
  * is why this file takes a config rather than reading one per tenant.
  *
- * **The Ads API needs a second credential the OAuth flow knows nothing about.**
- * Every request carries a `developer-token` header issued against a Google Ads
- * manager account. An access token alone authenticates nothing here, which is
- * why the token is part of `requiredEnv` and why discovery refuses early and by
- * name when it is absent — an empty header produces a Google error that reads
- * like an authorisation failure and sends the operator to re-consent, which
- * cannot help.
+ * **Access is a property of the Google Cloud project, not a second credential.**
+ * Google sunset developer tokens on 9 September 2026: the access level that
+ * decides what the API will answer now attaches to the Cloud project whose
+ * OAuth client issued the credential. The `developer-token` header is still
+ * accepted and ignored, so it is sent when `GOOGLE_ADS_DEVELOPER_TOKEN` happens
+ * to be set — a deployment mid-migration keeps working — and never required.
+ * Requiring it would report a correctly configured project as unconfigured and
+ * block a connection the API would have answered.
+ *
+ * What replaces it as a real constraint is the project's access level. Explorer
+ * is granted automatically and reaches production accounts at 2,880 operations
+ * a day; nothing this module calls is outside it. Exceeding the cap, or calling
+ * something the level does not cover, fails with a message about access rather
+ * than about credentials, which is why `ACCESS_LEVEL` is classified apart from
+ * an expired login.
  *
  * **The login is not the account.** A Google login may administer no ad
  * accounts, one, or a manager hierarchy containing dozens. `customer.id` is the
@@ -74,26 +82,37 @@ export const GOOGLE_ADS_SCOPES = [
  * Google Ads carries its own configuration.
  *
  * The OAuth client is deliberately shared with Business Profile and YouTube —
- * one Google Cloud application, several products — but the redirect URI and the
- * developer token are its own. Sharing `GOOGLE_REDIRECT_URI` would point the
- * Ads consent at Business Profile's callback route, and the callback route is
- * the independent witness of which provider redirected.
+ * one Google Cloud application, several products — but the redirect URI is its
+ * own. Sharing `GOOGLE_REDIRECT_URI` would point the Ads consent at Business
+ * Profile's callback route, and the callback route is the independent witness
+ * of which provider redirected.
+ *
+ * Sharing the OAuth client also means sharing the Cloud project, and the Cloud
+ * project is now what carries Google Ads API access. That is the arrangement
+ * this integration wants: one project, one access level, every client's
+ * authorisation flowing through it.
  */
 export interface GoogleAdsConfig extends GoogleConfig {
-  developerToken: string;
+  /** Sunset by Google and ignored by the API. Sent only when a deployment still holds one. */
+  developerToken: string | null;
   /** Set only when a manager account must be named on every request. */
   loginCustomerId: string | null;
 }
 
 /**
- * `GOOGLE_ADS_REDIRECT_URI` is absent from this list on purpose.
+ * Two variables, and only two.
  *
- * Like YouTube's, it is optional: unset means "derive it from the request
- * host", which `beginAuthorization` already does and already validates against
- * the mounted callback path. Requiring it would report a correctly deployed
- * integration as unconfigured.
+ * `GOOGLE_ADS_REDIRECT_URI` is optional like YouTube's: unset means "derive it
+ * from the request host", which `beginAuthorization` already does and already
+ * validates against the mounted callback path.
+ *
+ * `GOOGLE_ADS_DEVELOPER_TOKEN` is optional because Google sunset developer
+ * tokens on 9 September 2026 and the API ignores the header. Access now comes
+ * from the Cloud project behind the OAuth client, so a deployment holding only
+ * a client id and secret is fully configured, and demanding a third credential
+ * would refuse a connection Google would have accepted.
  */
-const REQUIRED = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_ADS_DEVELOPER_TOKEN'] as const;
+const REQUIRED = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'] as const;
 
 export function googleAdsConfig(env: NodeJS.ProcessEnv = process.env): GoogleAdsConfig {
   const missing = REQUIRED.filter((key) => !env[key]?.trim());
@@ -106,7 +125,7 @@ export function googleAdsConfig(env: NodeJS.ProcessEnv = process.env): GoogleAds
     clientId: env.GOOGLE_CLIENT_ID!.trim(),
     clientSecret: env.GOOGLE_CLIENT_SECRET!.trim(),
     redirectUri: env.GOOGLE_ADS_REDIRECT_URI?.trim() ?? '',
-    developerToken: env.GOOGLE_ADS_DEVELOPER_TOKEN!.trim(),
+    developerToken: env.GOOGLE_ADS_DEVELOPER_TOKEN?.trim() || null,
     loginCustomerId: env.GOOGLE_ADS_LOGIN_CUSTOMER_ID?.trim() || null,
   };
 }
@@ -155,14 +174,21 @@ function describeError(payload: Record<string, unknown>, status: number): string
  * The failures that mean something specific, named so the UI can say Google Ads
  * rather than "request failed".
  *
- * `DEVELOPER_TOKEN` is the one worth separating: a token that exists but has
- * not been approved for production fails every call with a message about the
- * token, and no amount of reconnecting will change that. Telling the operator
- * to re-authorise would be advice that cannot work.
+ * `ACCESS_LEVEL` is the one worth separating. Since developer tokens were
+ * sunset on 9 September 2026, what gates the API is the Google Cloud project's
+ * access level — Explorer reaches production accounts at 2,880 operations a
+ * day and excludes billing, account creation and the planning services. A call
+ * refused for that reason fails no matter who authorises it, so telling the
+ * operator to reconnect would be advice that cannot work. It is a deployment
+ * fact, not a client one.
+ *
+ * The legacy developer-token refusal is folded into the same state: a
+ * deployment still carrying an unapproved token sees the same message, and
+ * the remedy — raise the project's access with Google — is now the same too.
  */
 export type GoogleAdsFailure =
   | 'INVALID_TOKEN'
-  | 'DEVELOPER_TOKEN'
+  | 'ACCESS_LEVEL'
   | 'NOT_AUTHORIZED'
   | 'RATE_LIMITED'
   | 'PROVIDER_UNAVAILABLE'
@@ -171,7 +197,12 @@ export type GoogleAdsFailure =
 export function classifyAdsError(message: string, status: number): GoogleAdsFailure {
   const text = message.toLowerCase();
 
-  if (/developer.?token/.test(text)) return 'DEVELOPER_TOKEN';
+  /*
+   * Access-level refusals first: they are the only ones a correct credential
+   * cannot fix, and Google words several of them with 'permission' or 'quota'
+   * language that the later branches would otherwise capture.
+   */
+  if (/developer.?token|access.?level|not.?adwords.?manager|operation.?limit/.test(text)) return 'ACCESS_LEVEL';
   if (/invalid.?grant|token.?expired|invalid.?credential|unauthenticated/.test(text)) return 'INVALID_TOKEN';
   if (status === 401) return 'INVALID_TOKEN';
   if (/customer.?not.?found|not.?ad.?words.?user|user.?permission.?denied/.test(text)) return 'NOT_AUTHORIZED';
@@ -185,9 +216,10 @@ export function classifyAdsError(message: string, status: number): GoogleAdsFail
 export const ADS_FAILURE_EXPLANATION: Record<GoogleAdsFailure, string> = {
   INVALID_TOKEN:
     'The Google Ads authorisation has expired or been revoked. Reconnect Google Ads for this client.',
-  DEVELOPER_TOKEN:
-    'Google has not approved this deployment\'s Google Ads developer token for production use yet, '
-    + 'so the Google Ads API refuses every request. This cannot be fixed by reconnecting.',
+  ACCESS_LEVEL:
+    'Google Ads refused this request at the account level: the Google Cloud project behind this '
+    + 'deployment does not have the API access it needs, or has used its daily operation allowance. '
+    + 'This cannot be fixed by reconnecting.',
   NOT_AUTHORIZED:
     'The authorised Google account cannot access this Google Ads account. Choose a different account, '
     + 'or ask the account owner to grant access.',
@@ -226,14 +258,20 @@ export class GoogleAdsError extends Error {
 
 function headers(input: {
   accessToken: string;
-  developerToken: string;
+  developerToken?: string | null;
   loginCustomerId?: string | null;
 }): Record<string, string> {
   const built: Record<string, string> = {
     authorization: `Bearer ${input.accessToken}`,
-    'developer-token': input.developerToken,
     'content-type': 'application/json',
   };
+  /*
+   * Sent only when a deployment still holds one. Google ignores the header
+   * since the 9 September 2026 sunset, so an absent token is not a failure —
+   * but a deployment that has not yet cleared the variable should not start
+   * behaving differently on the day it upgrades.
+   */
+  if (input.developerToken) built['developer-token'] = input.developerToken;
   /*
    * `login-customer-id` is the manager the request acts through. It is required
    * when reaching a client account via its manager and harmless when the
@@ -312,7 +350,7 @@ interface RawCustomer {
  */
 export async function listAccessibleCustomers(input: {
   accessToken: string;
-  developerToken: string;
+  developerToken?: string | null;
   loginCustomerId?: string | null;
   fetchImpl: FetchLike;
 }): Promise<string[]> {
@@ -335,7 +373,7 @@ async function search(input: {
   customerId: string;
   query: string;
   accessToken: string;
-  developerToken: string;
+  developerToken?: string | null;
   loginCustomerId?: string | null;
   fetchImpl: FetchLike;
   context: string;
@@ -398,7 +436,7 @@ const CLIENT_QUERY =
  */
 export async function listCustomers(input: {
   accessToken: string;
-  developerToken: string;
+  developerToken?: string | null;
   loginCustomerId?: string | null;
   fetchImpl: FetchLike;
 }): Promise<{ customers: GoogleAdsCustomer[]; failures: Array<{ customerId: string; message: string }> }> {
@@ -557,7 +595,7 @@ function toNumber(value: unknown): number {
 export async function fetchCampaignReport(input: {
   customerId: string;
   accessToken: string;
-  developerToken: string;
+  developerToken?: string | null;
   loginCustomerId?: string | null;
   since: string;
   until: string;

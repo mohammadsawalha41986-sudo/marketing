@@ -10,9 +10,10 @@
  * looks for an account of kind AD_ACCOUNT and would never have found one.
  *
  * Three independent defects, each fatal on its own. These tests are written
- * against all three, plus the two credentials that are genuinely separate: the
- * developer token, which no amount of reconnecting can supply, and the manager
- * account, which is not the account that spends.
+ * against all three, plus the two things that are genuinely not the client's
+ * to fix: the Cloud project's API access level, which no amount of
+ * reconnecting can raise, and the manager account, which is not the account
+ * that spends.
  *
  * No test mutates live advertising. Every provider call is a stub.
  */
@@ -37,6 +38,7 @@ import {
   formatCustomerId,
   googleAdsConfig,
   googleAdsConfigured,
+  listAccessibleCustomers,
   listCustomers,
 } from '../src/services/integrations/google-ads.js';
 import { adapterFor, providerReadiness } from '../src/services/integrations/index.js';
@@ -181,15 +183,41 @@ describe('google ads connectivity', () => {
       .toBe('https://marketing.norivaglobal.com/api/integrations/google-ads/callback');
   });
 
-  it('refuses to start when the developer token is absent', async () => {
+  it('starts a flow with no developer token at all', async () => {
+    /*
+     * Google sunset developer tokens on 9 September 2026 and the API ignores
+     * the header; access attaches to the Cloud project behind the OAuth
+     * client. Requiring one would refuse a connection Google would answer.
+     */
     delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
 
-    await expect(beginAuthorization({
+    const result = await beginAuthorization({
       organizationId: alpha.organizationId,
       clientId: alpha.clientId,
       platform: Platform.GOOGLE_ADS,
       baseUrl: BASE,
-    })).rejects.toThrow(/GOOGLE_ADS_DEVELOPER_TOKEN/);
+    });
+
+    expect(new URL(result.redirectTo).searchParams.get('scope')).toContain(ADWORDS_SCOPE);
+    expect(googleAdsConfigured()).toBe(true);
+    expect(googleAdsConfig().developerToken).toBeNull();
+  });
+
+  it('omits the developer-token header when none is held, and sends it when one is', async () => {
+    const sent: Array<Record<string, string> | undefined> = [];
+    const spy = (async (_url: string, init?: { headers?: Record<string, string> }) => {
+      sent.push(init?.headers);
+      const body = { resourceNames: [] };
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    }) as unknown as FetchLike;
+
+    await listAccessibleCustomers({ accessToken: 'A', developerToken: null, fetchImpl: spy });
+    expect(sent[0]).not.toHaveProperty('developer-token');
+
+    // A deployment mid-migration keeps working: clearing the variable and
+    // upgrading stay independent steps.
+    await listAccessibleCustomers({ accessToken: 'A', developerToken: 'legacy', fetchImpl: spy });
+    expect(sent[1]!['developer-token']).toBe('legacy');
   });
 
   // --------------------------------------------------------- callback step
@@ -486,13 +514,17 @@ describe('google ads connectivity', () => {
 
   // -------------------------------------------------------- error handling
 
-  it('separates a developer-token failure from an expired authorisation', () => {
+  it('separates an access-level failure from an expired authorisation', () => {
     /*
-     * The distinction that matters most: an unapproved developer token fails
-     * every call, and telling the operator to reconnect is advice that cannot
-     * possibly work, because the missing credential is the deployment's.
+     * The distinction that matters most: a Cloud project without the access it
+     * needs fails every call, and telling the operator to reconnect is advice
+     * that cannot possibly work, because the limit is the deployment's.
      */
-    expect(classifyAdsError('The developer token is not approved.', 403)).toBe('DEVELOPER_TOKEN');
+    // A legacy developer-token refusal and a Cloud-project access refusal are
+    // the same fact now, and carry the same remedy: raise access with Google.
+    expect(classifyAdsError('The developer token is not approved.', 403)).toBe('ACCESS_LEVEL');
+    expect(classifyAdsError('Your access level does not permit this.', 403)).toBe('ACCESS_LEVEL');
+    expect(classifyAdsError('Daily operation limit reached.', 429)).toBe('ACCESS_LEVEL');
     expect(classifyAdsError('Request had invalid authentication credentials.', 401)).toBe('INVALID_TOKEN');
     expect(classifyAdsError('User permission denied.', 403)).toBe('NOT_AUTHORIZED');
     expect(classifyAdsError('Resource has been exhausted.', 429)).toBe('RATE_LIMITED');
@@ -520,21 +552,27 @@ describe('google ads connectivity', () => {
     expect(adapter.oauth().scopes).toContain(ADWORDS_SCOPE);
     expect(providerReadiness(adapter).state).toBe('READY');
 
+    // Neither of the two variables Google Ads does not need.
+    expect(adapter.oauth().requiredEnv).not.toContain('GOOGLE_REDIRECT_URI');
+    expect(adapter.oauth().requiredEnv).not.toContain('GOOGLE_ADS_DEVELOPER_TOKEN');
+
+    // Still READY with no developer token: access is the Cloud project's now.
     delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
+    expect(providerReadiness(adapter).state).toBe('READY');
+
+    delete process.env.GOOGLE_CLIENT_SECRET;
     const missing = providerReadiness(adapter);
     expect(missing.state).toBe('NOT_CONFIGURED');
-    expect(missing.missingEnv).toContain('GOOGLE_ADS_DEVELOPER_TOKEN');
-    // Business Profile's own variable is not Google Ads' to require.
-    expect(adapter.oauth().requiredEnv).not.toContain('GOOGLE_REDIRECT_URI');
+    expect(missing.missingEnv).toContain('GOOGLE_CLIENT_SECRET');
   });
 
   it('knows whether it is configured without throwing', () => {
     expect(googleAdsConfigured()).toBe(true);
     expect(googleAdsConfig().developerToken).toBe('dev-token-1');
 
-    delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
+    delete process.env.GOOGLE_CLIENT_ID;
     expect(googleAdsConfigured()).toBe(false);
-    expect(() => googleAdsConfig()).toThrow(/GOOGLE_ADS_DEVELOPER_TOKEN/);
+    expect(() => googleAdsConfig()).toThrow(/GOOGLE_CLIENT_ID/);
   });
 
   it('keeps its scope constant identical to the one google.ts names', async () => {

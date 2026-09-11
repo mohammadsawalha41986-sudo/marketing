@@ -88,17 +88,13 @@ export async function publishToGoogleAds(input: GoogleAdsPublishInput) {
   const customerId = normalizeCustomerId(adAccount.externalId);
 
   /*
-   * Refused by name rather than sent empty. An absent developer token produces
-   * a Google error that reads like an authorisation failure, which sends the
-   * operator to reconnect — advice that cannot possibly work, because the
-   * missing credential is the deployment's, not the client's.
+   * Optional since Google sunset developer tokens on 9 September 2026. The API
+   * ignores the header, and access comes from the Cloud project behind the
+   * OAuth client, so an absent token is not a misconfiguration — it is the
+   * normal state. Sent when a deployment still holds one so that clearing the
+   * variable and upgrading are independent steps.
    */
-  const developerToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN?.trim();
-  if (!developerToken) {
-    throw badRequest(
-      'Google Ads publishing is not configured on this deployment: GOOGLE_ADS_DEVELOPER_TOKEN is not set.',
-    );
-  }
+  const developerToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN?.trim() ?? '';
 
   await prisma.adPublication.update({
     where: { id: publication.id },

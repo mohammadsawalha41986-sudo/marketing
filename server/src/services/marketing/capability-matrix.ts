@@ -160,11 +160,13 @@ const CREDENTIALS = {
    * Google Ads shares the OAuth client with Business Profile and YouTube but
    * has its own callback route and its own optional redirect variable, so
    * `GOOGLE_REDIRECT_URI` — which belongs to Business Profile's route — is not
-   * among its requirements. The developer token is: it is what actually gates
-   * the Ads API, and it is separate from the OAuth client entirely.
+   * among its requirements. Neither is a developer token: Google sunset those
+   * on 9 September 2026, and what gates the Ads API now is the access level of
+   * the Cloud project the OAuth client belongs to, which no environment
+   * variable can express.
    */
   GOOGLE_ADS: {
-    env: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_ADS_DEVELOPER_TOKEN'],
+    env: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'],
     configured: () => googleAdsConfigured(),
   },
   /** No credential group, because nothing is built to use one. */
@@ -356,7 +358,9 @@ const PAID: Partial<Record<Platform, ChannelDeclaration>> = {
   [Platform.GOOGLE_ADS]: {
     OAUTH: built(
       'Google OAuth with the adwords scope, offline access always requested, on its own callback route.',
-      'A Google Ads developer token approved by Google for production use.',
+      'Google Ads API access on the Cloud project behind the OAuth client. Explorer is granted '
+      + 'automatically and reaches production accounts at 2,880 operations a day; Basic or Standard '
+      + 'must be applied for, and only if that ceiling is reached.',
     ),
     ACCOUNTS: built(
       'Accessible customers are enumerated after consent, with the accounts under a manager listed '
