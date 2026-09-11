@@ -967,13 +967,37 @@ const accountKindLabel = (kind: string) =>
  * them apart either, and does not pretend to. The precise reason is recorded
  * server-side.
  */
-function describeCallbackFailure(reason: string): { title: string; body: string } {
+/**
+ * The callback slug, as the provider is named to a person.
+ *
+ * The slug is what the route is mounted under, so it is the one thing that is
+ * certainly correct about which provider redirected.
+ */
+const PROVIDER_LABEL: Record<string, string> = {
+  meta: 'Meta',
+  instagram: 'Instagram',
+  tiktok: 'TikTok',
+  google: 'Google Business Profile',
+  'google-ads': 'Google Ads',
+  youtube: 'YouTube',
+  linkedin: 'LinkedIn',
+};
+
+function describeCallbackFailure(reason: string, provider: string | null): { title: string; body: string } {
   const text = reason.toLowerCase();
+  /*
+   * Named from the callback's own slug. This used to say "Meta" unconditionally
+   * — every provider's failure was reported against Meta, which sent an
+   * operator whose Google Ads connection failed to go and check a Meta app that
+   * had nothing to do with it. A provider we cannot name is reported without
+   * one rather than under a guess.
+   */
+  const label = (provider && PROVIDER_LABEL[provider]) ?? 'The provider';
 
   if (/denied|cancel|not authorized|access_denied/.test(text)) {
     return {
       title: 'Authorization was declined',
-      body: 'Meta reported that the request was not approved. Press Connect again and accept the permissions to continue.',
+      body: `${label} reported that the request was not approved. Press Connect again and accept the permissions to continue.`,
     };
   }
 
@@ -986,15 +1010,15 @@ function describeCallbackFailure(reason: string): { title: string; body: string 
 
   if (/no authorization code/.test(text)) {
     return {
-      title: 'Meta returned no authorization code',
-      body: 'The login finished without the code we need. Press Connect again — if it repeats, the app configuration on Meta needs checking.',
+      title: `${label} returned no authorization code`,
+      body: `The login finished without the code we need. Press Connect again — if it repeats, the app configuration on ${label} needs checking.`,
     };
   }
 
-  // Token exchange and Graph API failures: the provider's message is the most
-  // useful thing we have, and it never carries the code or the token.
+  // Token exchange and provider API failures: the provider's message is the
+  // most useful thing we have, and it never carries the code or the token.
   return {
-    title: 'Meta did not connect',
+    title: `${label} did not connect`,
     body: reason,
   };
 }
@@ -1409,7 +1433,7 @@ export function IntegrationsPage() {
     const failure = params.get('error');
 
     if (failure) {
-      const { title, body } = describeCallbackFailure(failure);
+      const { title, body } = describeCallbackFailure(failure, params.get('provider'));
       push({ tone: 'error', title, body });
     }
     if (integrationId) setSelecting(integrationId);

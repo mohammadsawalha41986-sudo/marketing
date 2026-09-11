@@ -18,6 +18,8 @@
  * No test mutates live advertising. Every provider call is a stub.
  */
 
+import { readFile } from 'node:fs/promises';
+
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { IntegrationStatus, Platform } from '@prisma/client';
 
@@ -31,6 +33,7 @@ import {
   providerFor,
 } from '../src/services/integrations/connect-flow.js';
 import {
+  ADS_API_VERSION,
   ADWORDS_SCOPE,
   GoogleAdsError,
   classifyAdsError,
@@ -586,9 +589,113 @@ describe('google ads connectivity', () => {
     expect(ADWORDS_SCOPE).toBe(FUTURE_SCOPES.ads);
   });
 
+  // ------------------------------------------------------------ api version
+
+  it('calls a Google Ads API version Google still serves', () => {
+    /*
+     * The production failure this test exists for: the version was v17,
+     * inherited from the publish module and never checked. v17 was sunset on
+     * 4 June 2025, so every request returned an HTML 404 and discovery died on
+     * a parse error. v25 is current; v17 through v22 are all retired.
+     */
+    const version = Number(ADS_API_VERSION.replace(/^v/, ''));
+    expect(ADS_API_VERSION).toMatch(/^v\d+$/);
+    expect(version).toBeGreaterThanOrEqual(23);
+  });
+
+  it('uses one version across discovery and publishing', async () => {
+    // Two copies of a value Google retires on a schedule is two things to
+    // forget; the publish module used to carry its own, and it rotted.
+    const publish = await import('../src/services/integrations/google-ads-publish.js');
+    expect(publish.googleAdsManagerUrl).toBeTypeOf('function');
+
+    const source = await readFile(
+      new URL('../src/services/integrations/google-ads-publish.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('${ADS_API_VERSION}');
+    expect(source).not.toMatch(/googleads\.googleapis\.com\/v\d+/);
+  });
+
+  it('reports a non-JSON body with its status instead of "unreadable"', async () => {
+    /*
+     * What made the sunset hard to diagnose: a retired version answers with an
+     * HTML 404 page, and the old message swallowed the status into "Google Ads
+     * returned an unreadable response" — which reads like a parse bug in our
+     * code rather than a request that never reached the API.
+     */
+    const html = '<!DOCTYPE html><html><body><h1>404. Version not supported</h1></body></html>';
+    const fetchImpl = (async () => ({
+      ok: false,
+      status: 404,
+      json: async () => ({}),
+      text: async () => html,
+    })) as unknown as FetchLike;
+
+    const error = await listAccessibleCustomers({ accessToken: 'A', fetchImpl })
+      .catch((caught: unknown) => caught as GoogleAdsError);
+
+    expect(error).toBeInstanceOf(GoogleAdsError);
+    expect(error.message).toContain('404');
+    expect(error.message).toContain(ADS_API_VERSION);
+    // The tags are stripped: a banner should not render someone's error page.
+    expect(error.message).not.toContain('<');
+    expect(error.message).not.toContain('unreadable');
+    // And it is named as a code problem, not a credential or permission one.
+    expect(error.failure).toBe('API_VERSION');
+    expect(error.explanation).toMatch(/code change/i);
+  });
+
   it('formats a customer id the way Google Ads shows it', () => {
     expect(formatCustomerId('1234567890')).toBe('123-456-7890');
     expect(formatCustomerId('123-456-7890')).toBe('123-456-7890');
+  });
+
+  // -------------------------------------------------------- failure banner
+
+  it('tells the page which provider failed, not only which succeeded', async () => {
+    /*
+     * The production defect this covers: the redirect carried `provider` only
+     * on success, so the failure banner had nothing to name and said "Meta"
+     * for every provider. An operator whose Google Ads connection failed was
+     * sent to check a Meta app that had nothing to do with it.
+     */
+    const { app } = await import('./helpers.js');
+    const request = (await import('supertest')).default;
+
+    const failed = await request(app)
+      .get('/api/integrations/google-ads/callback')
+      .query({ error: 'access_denied', error_description: 'The user denied the request' });
+
+    expect(failed.status).toBe(302);
+    const failure = new URL(failed.headers.location as string);
+    expect(failure.pathname).toBe('/app/integrations');
+    expect(failure.searchParams.get('provider')).toBe('google-ads');
+    expect(failure.searchParams.get('error')).toBeTruthy();
+
+    // Meta's own callback keeps naming Meta — the fix is a label, not a rename.
+    const meta = await request(app)
+      .get('/api/integrations/meta/callback')
+      .query({ error: 'access_denied' });
+    expect(new URL(meta.headers.location as string).searchParams.get('provider')).toBe('meta');
+  });
+
+  it('never labels a Google Ads failure as Meta in the UI', async () => {
+    /*
+     * Source-level, because the banner is a pure string map with no browser
+     * test framework in this repository — and the defect was precisely a
+     * hardcoded provider name, which a compiler cannot catch.
+     */
+    const source = await readFile(
+      new URL('../../web/src/routes/workspace.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain("'google-ads': 'Google Ads'");
+    // The three sentences that used to name Meta unconditionally.
+    expect(source).not.toContain("title: 'Meta did not connect'");
+    expect(source).not.toContain("title: 'Meta returned no authorization code'");
+    expect(source).not.toContain('Meta reported that the request was not approved');
   });
 
   // ------------------------------------------------- existing integrations

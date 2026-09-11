@@ -45,11 +45,19 @@ import type { GoogleConfig } from './google.js';
 /**
  * The Ads API version this integration speaks.
  *
- * Pinned in one place: Google retires versions on a published schedule and a
- * string repeated across four call sites is how half an integration ends up on
- * a version the other half has left behind.
+ * Pinned in one place, and imported by `google-ads-publish.ts` rather than
+ * repeated there: Google retires versions on a published schedule, and a
+ * version string written twice is how half an integration ends up calling one
+ * the other half has left behind.
+ *
+ * This was `v17`, inherited from the publish module and never checked. v17 was
+ * sunset on 4 June 2025, so every call returned a non-JSON 404 page and
+ * discovery failed with a parse error that named nothing useful. Google moved
+ * to monthly releases in January 2026; v25 is current and sunsets in August
+ * 2027. Whoever bumps this next: the failure mode of a retired version is now
+ * an error that says so, not a mystery.
  */
-export const ADS_API_VERSION = 'v17';
+export const ADS_API_VERSION = 'v25';
 const API = `https://googleads.googleapis.com/${ADS_API_VERSION}`;
 
 /**
@@ -189,6 +197,7 @@ function describeError(payload: Record<string, unknown>, status: number): string
 export type GoogleAdsFailure =
   | 'INVALID_TOKEN'
   | 'ACCESS_LEVEL'
+  | 'API_VERSION'
   | 'NOT_AUTHORIZED'
   | 'RATE_LIMITED'
   | 'PROVIDER_UNAVAILABLE'
@@ -203,6 +212,14 @@ export function classifyAdsError(message: string, status: number): GoogleAdsFail
    * language that the later branches would otherwise capture.
    */
   if (/developer.?token|access.?level|not.?adwords.?manager|operation.?limit/.test(text)) return 'ACCESS_LEVEL';
+  /*
+   * A version this deployment no longer speaks. Not a credential problem and
+   * not the operator's to fix — it is a code change — so it is named rather
+   * than folded into a generic rejection.
+   */
+  if (/non-json body|not supported|unsupported version|invalid version/.test(text) || status === 404) {
+    return 'API_VERSION';
+  }
   if (/invalid.?grant|token.?expired|invalid.?credential|unauthenticated/.test(text)) return 'INVALID_TOKEN';
   if (status === 401) return 'INVALID_TOKEN';
   if (/customer.?not.?found|not.?ad.?words.?user|user.?permission.?denied/.test(text)) return 'NOT_AUTHORIZED';
@@ -223,6 +240,9 @@ export const ADS_FAILURE_EXPLANATION: Record<GoogleAdsFailure, string> = {
   NOT_AUTHORIZED:
     'The authorised Google account cannot access this Google Ads account. Choose a different account, '
     + 'or ask the account owner to grant access.',
+  API_VERSION:
+    'This deployment is calling a Google Ads API version Google no longer serves. That is a code '
+    + 'change, not a configuration or permission problem — reconnecting cannot fix it.',
   RATE_LIMITED: 'Google Ads is rate limiting this app. The request will be retried later.',
   PROVIDER_UNAVAILABLE: 'Google Ads is temporarily unavailable.',
   INVALID_REQUEST: 'Google Ads rejected the request.',
@@ -297,7 +317,19 @@ async function readJson(
         ? { results: parsed.flatMap((chunk) => (chunk as Record<string, unknown>)?.results ?? []) }
         : (parsed as Record<string, unknown>);
     } catch {
-      throw new GoogleAdsError(response.status, `${context}: Google Ads returned an unreadable response`);
+      /*
+       * Not JSON. The overwhelmingly likely cause is that the request never
+       * reached the API at all — a retired version answers with an HTML 404
+       * page — so the status is the diagnostic, and swallowing it into
+       * "unreadable response" is what made a sunset version look like a parse
+       * bug. A short prefix of the body is included because Google's own
+       * wording ("version ... is not supported") is the fastest confirmation.
+       */
+      throw new GoogleAdsError(
+        response.status,
+        `${context}: Google Ads returned HTTP ${response.status} with a non-JSON body `
+          + `(API ${ADS_API_VERSION}). ${text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)}`,
+      );
     }
   }
 
