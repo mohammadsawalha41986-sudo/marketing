@@ -20,7 +20,7 @@
  */
 
 import {
-  AccountTokenStatus, ExternalAccountKind, IntegrationStatus, Platform, Prisma, SyncStatus,
+  AccountTokenStatus, IntegrationStatus, Platform, Prisma, SyncStatus,
 } from '@prisma/client';
 
 import { prisma } from '../../lib/prisma.js';
@@ -35,14 +35,18 @@ import {
   metaConfig,
   validateToken,
   type DiscoveredAccount,
+  type DiscoveryResult,
   type FetchLike,
   type TokenSet,
 } from './meta.js';
 import * as instagram from './instagram.js';
 import * as tiktok from './tiktok.js';
 import * as google from './google.js';
+import * as googleAds from './google-ads.js';
 import * as youtube from './youtube.js';
 import * as linkedin from './linkedin.js';
+import { discoveryNote, missingGrantNote, noUsableCredentialNote } from './connection-notes.js';
+import { KIND_FOR_DISCOVERY } from './account-kinds.js';
 
 /** Where each provider's callback lands. Documented so app consoles match. */
 export function callbackPath(platform: Platform): string {
@@ -55,7 +59,15 @@ export function callbackPath(platform: Platform): string {
      * which is the binding check, deleted.
      */
     INSTAGRAM: 'instagram',
-    GOOGLE_ADS: 'google',
+    /*
+     * Google Ads authorises through the same Google OAuth client as Business
+     * Profile but lands on its own route, for the reason YouTube does: the
+     * state is bound to one platform and the callback route is what proves
+     * which provider redirected. Sharing Business Profile's route would mean
+     * reading the platform out of the state instead of checking the state
+     * against the route.
+     */
+    GOOGLE_ADS: 'google-ads',
     GOOGLE_BUSINESS: 'google',
     TIKTOK: 'tiktok',
     SNAPCHAT: 'snapchat',
@@ -97,7 +109,8 @@ export interface AuthorizeResult {
  * receiving Meta's authorization URL — which is exactly what happened while
  * TikTok was routed through `metaConfig()`.
  */
-export type OAuthProvider = 'META' | 'INSTAGRAM' | 'TIKTOK' | 'GOOGLE' | 'YOUTUBE' | 'LINKEDIN';
+export type OAuthProvider =
+  | 'META' | 'INSTAGRAM' | 'TIKTOK' | 'GOOGLE' | 'GOOGLE_ADS' | 'YOUTUBE' | 'LINKEDIN';
 
 const OAUTH_PROVIDER: Partial<Record<Platform, OAuthProvider>> = {
   [Platform.FACEBOOK]: 'META',
@@ -110,6 +123,8 @@ const OAUTH_PROVIDER: Partial<Record<Platform, OAuthProvider>> = {
   [Platform.INSTAGRAM]: 'INSTAGRAM',
   [Platform.TIKTOK]: 'TIKTOK',
   [Platform.GOOGLE_BUSINESS]: 'GOOGLE',
+  // Google's OAuth client, an adwords-shaped grant. See `google-ads.ts`.
+  [Platform.GOOGLE_ADS]: 'GOOGLE_ADS',
   // Google's OAuth client, a YouTube-shaped grant. See `youtube.ts`.
   [Platform.YOUTUBE]: 'YOUTUBE',
   [Platform.LINKEDIN]: 'LINKEDIN',
@@ -159,7 +174,16 @@ interface BoundProvider {
   grantedScopes(input: { tokens: TokenSet; fetchImpl: FetchLike }): Promise<string[]>;
   /** The one grant that decides whether an attached account can post. */
   publishScope: string;
-  discover(input: { accessToken: string; fetchImpl: FetchLike }): Promise<DiscoveredAccount[]>;
+  /**
+   * What this login can attach, and what it was refused.
+   *
+   * A result rather than a bare array, because "nothing came back" and "what
+   * came back was refused" are different facts that need different sentences in
+   * front of the operator — and only the provider knows which happened.
+   * Providers that cannot be refused per asset report no refusals, and the
+   * shape costs them one wrapper each.
+   */
+  discover(input: { accessToken: string; fetchImpl: FetchLike }): Promise<DiscoveryResult>;
 }
 
 const PROVIDERS: Record<OAuthProvider, () => BoundProvider> = {
@@ -175,7 +199,7 @@ const PROVIDERS: Record<OAuthProvider, () => BoundProvider> = {
       grantedScopes: ({ fetchImpl, tokens }) =>
         grantedPermissions({ accessToken: tokens.accessToken, fetchImpl }),
       publishScope: PAGE_PUBLISH_PERMISSION,
-      discover: (input) => discoverAccounts(input),
+      discover: async (input) => ({ accounts: await discoverAccounts(input) }),
     };
   },
 
@@ -196,7 +220,7 @@ const PROVIDERS: Record<OAuthProvider, () => BoundProvider> = {
       validate: (input) => instagram.validateToken(input),
       grantedScopes: async ({ tokens }) => tokens.scopes,
       publishScope: instagram.PUBLISH_SCOPE,
-      discover: (input) => instagram.discoverAccounts(input),
+      discover: async (input) => ({ accounts: await instagram.discoverAccounts(input) }),
     };
   },
 
@@ -212,7 +236,7 @@ const PROVIDERS: Record<OAuthProvider, () => BoundProvider> = {
       validate: (input) => tiktok.validateToken(input),
       grantedScopes: async ({ tokens }) => tokens.scopes,
       publishScope: tiktok.PUBLISH_SCOPE,
-      discover: (input) => tiktok.discoverAccounts(input),
+      discover: async (input) => ({ accounts: await tiktok.discoverAccounts(input) }),
     };
   },
 
@@ -228,7 +252,32 @@ const PROVIDERS: Record<OAuthProvider, () => BoundProvider> = {
       validate: (input) => google.validateToken(input),
       grantedScopes: async ({ tokens }) => tokens.scopes,
       publishScope: google.BUSINESS_SCOPE,
-      discover: (input) => google.discoverAccounts(input),
+      discover: async (input) => ({ accounts: await google.discoverAccounts(input) }),
+    };
+  },
+
+  /*
+   * The same Google OAuth client again, asking for `adwords` and discovering ad
+   * accounts rather than Business Profile accounts. One NORIVA application,
+   * many clients: each restaurant authorises its own Google login through it.
+   */
+  GOOGLE_ADS: () => {
+    const config = googleAds.googleAdsConfig();
+    return {
+      redirectUri: config.redirectUri,
+      redirectVariable: 'GOOGLE_ADS_REDIRECT_URI',
+      authorize: ({ state, redirectUri }) =>
+        google.authorizationUrl({
+          config: { ...config, redirectUri },
+          state,
+          scopes: googleAds.GOOGLE_ADS_SCOPES,
+        }),
+      exchange: ({ code, redirectUri, fetchImpl }) =>
+        google.exchangeCode({ config: { ...config, redirectUri }, code, fetchImpl }),
+      validate: (input) => google.validateToken(input),
+      grantedScopes: async ({ tokens }) => tokens.scopes,
+      publishScope: googleAds.ADWORDS_SCOPE,
+      discover: (input) => googleAds.discoverAccounts(input),
     };
   },
 
@@ -254,7 +303,7 @@ const PROVIDERS: Record<OAuthProvider, () => BoundProvider> = {
       validate: (input) => google.validateToken(input),
       grantedScopes: async ({ tokens }) => tokens.scopes,
       publishScope: youtube.UPLOAD_SCOPE,
-      discover: (input) => youtube.discoverAccounts(input),
+      discover: async (input) => ({ accounts: await youtube.discoverAccounts(input) }),
     };
   },
 
@@ -270,7 +319,7 @@ const PROVIDERS: Record<OAuthProvider, () => BoundProvider> = {
       validate: (input) => linkedin.validateToken(input),
       grantedScopes: async ({ tokens }) => tokens.scopes,
       publishScope: linkedin.PUBLISH_SCOPE,
-      discover: (input) => linkedin.discoverAccounts(input),
+      discover: async (input) => ({ accounts: await linkedin.discoverAccounts(input) }),
     };
   },
 };
@@ -348,13 +397,9 @@ export interface CallbackResult {
   discovered: DiscoveredAccount[];
 }
 
-const KIND: Record<DiscoveredAccount['kind'], ExternalAccountKind> = {
-  BUSINESS: ExternalAccountKind.BUSINESS,
-  PAGE: ExternalAccountKind.PAGE,
-  INSTAGRAM: ExternalAccountKind.INSTAGRAM,
-  AD_ACCOUNT: ExternalAccountKind.AD_ACCOUNT,
-  PROFILE: ExternalAccountKind.PROFILE,
-};
+// Shared with the Upload-Post flow, which discovers the same kinds through a
+// lifecycle that is not OAuth. See `account-kinds.ts`.
+const KIND = KIND_FOR_DISCOVERY;
 
 /**
  * Handle the provider's redirect back.
@@ -418,7 +463,7 @@ export async function completeCallback(input: {
     // post: pages_manage_posts on Meta, video.publish on TikTok, and so on.
     const canPublishPages = granted.includes(provider.publishScope);
 
-    const discovered = await provider.discover({
+    const { accounts: discovered, refusals = [] } = await provider.discover({
       accessToken: tokens.accessToken,
       fetchImpl: input.fetchImpl,
     });
@@ -438,7 +483,19 @@ export async function completeCallback(input: {
           refreshTokenEnc: tokens.refreshToken ? encryptSecret(tokens.refreshToken) : null,
           tokenExpiresAt: tokens.expiresAt,
           tokenFingerprint: secretFingerprint(tokens.accessToken),
-          lastError: null,
+          /*
+           * An authorisation that discovered nothing — or that was refused some
+           * of what it named — is not an error, but it is the only thing the
+           * operator will be looking at: the selection drawer opens empty, or
+           * short, and without this says nothing about why. The note is written
+           * in the provider's own vocabulary and cleared the moment something
+           * is attached.
+           */
+          lastError: discoveryNote({
+            platform: consumed.platform,
+            discovered: discovered.length,
+            refusals,
+          }),
         },
       });
 
@@ -554,6 +611,23 @@ export async function completeCallback(input: {
 // ---------------------------------------------------------------- selection
 
 /**
+ * The scope whose absence marks an attached account MISSING_PERMISSION.
+ *
+ * Read back from the same bound provider that set the flag, so the permission
+ * named in an error is the one actually compared against — not a second list
+ * that drifts. Configuration is read to answer it, and a deployment that has
+ * since had a variable cleared should still be able to detach its accounts, so
+ * an unconfigured provider yields no name rather than an exception.
+ */
+function recordedPublishScope(platform: Platform): string | null {
+  try {
+    return bindProvider(platform).publishScope;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Attach the assets the operator chose, and only then mark the connection live.
  *
  * Selecting nothing is a valid instruction — it means "detach everything" — and
@@ -567,7 +641,10 @@ export async function selectAccounts(input: {
 }): Promise<{ status: IntegrationStatus; selected: number }> {
   const integration = await prisma.integration.findFirst({
     where: { id: input.integrationId, organizationId: input.organizationId },
-    select: { id: true, accounts: { select: { id: true } } },
+    // The platform decides every sentence this function can end up writing.
+    // Selecting it is what stopped a Google Ads connection being told to go and
+    // grant a Facebook Page permission.
+    select: { id: true, platform: true, accounts: { select: { id: true } } },
   });
   if (!integration) throw new Error('Integration not found');
 
@@ -625,9 +702,9 @@ export async function selectAccounts(input: {
       status,
       lastError:
         status === IntegrationStatus.ERROR
-          ? 'The selected account has no usable publishing token. Reconnect Facebook and grant access to this Page.'
+          ? noUsableCredentialNote(integration.platform)
           : missingPermission
-            ? `Connected, but the Meta app has not been granted ${PAGE_PUBLISH_PERMISSION}, so posts cannot be published to this Page yet.`
+            ? missingGrantNote(integration.platform, recordedPublishScope(integration.platform))
             : null,
     },
   });

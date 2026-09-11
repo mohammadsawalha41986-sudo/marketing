@@ -9,7 +9,8 @@ import { IntegrationStatus, Platform, PublicationStatus, Prisma } from '@prisma/
 
 import { prisma } from '../../lib/prisma.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
-import { decryptSecret } from '../../lib/crypto.js';
+import { normalizeCustomerId } from './google-ads.js';
+import { usableAccessToken } from './google-ads-metrics.js';
 import type { PublishStep } from './publish-flow.js';
 import {
   createGoogleAdsCampaign,
@@ -71,9 +72,29 @@ export async function publishToGoogleAds(input: GoogleAdsPublishInput) {
   const adAccount = integration.accounts.find((a) => a.kind === 'AD_ACCOUNT');
   if (!adAccount) throw badRequest('Select a Google Ads account for this client before publishing');
 
-  const accessToken = decryptSecret(integration.accessTokenEnc);
-  const customerId = adAccount.externalId.replace(/-/g, '');
-  const developerToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN ?? '';
+  /*
+   * Refreshed, not merely decrypted. Google access tokens last an hour, so a
+   * publish more than an hour after the connection was made used to fail on an
+   * expired credential with a message that read like a revoked authorisation.
+   * `usableAccessToken` refreshes when the stored one is near expiry and writes
+   * the new one back, so the next publish does not pay for it again.
+   */
+  const accessToken = await usableAccessToken({
+    prisma,
+    integrationId: integration.id,
+    organizationId: input.organizationId,
+    fetchImpl: input.fetchImpl as unknown as Parameters<typeof usableAccessToken>[0]['fetchImpl'],
+  });
+  const customerId = normalizeCustomerId(adAccount.externalId);
+
+  /*
+   * Optional since Google sunset developer tokens on 9 September 2026. The API
+   * ignores the header, and access comes from the Cloud project behind the
+   * OAuth client, so an absent token is not a misconfiguration — it is the
+   * normal state. Sent when a deployment still holds one so that clearing the
+   * variable and upgrading are independent steps.
+   */
+  const developerToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN?.trim() ?? '';
 
   await prisma.adPublication.update({
     where: { id: publication.id },

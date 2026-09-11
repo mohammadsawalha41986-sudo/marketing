@@ -19,9 +19,18 @@ import {
   adapterFor, providerReadiness, allAdapters, supportsOAuth,
   ProviderNotConfiguredError, ProviderNotImplementedError,
 } from '../services/integrations/index.js';
-import { beginAuthorization, selectAccounts } from '../services/integrations/connect-flow.js';
-import { validateToken } from '../services/integrations/meta.js';
+import { beginAuthorization, bindProvider, selectAccounts } from '../services/integrations/connect-flow.js';
 import { METRIC_SYNC_PLATFORMS, syncMetaMetrics } from '../services/integrations/metric-sync.js';
+import {
+  beginUploadPostConnection, disconnectUploadPost, refreshUploadPostAccounts,
+} from '../services/integrations/upload-post-flow.js';
+import {
+  UploadPostError, profileUsernameFor, routablePlatforms, uploadPostConfigured,
+  type UploadPostFetch,
+} from '../services/integrations/upload-post.js';
+import { routeCoverage } from '../services/publishing/route.js';
+import { syncGoogleAdsMetrics, listGoogleAdsCampaigns } from '../services/integrations/google-ads-metrics.js';
+import { GoogleAdsError } from '../services/integrations/google-ads.js';
 import { decryptSecret } from '../lib/crypto.js';
 import { env } from '../env.js';
 import { hashPassword, passwordProblems } from '../lib/password.js';
@@ -31,6 +40,7 @@ import { testPublish } from '../services/publishing/service.js';
 import {
   missingPublishGrant, noTargetMessage, resolveTargetForIntegration,
 } from '../services/publishing/target.js';
+import { publisherFor } from '../services/publishing/registry.js';
 
 // ------------------------------------------------------------------ notifications
 
@@ -125,6 +135,13 @@ integrationsRouter.get(
            */
           implementation: adapter.implementation,
           canConnect: supportsOAuth(adapter) && readiness.state === 'READY',
+          /*
+           * Whether a *post* can be sent, as distinct from `capabilities.publish`.
+           * Google Ads publishes advertisements and has no organic publisher at
+           * all, so a card reading `capabilities.publish` alone would offer a
+           * Test publish button whose only possible outcome is a refusal.
+           */
+          organicPublish: Boolean(publisherFor(adapter.platform)?.canPublish),
           scopes: oauth.scopes,
           docsUrl: oauth.docsUrl,
         };
@@ -192,10 +209,10 @@ integrationsRouter.post(
     /*
      * Two different refusals, asked in this order.
      *
-     * "Not built" comes first because it is not fixable by configuration: a
-     * Google Ads adapter with all four variables set is configured and still
-     * cannot start a flow. Reporting NOT_CONFIGURED there would send an
-     * operator to add variables that are already present.
+     * "Not built" comes first because it is not fixable by configuration: an
+     * X adapter with all three variables set is configured and still cannot
+     * start a flow. Reporting NOT_CONFIGURED there would send an operator to
+     * add variables that are already present.
      */
     if (!supportsOAuth(adapter)) {
       res.status(501).json({
@@ -342,6 +359,187 @@ integrationsRouter.post(
   }),
 );
 
+// ------------------------------------------------------ upload-post
+
+/**
+ * Upload-Post's own connect surface.
+ *
+ * Separate endpoints rather than the generic `/:clientId/:platform/connect`,
+ * because Upload-Post is not an OAuth provider: there is no authorize URL to
+ * redirect to, no code to exchange and no per-client token to store. The
+ * generic route correctly refuses it (`supportsOAuth` is false for this
+ * adapter) and these take over.
+ *
+ * Every one of them derives the profile name from the *path's* client id, which
+ * is itself checked against the caller's organisation first. No route here
+ * accepts a profile name, and that is the whole tenant boundary: an operator
+ * cannot name another restaurant's profile, and a browser returning from
+ * Upload-Post cannot cause this server to read one.
+ *
+ * The API key appears in no request and no response. What the browser receives
+ * is a hosted linking URL Upload-Post minted for one profile.
+ */
+const uploadPostFetch = fetch as unknown as UploadPostFetch;
+
+/** The client, if it belongs to this actor's organisation. 404 otherwise. */
+async function ownedClient(actor: ReturnType<typeof actorOf>, clientId: string) {
+  const client = await prisma.client.findFirst({
+    where: { id: clientId, organizationId: orgId(actor) },
+    select: { id: true },
+  });
+  if (!client) throw notFound('Client');
+  return client;
+}
+
+/** Upload-Post failures are the operator's or the deployment's, never a 500. */
+function rethrowUploadPost(error: unknown): never {
+  if (error instanceof UploadPostError) {
+    // The explanation, never the raw message: it is written for a person and
+    // is guaranteed to carry no key material.
+    throw badRequest(error.explanation);
+  }
+  if (error instanceof ProviderNotConfiguredError) throw badRequest(error.message);
+  throw error;
+}
+
+integrationsRouter.post(
+  '/:clientId/upload-post/connect',
+  requireAgency,
+  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+    const { clientId } = req.params as unknown as { clientId: string };
+    await ownedClient(actor, clientId);
+
+    try {
+      const result = await beginUploadPostConnection({
+        prisma,
+        organizationId: orgId(actor),
+        clientId,
+        /*
+         * Where Upload-Post sends the operator when they are done. It carries
+         * the client so the page can finish the connection for the restaurant
+         * that started it, and nothing else — no token, no profile name, and
+         * nothing the server will trust without re-deriving it.
+         */
+        returnUrl: `${env.APP_URL}/app/integrations?uploadPost=linked&client=${encodeURIComponent(clientId)}`,
+        fetchImpl: uploadPostFetch,
+      });
+
+      await recordAudit({
+        actor, action: 'integration.connect', entity: 'Integration', entityId: result.integrationId,
+        meta: { platform: Platform.UPLOAD_POST }, ip: req.ip,
+      });
+
+      res.json({ redirectTo: result.redirectTo, integrationId: result.integrationId, profile: result.profile });
+    } catch (error) {
+      rethrowUploadPost(error);
+    }
+  }),
+);
+
+/**
+ * Re-read the profile and record what is linked to it.
+ *
+ * Called when the operator returns from the hosted page, and whenever they ask
+ * to look again. Discovery only — nothing is attached here, because attaching
+ * is the operator's choice and goes through the same `/:id/select` every
+ * provider uses.
+ */
+integrationsRouter.post(
+  '/:clientId/upload-post/refresh',
+  requireAgency,
+  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+    const { clientId } = req.params as unknown as { clientId: string };
+    await ownedClient(actor, clientId);
+
+    try {
+      const result = await refreshUploadPostAccounts({
+        prisma,
+        organizationId: orgId(actor),
+        clientId,
+        fetchImpl: uploadPostFetch,
+      });
+      res.json(result);
+    } catch (error) {
+      rethrowUploadPost(error);
+    }
+  }),
+);
+
+integrationsRouter.post(
+  '/:clientId/upload-post/disconnect',
+  requireAgency,
+  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
+  validateBody(z.object({
+    /*
+     * Off by default. Disconnecting usually means "stop publishing", and
+     * deleting the remote profile would make an operator re-link every network
+     * to undo it. Deleting is the deliberate, complete removal.
+     */
+    deleteProfile: z.boolean().default(false),
+  })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
+    const { clientId } = req.params as unknown as { clientId: string };
+    await ownedClient(actor, clientId);
+
+    const result = await disconnectUploadPost({
+      prisma,
+      organizationId: orgId(actor),
+      clientId,
+      deleteRemoteProfile: (req.body as { deleteProfile: boolean }).deleteProfile,
+      fetchImpl: uploadPostFetch,
+    });
+
+    await recordAudit({
+      actor, action: 'integration.disconnect', entity: 'Client', entityId: clientId,
+      meta: { platform: Platform.UPLOAD_POST, profileDeleted: result.profileDeleted }, ip: req.ip,
+    });
+
+    res.json(result);
+  }),
+);
+
+/**
+ * Which connection each network would publish through for this restaurant.
+ *
+ * The question an operator cannot otherwise answer without publishing: a
+ * restaurant may hold a direct Instagram connection and an Upload-Post profile
+ * carrying Instagram, and exactly one of them carries the post. This reports
+ * the resolver's actual answer rather than a second opinion about it — so what
+ * the screen shows and what publishes can never disagree.
+ */
+integrationsRouter.get(
+  '/:clientId/publishing-routes',
+  validateParams(z.object({ clientId: z.string().min(1).max(40) })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const { clientId } = req.params as unknown as { clientId: string };
+    await ownedClient(actor, clientId);
+
+    const routes = await routeCoverage({
+      prisma,
+      organizationId: orgId(actor),
+      clientId,
+      platforms: routablePlatforms(),
+    });
+
+    res.json({
+      configured: uploadPostConfigured(),
+      // Derived, never stored as a secret: it is a name, and the operator needs
+      // it to find the right profile in Upload-Post's own dashboard.
+      profile: profileUsernameFor(clientId),
+      routes,
+    });
+  }),
+);
+
 /**
  * Publish a one-off message to a connected Page, against the real provider.
  *
@@ -449,10 +647,15 @@ integrationsRouter.post(
 /**
  * Ask the provider whether this connection still works.
  *
- * A stored token is not a connection. This spends a real API call on `/me` so
- * the answer comes from Meta rather than from our own status column, and parks
- * the integration in ERROR when the provider rejects the credential — which is
- * how an expired token stops being a mystery.
+ * A stored token is not a connection. This spends a real validation call so the
+ * answer comes from the provider rather than from our own status column, and
+ * parks the integration in ERROR when the credential is rejected — which is how
+ * an expired token stops being a mystery.
+ *
+ * The call is the connection's own provider's, not Meta's. It used to be Meta's
+ * for every platform, so checking the health of a working Google Ads connection
+ * sent a Google token to Facebook's Graph `/me` — a guaranteed refusal — and
+ * wrote ERROR over a connection that was fine.
  */
 integrationsRouter.get(
   '/:id/health',
@@ -492,11 +695,11 @@ integrationsRouter.get(
     }
 
     try {
-      const identity = await validateToken({
+      const identity = await bindProvider(integration.platform).validate({
         accessToken: decryptSecret(integration.accessTokenEnc),
-        fetchImpl: fetch as unknown as Parameters<typeof validateToken>[0]['fetchImpl'],
+        fetchImpl: fetch as never,
       });
-      res.json({ ...base, live: true, detail: `Meta answered as ${identity.name}.` });
+      res.json({ ...base, live: true, detail: `${adapter.label} answered as ${identity.name}.` });
     } catch (error) {
       const message = (error as Error).message.slice(0, 500);
       await prisma.integration.update({
@@ -581,12 +784,24 @@ integrationsRouter.post(
       return;
     }
 
-    const result = await syncMetaMetrics({
-      prisma,
-      integrationId: integration.id,
-      organizationId: orgId(actor),
-      fetchImpl: fetch as unknown as Parameters<typeof syncMetaMetrics>[0]['fetchImpl'],
-    });
+    /*
+     * Dispatched on the platform rather than branched inside one sync: Meta and
+     * Google Ads read entirely different APIs, and the shared part — the run
+     * record and the snapshot grain — is shared already.
+     */
+    const result = integration.platform === Platform.GOOGLE_ADS
+      ? await syncGoogleAdsMetrics({
+        prisma,
+        integrationId: integration.id,
+        organizationId: orgId(actor),
+        fetchImpl: fetch as unknown as Parameters<typeof syncGoogleAdsMetrics>[0]['fetchImpl'],
+      })
+      : await syncMetaMetrics({
+        prisma,
+        integrationId: integration.id,
+        organizationId: orgId(actor),
+        fetchImpl: fetch as unknown as Parameters<typeof syncMetaMetrics>[0]['fetchImpl'],
+      });
     if (!result) throw notFound('Integration');
 
     await recordAudit({
@@ -601,6 +816,67 @@ integrationsRouter.post(
     // A failed run answers 200 with the failure described: the operator needs
     // to read what happened, and the run row already records it.
     res.json(result);
+  }),
+);
+
+/**
+ * The campaigns running in the connected Google Ads account.
+ *
+ * Read-only, and unattributed on purpose: it answers "what is live in this ad
+ * account", which is a different question from "how did what NORIVA published
+ * perform". The second is answered by the snapshots `POST /:id/sync` writes,
+ * and mixing the two would file a campaign created in Google Ads Manager under
+ * a local campaign it has nothing to do with.
+ *
+ * Ratios are absent for the same reason they are absent everywhere else: the
+ * analytics layer derives them and refuses the ones it cannot.
+ */
+integrationsRouter.get(
+  '/:id/google-ads/campaigns',
+  validateParams(idParam),
+  validateQuery(z.object({
+    since: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const query = req.query as { since?: string; until?: string };
+
+    // Tenant scoping is the `organizationId` filter inside the service; a
+    // connection belonging to another organisation is simply not found.
+    const integration = await prisma.integration.findFirst({
+      where: { id: req.params.id, organizationId: orgId(actor), platform: Platform.GOOGLE_ADS },
+      select: { id: true },
+    });
+    if (!integration) throw notFound('Integration');
+
+    const now = new Date();
+    const since = query.since ?? new Date(now.getTime() - 30 * 86_400_000).toISOString().slice(0, 10);
+    const until = query.until ?? now.toISOString().slice(0, 10);
+
+    try {
+      res.json(await listGoogleAdsCampaigns({
+        prisma,
+        integrationId: integration.id,
+        organizationId: orgId(actor),
+        since,
+        until,
+        fetchImpl: fetch as unknown as Parameters<typeof listGoogleAdsCampaigns>[0]['fetchImpl'],
+      }));
+    } catch (error) {
+      /*
+       * Google's own words, mapped to an explanation an operator can act on,
+       * and never the raw error: a Google Ads failure message can carry request
+       * identifiers and account ids that have no business on a screen.
+       */
+      if (error instanceof GoogleAdsError) {
+        res.status(error.failure === 'NOT_AUTHORIZED' ? 403 : 502).json({
+          error: { code: error.failure, message: error.explanation },
+        });
+        return;
+      }
+      throw error;
+    }
   }),
 );
 

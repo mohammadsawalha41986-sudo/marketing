@@ -45,6 +45,7 @@ import { metaConfigDiagnostics } from '../integrations/meta.js';
 import { instagramConfigured } from '../integrations/instagram.js';
 import { tiktokConfigured } from '../integrations/tiktok.js';
 import { googleConfigured } from '../integrations/google.js';
+import { googleAdsConfigured } from '../integrations/google-ads.js';
 import { youtubeConfigured } from '../integrations/youtube.js';
 import { linkedInConfigured } from '../integrations/linkedin.js';
 
@@ -155,11 +156,18 @@ const CREDENTIALS = {
     env: ['LINKEDIN_CLIENT_ID', 'LINKEDIN_CLIENT_SECRET'],
     configured: () => linkedInConfigured(),
   },
+  /*
+   * Google Ads shares the OAuth client with Business Profile and YouTube but
+   * has its own callback route and its own optional redirect variable, so
+   * `GOOGLE_REDIRECT_URI` — which belongs to Business Profile's route — is not
+   * among its requirements. Neither is a developer token: Google sunset those
+   * on 9 September 2026, and what gates the Ads API now is the access level of
+   * the Cloud project the OAuth client belongs to, which no environment
+   * variable can express.
+   */
   GOOGLE_ADS: {
-    env: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI', 'GOOGLE_ADS_DEVELOPER_TOKEN'],
-    // The developer token is the one that actually gates the Ads API, and it is
-    // separate from the OAuth client every other Google product uses.
-    configured: () => googleConfigured() && Boolean(process.env.GOOGLE_ADS_DEVELOPER_TOKEN?.trim()),
+    env: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'],
+    configured: () => googleAdsConfigured(),
   },
   /** No credential group, because nothing is built to use one. */
   NONE: { env: [], configured: () => false },
@@ -348,9 +356,15 @@ const PAID: Partial<Record<Platform, ChannelDeclaration>> = {
   },
 
   [Platform.GOOGLE_ADS]: {
-    OAUTH: built('Google OAuth with the adwords scope.'),
-    ACCOUNTS: missing(
-      'Customer and manager account discovery is not built; an account id must be supplied.',
+    OAUTH: built(
+      'Google OAuth with the adwords scope, offline access always requested, on its own callback route.',
+      'Google Ads API access on the Cloud project behind the OAuth client. Explorer is granted '
+      + 'automatically and reaches production accounts at 2,880 operations a day; Basic or Standard '
+      + 'must be applied for, and only if that ceiling is reached.',
+    ),
+    ACCOUNTS: built(
+      'Accessible customers are enumerated after consent, with the accounts under a manager listed '
+      + 'alongside it; the operator attaches one per client.',
     ),
     CAMPAIGNS: built('Created through REST v17 with the budget in micros, always PAUSED.'),
     AD_GROUPS: built('Ad groups created against the campaign.'),
@@ -359,8 +373,8 @@ const PAID: Partial<Record<Platform, ChannelDeclaration>> = {
     TARGETING: missing('Location and keyword targeting are not written by this integration yet.'),
     PREVIEW: missing('No search-ad preview is rendered from Google\'s own asset data.'),
     CALENDAR: missing('Paid flights do not appear on a calendar yet.'),
-    ANALYTICS: missing('Google Ads reporting is not read; only the write path is built.'),
-    REPORTING: missing('Google Ads reporting is not read; only the write path is built.'),
+    ANALYTICS: built('Daily campaign performance read through GAQL and stored as snapshots.'),
+    REPORTING: built('Campaign spend, clicks, impressions, conversions and conversion value.'),
     AI_RECOMMENDATIONS: built('Campaign optimiser findings over recorded performance.'),
   },
 
@@ -404,6 +418,12 @@ const PAID: Partial<Record<Platform, ChannelDeclaration>> = {
 
 /** Which credential group each platform's channel depends on. */
 const CREDENTIAL_FOR: Record<Platform, { organic: CredentialKey; paid: CredentialKey }> = {
+  /*
+   * Nothing is ever authored *for* Upload-Post — content names the real network
+   * it is going to and the route is resolved at publish time — so it has no
+   * channel of its own to depend on a credential for.
+   */
+  [Platform.UPLOAD_POST]: { organic: 'NONE', paid: 'NONE' },
   [Platform.FACEBOOK]: { organic: 'META', paid: 'META' },
   // Organic Instagram connects on its own; Instagram ads are a Meta ad set.
   [Platform.INSTAGRAM]: { organic: 'INSTAGRAM', paid: 'META' },

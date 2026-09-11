@@ -300,7 +300,7 @@ export function CeoPage({ portal = false }: { portal?: boolean } = {}) {
       ) : (
         <>
           {/* Health + brief */}
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+          <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
             <Card>
               <CardHeader title="Marketing health" icon={Gauge} />
               <div className="p-5">

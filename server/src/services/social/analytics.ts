@@ -93,6 +93,9 @@ export interface SocialOverview {
 }
 
 const METRICS_SUPPORTED: Record<Platform, Set<string>> = {
+  // Post metrics belong to the network a post reached, never to the route that
+  // carried it there, so there is nothing to report under this platform.
+  [Platform.UPLOAD_POST]: new Set<string>(),
   [Platform.FACEBOOK]: new Set(['likes', 'comments', 'shares', 'reach', 'impressions', 'engagements', 'clicks']),
   [Platform.INSTAGRAM]: new Set(['likes', 'comments', 'shares', 'saves', 'reach', 'impressions', 'engagements']),
   [Platform.TIKTOK]: new Set(['likes', 'comments', 'shares', 'reach', 'impressions', 'engagements']),

@@ -126,6 +126,9 @@ export interface PlatformBreakdown extends Derived {
 }
 
 export const PLATFORM_LABELS: Record<Platform, string> = {
+  // A route rather than a network. It never appears as a post's platform, so
+  // this label shows only where a connection is named.
+  UPLOAD_POST: 'Upload-Post',
   FACEBOOK: 'Facebook',
   INSTAGRAM: 'Instagram',
   TIKTOK: 'TikTok',

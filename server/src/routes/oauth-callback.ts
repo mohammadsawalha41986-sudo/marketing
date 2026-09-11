@@ -43,6 +43,13 @@ function callbackRedirect(
   provider = 'meta',
 ): string {
   const url = new URL('/app/integrations', env.APP_URL);
+  /*
+   * The provider is carried on both outcomes. It used to be set only on
+   * success, so the failure banner had nothing to name and said "Meta" for
+   * every provider — telling an operator whose Google Ads connection failed to
+   * go and check their Meta app.
+   */
+  url.searchParams.set('provider', provider);
   if (outcome.ok) {
     url.searchParams.set('connected', provider);
     url.searchParams.set('integration', outcome.integrationId);
@@ -133,5 +140,11 @@ mountCallback({ slug: 'meta', platform: Platform.FACEBOOK, label: 'Meta' });
 mountCallback({ slug: 'instagram', platform: Platform.INSTAGRAM, label: 'Instagram' });
 mountCallback({ slug: 'tiktok', platform: Platform.TIKTOK, label: 'TikTok' });
 mountCallback({ slug: 'google', platform: Platform.GOOGLE_BUSINESS, label: 'Google' });
+/*
+ * Google Ads: the same Google OAuth client, a different product, a different
+ * grant, and a state bound to Platform.GOOGLE_ADS. Its own route for the same
+ * reason YouTube has one.
+ */
+mountCallback({ slug: 'google-ads', platform: Platform.GOOGLE_ADS, label: 'Google Ads' });
 mountCallback({ slug: 'youtube', platform: Platform.YOUTUBE, label: 'YouTube' });
 mountCallback({ slug: 'linkedin', platform: Platform.LINKEDIN, label: 'LinkedIn' });

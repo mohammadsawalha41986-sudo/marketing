@@ -616,11 +616,41 @@ export function Pagination({
   );
 }
 
-export function PageHeader({
-  title, subtitle, action, children,
-}: { title: string; subtitle?: string; action?: ReactNode; children?: ReactNode }) {
+/**
+ * The page's identity, pinned under the global header.
+ *
+ * A long page scrolls its title and its tabs away, and on a screen where the
+ * body is mostly one tall card that reads as "the page lost its heading" —
+ * which is exactly what it looked like on a content record: scroll down and
+ * nothing on screen says which post you are looking at or which tab you are in.
+ *
+ * One sticky context, not two. Pinning a header and a tab strip separately
+ * means computing the second offset from the first's rendered height, which is
+ * wrong the moment a title wraps. Wrapping both in a single sticky element
+ * makes the browser do that arithmetic.
+ *
+ * `top-16` is the global header's height, and `z-10` sits under its `z-20`, so
+ * this bar tucks beneath it rather than over it. The negative insets are the
+ * main element's own padding, so the background reaches the edges and content
+ * scrolls under it invisibly rather than appearing beside it.
+ */
+export function PageBar({ children }: { children: ReactNode }) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <div className="sticky top-16 z-10 -mx-4 mb-4 border-b border-line bg-bg/95 px-4 pt-4 backdrop-blur-sm sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+      {children}
+    </div>
+  );
+}
+
+export function PageHeader({
+  title, subtitle, action, children, className,
+}: {
+  title: string; subtitle?: string; action?: ReactNode; children?: ReactNode;
+  /** Spacing only. Inside a `PageBar` the gap below belongs to the bar. */
+  className?: string;
+}) {
+  return (
+    <div className={cn('flex flex-wrap items-end justify-between gap-4', className ?? 'mb-6')}>
       <div className="min-w-0 flex-1">
         <h1 className="text-[22px] font-semibold tracking-tight text-fg sm:text-2xl">{title}</h1>
         {subtitle ? <p className="mt-1 text-sm text-muted">{subtitle}</p> : null}

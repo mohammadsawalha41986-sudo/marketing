@@ -49,6 +49,7 @@ describe('Meta OAuth routes', () => {
     for (const key of [
       'TOKEN_ENCRYPTION_KEY', 'META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI', 'META_CONFIG_ID',
       'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_ADS_DEVELOPER_TOKEN', 'GOOGLE_REDIRECT_URI',
+      'X_CLIENT_ID', 'X_CLIENT_SECRET', 'X_REDIRECT_URI',
     ]) {
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
@@ -114,23 +115,43 @@ describe('Meta OAuth routes', () => {
   });
 
   /*
-   * The distinction the old code could not make. Google Ads is fully
-   * configured here and still cannot connect, because nobody has written it.
-   * Reporting NOT_CONFIGURED would send an operator to fix variables that are
-   * already correct.
+   * The distinction the old code could not make. X is fully configured here
+   * and still cannot connect, because nobody has written it. Reporting
+   * NOT_CONFIGURED would send an operator to fix variables already correct.
+   *
+   * This test stood on Google Ads until Google Ads was built. The platform had
+   * to change; the distinction it proves did not, and picking a platform that
+   * is genuinely unbuilt is the whole point of the assertion.
    */
   it('separates "not built" from "not configured"', async () => {
-    process.env.GOOGLE_CLIENT_ID = 'g-id';
-    process.env.GOOGLE_CLIENT_SECRET = 'g-secret';
-    process.env.GOOGLE_ADS_DEVELOPER_TOKEN = 'g-dev';
-    process.env.GOOGLE_REDIRECT_URI = `${BASE}/api/integrations/google/callback`;
+    process.env.X_CLIENT_ID = 'x-id';
+    process.env.X_CLIENT_SECRET = 'x-secret';
+    process.env.X_REDIRECT_URI = `${BASE}/api/integrations/x/callback`;
 
     const client = await admin(alpha);
-    const response = await client.post(`/api/integrations/${alpha.clientId}/GOOGLE_ADS/connect`);
+    const response = await client.post(`/api/integrations/${alpha.clientId}/X/connect`);
 
     expect(response.status).toBe(501);
     expect(response.body.error.code).toBe('PROVIDER_NOT_IMPLEMENTED');
     expect(response.body.error.details.implementation.oauth).toBe('ARCHITECTURE_ONLY');
+  });
+
+  /*
+   * And the converse, now that Google Ads is built: a configured Google Ads
+   * deployment starts a real authorization instead of answering 501.
+   */
+  it('starts a real authorization for Google Ads once it is configured', async () => {
+    process.env.GOOGLE_CLIENT_ID = 'g-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'g-secret';
+    process.env.GOOGLE_ADS_DEVELOPER_TOKEN = 'g-dev';
+
+    const client = await admin(alpha);
+    const response = await client.post(`/api/integrations/${alpha.clientId}/GOOGLE_ADS/connect`);
+
+    expect(response.status).toBe(200);
+    const target = new URL(response.body.redirectTo);
+    expect(target.host).toBe('accounts.google.com');
+    expect(target.searchParams.get('scope')).toContain('/auth/adwords');
   });
 
   it('refuses to start a connection for another tenant\'s client', async () => {

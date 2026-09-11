@@ -323,7 +323,10 @@ export function ContentPreview({
           // On a vertical surface the caption is burned over the creative, so
           // previewing it underneath would answer the wrong question.
           vertical && headline ? (
-            <span className="pointer-events-none absolute bottom-[6%] start-3 max-w-[70%] text-[13px] font-medium text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]">
+            /* Clamped: a headline burned over the creative has only the room
+               the surface gives it, and an unclamped one runs past the frame
+               and is cut mid-word by the frame's own clipping. */
+            <span className="pointer-events-none absolute bottom-[6%] start-3 line-clamp-2 max-w-[70%] text-[13px] font-medium text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]">
               {headline}
             </span>
           ) : null

@@ -130,7 +130,11 @@ describe('connection lifecycle', () => {
     // Instagram Login is its own product with its own callback; the Meta route
     // above still serves the Facebook connection unchanged.
     expect(callbackUrl(BASE, Platform.INSTAGRAM)).toBe(`${BASE}/api/integrations/instagram/callback`);
-    expect(callbackUrl(BASE, Platform.GOOGLE_ADS)).toBe(`${BASE}/api/integrations/google/callback`);
+    // Google Ads shares the OAuth client with Business Profile but not the
+    // route: the state is bound to one platform and the route is what proves
+    // which provider redirected.
+    expect(callbackUrl(BASE, Platform.GOOGLE_ADS)).toBe(`${BASE}/api/integrations/google-ads/callback`);
+    expect(callbackUrl(BASE, Platform.GOOGLE_BUSINESS)).toBe(`${BASE}/api/integrations/google/callback`);
     expect(callbackUrl(BASE, Platform.TIKTOK)).toBe(`${BASE}/api/integrations/tiktok/callback`);
   });
 

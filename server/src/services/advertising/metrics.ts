@@ -61,6 +61,12 @@ export interface QualifiedMetric {
  * Google never produced.
  */
 const SUPPORTED: Record<Platform, ReadonlySet<PaidMetricName>> = {
+  /*
+   * Empty, and permanently so. Upload-Post is an organic publishing route with
+   * no advertising surface at all, so every paid metric for it is UNAVAILABLE —
+   * which is the honest answer, and the one this map exists to give.
+   */
+  [Platform.UPLOAD_POST]: new Set<PaidMetricName>(),
   [Platform.FACEBOOK]: new Set([
     'spend', 'budget', 'impressions', 'reach', 'clicks', 'ctr', 'cpc', 'cpm', 'conversions', 'cpa', 'roas',
   ]),

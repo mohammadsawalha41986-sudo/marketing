@@ -118,6 +118,7 @@ export const PLATFORM_LABELS: Record<string, string> = {
   X: 'X',
   LINKEDIN: 'LinkedIn',
   YOUTUBE: 'YouTube',
+  UPLOAD_POST: 'Upload-Post',
 };
 
 /** Brand-recognisable accents for platform chips and chart series. */
@@ -131,6 +132,9 @@ export const PLATFORM_COLORS: Record<string, string> = {
   X: '#94a3b8',
   LINKEDIN: '#0ea5e9',
   YOUTUBE: '#ef4444',
+  // Distinct from every network's accent: it is a route, and reading as one of
+  // them on a chip would suggest a post went somewhere it did not.
+  UPLOAD_POST: '#f59e0b',
 };
 
 export const humanize = (value: string): string =>

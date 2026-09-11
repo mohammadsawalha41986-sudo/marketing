@@ -264,4 +264,11 @@ export async function syncMetaMetrics(input: {
 }
 
 /** Platforms whose metrics can actually be ingested today. */
-export const METRIC_SYNC_PLATFORMS: Platform[] = [Platform.FACEBOOK, Platform.INSTAGRAM];
+export const METRIC_SYNC_PLATFORMS: Platform[] = [
+  Platform.FACEBOOK,
+  Platform.INSTAGRAM,
+  // Google Ads has its own ingestion — `google-ads-metrics.ts` — because the
+  // two providers agree on almost nothing below the level of "read days, write
+  // snapshots". The route dispatches on the platform.
+  Platform.GOOGLE_ADS,
+];

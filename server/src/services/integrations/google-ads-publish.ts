@@ -5,9 +5,14 @@
  *   Campaign → Ad Group → Ad (with an asset / ad creative inline)
  *
  * The REST endpoint is:
- *   POST https://googleads.googleapis.com/v17/customers/{customerId}/campaigns:mutate
- *   POST https://googleads.googleapis.com/v17/customers/{customerId}/adGroups:mutate
- *   POST https://googleads.googleapis.com/v17/customers/{customerId}/adGroupAds:mutate
+ *   POST https://googleads.googleapis.com/{version}/customers/{customerId}/campaigns:mutate
+ *   POST https://googleads.googleapis.com/{version}/customers/{customerId}/adGroups:mutate
+ *   POST https://googleads.googleapis.com/{version}/customers/{customerId}/adGroupAds:mutate
+ *
+ * The version comes from `google-ads.ts` rather than being spelled here. It was
+ * spelled here, as v17, and stayed that way through v17's sunset in June 2025 —
+ * a second copy of a value Google retires on a schedule is a second thing to
+ * forget.
  *
  * Everything is created PAUSED — same principle as Meta: a publish that goes
  * live immediately spends real money before anyone reviews it.
@@ -20,7 +25,9 @@
 
 import { Platform } from '@prisma/client';
 
-const API = 'https://googleads.googleapis.com/v17';
+import { ADS_API_VERSION } from './google-ads.js';
+
+const API = `https://googleads.googleapis.com/${ADS_API_VERSION}`;
 
 export class GoogleAdsApiError extends Error {
   readonly platform = Platform.GOOGLE_ADS;

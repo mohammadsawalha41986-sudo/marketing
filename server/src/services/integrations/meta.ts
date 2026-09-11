@@ -370,6 +370,32 @@ export interface DiscoveredAccount {
 }
 
 /**
+ * An asset the provider named and then refused.
+ *
+ * Google Ads is the reason this exists: `customers:listAccessibleCustomers`
+ * routinely returns ids whose detail read is then denied, and a discovery that
+ * silently drops them puts a short list — or an empty one — in front of an
+ * operator with nothing to explain it. The message is the provider's own,
+ * already written for a UI, and never carries a token, a code or a stack.
+ */
+export interface DiscoveryRefusal {
+  externalId: string;
+  message: string;
+}
+
+/**
+ * What one discovery pass found, and what it was refused.
+ *
+ * Lives beside `DiscoveredAccount` for the same reason that union does:
+ * `connect-flow` maps every provider's discovery through one table, and a
+ * second definition of this shape would mean two.
+ */
+export interface DiscoveryResult {
+  accounts: DiscoveredAccount[];
+  refusals?: DiscoveryRefusal[];
+}
+
+/**
  * Confirm a token actually works before anything is marked connected.
  *
  * `/me` is the cheapest call that proves the token is live and readable. A

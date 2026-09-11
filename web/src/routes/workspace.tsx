@@ -14,6 +14,9 @@ import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
 import { useRestaurant } from '../lib/restaurant';
 import { bytes, cn } from '../lib/utils';
+import {
+  accountKindLabel, accountPickerCopy, compareAccountKinds, formatExternalId, parentAccountLine,
+} from '../lib/account-picker';
 import { date, dateTime, humanize, isoDate, relative } from '../lib/format';
 import {
   Badge, Button, Card, CardHeader, CardSkeleton, Drawer, EmptyState, ErrorState, Field, Input, Modal,
@@ -905,6 +908,8 @@ interface AdapterInfo {
     conversions: ImplementationState;
   };
   canConnect: boolean;
+  /** Organic posting, as distinct from advertising. Google Ads has none. */
+  organicPublish: boolean;
   scopes: string[];
   docsUrl: string;
 }
@@ -920,37 +925,17 @@ interface DiscoveredAccountRow {
   currency: string | null;
   timezone: string | null;
   /**
-   * For an Instagram Professional account this is the id of the Facebook Page
-   * it is linked through — Meta only ever exposes Instagram as a property of a
-   * Page, and attaching one without the other publishes nothing.
+   * The account this one was reached through, by the *provider's* id, not ours
+   * — the only identifier that survives re-running discovery.
+   *
+   * What a parent is differs per provider, which is why nothing here names one:
+   * on Meta it is the Facebook Page an Instagram Professional account is linked
+   * through, and on Google Ads it is the manager account a customer sits under.
+   * `parentAccountLine` decides what to call it.
    */
   parentExternalId: string | null;
   selected: boolean;
 }
-
-/**
- * What each kind is called on screen.
- *
- * Meta's own vocabulary, not the enum's. An operator looking for their
- * "Instagram Professional account" should not have to guess that we call it
- * INSTAGRAM.
- */
-const ACCOUNT_KIND_LABEL: Record<string, string> = {
-  PAGE: 'Facebook Page',
-  INSTAGRAM: 'Instagram Professional',
-  AD_ACCOUNT: 'Ad account',
-  BUSINESS: 'Business',
-  CUSTOMER: 'Customer',
-  LOCATION: 'Location',
-  ORGANIZATION: 'Organization',
-  PROFILE: 'Profile',
-};
-
-/** Pages first, then the Instagram accounts hanging off them, then the money. */
-const ACCOUNT_KIND_ORDER = ['PAGE', 'INSTAGRAM', 'AD_ACCOUNT', 'BUSINESS'];
-
-const accountKindLabel = (kind: string) =>
-  ACCOUNT_KIND_LABEL[kind] ?? kind.replace(/_/g, ' ').toLowerCase();
 
 /**
  * Turn the callback's `?error=` into something worth reading.
@@ -965,13 +950,37 @@ const accountKindLabel = (kind: string) =>
  * them apart either, and does not pretend to. The precise reason is recorded
  * server-side.
  */
-function describeCallbackFailure(reason: string): { title: string; body: string } {
+/**
+ * The callback slug, as the provider is named to a person.
+ *
+ * The slug is what the route is mounted under, so it is the one thing that is
+ * certainly correct about which provider redirected.
+ */
+const PROVIDER_LABEL: Record<string, string> = {
+  meta: 'Meta',
+  instagram: 'Instagram',
+  tiktok: 'TikTok',
+  google: 'Google Business Profile',
+  'google-ads': 'Google Ads',
+  youtube: 'YouTube',
+  linkedin: 'LinkedIn',
+};
+
+function describeCallbackFailure(reason: string, provider: string | null): { title: string; body: string } {
   const text = reason.toLowerCase();
+  /*
+   * Named from the callback's own slug. This used to say "Meta" unconditionally
+   * — every provider's failure was reported against Meta, which sent an
+   * operator whose Google Ads connection failed to go and check a Meta app that
+   * had nothing to do with it. A provider we cannot name is reported without
+   * one rather than under a guess.
+   */
+  const label = (provider && PROVIDER_LABEL[provider]) ?? 'The provider';
 
   if (/denied|cancel|not authorized|access_denied/.test(text)) {
     return {
       title: 'Authorization was declined',
-      body: 'Meta reported that the request was not approved. Press Connect again and accept the permissions to continue.',
+      body: `${label} reported that the request was not approved. Press Connect again and accept the permissions to continue.`,
     };
   }
 
@@ -984,15 +993,15 @@ function describeCallbackFailure(reason: string): { title: string; body: string 
 
   if (/no authorization code/.test(text)) {
     return {
-      title: 'Meta returned no authorization code',
-      body: 'The login finished without the code we need. Press Connect again — if it repeats, the app configuration on Meta needs checking.',
+      title: `${label} returned no authorization code`,
+      body: `The login finished without the code we need. Press Connect again — if it repeats, the app configuration on ${label} needs checking.`,
     };
   }
 
-  // Token exchange and Graph API failures: the provider's message is the most
-  // useful thing we have, and it never carries the code or the token.
+  // Token exchange and provider API failures: the provider's message is the
+  // most useful thing we have, and it never carries the code or the token.
   return {
-    title: 'Meta did not connect',
+    title: `${label} did not connect`,
     body: reason,
   };
 }
@@ -1013,11 +1022,18 @@ interface IntegrationRow {
  * Choosing which accounts belong to this restaurant.
  *
  * This is the step that turns an authorized token into a connection, and it is
- * deliberately manual. Meta hands back every Page, Instagram account and ad
- * account the person who authorized can see — which, for anyone who manages
- * more than one business, includes accounts that have nothing to do with this
- * restaurant. Attaching them all is how one brand's ad account ends up wired
- * into another's campaigns, so discovery marks everything unselected and waits.
+ * deliberately manual. A provider hands back every asset the person who
+ * authorized can see — Pages and ad accounts on Meta, every Google Ads customer
+ * a login can reach on Google Ads — which, for anyone who manages more than one
+ * business, includes accounts that have nothing to do with this restaurant.
+ * Attaching them all is how one brand's ad account ends up wired into another's
+ * campaigns, so discovery marks everything unselected and waits.
+ *
+ * Everything the operator reads here is the *connection's own* provider's
+ * words, resolved from `platform` through `account-picker.ts`. This screen used
+ * to be Meta's regardless of what had been connected, which is how a successful
+ * Google Ads authorisation produced a drawer explaining that "publishing needs
+ * one ad account and one Page" above a list of nothing.
  */
 function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose: () => void; onSaved: () => void }) {
   const { push } = useToast();
@@ -1027,8 +1043,22 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
   const { data, loading, error } = useQuery<{
     integration: {
       id: string;
+      /*
+       * The provider this drawer is speaking for. The endpoint has always
+       * returned it; nothing read it, which is the whole of this bug.
+       */
+      platform: Platform;
       status: string;
       accountName: string | null;
+      /**
+       * Why discovery found what it found, when that needs saying.
+       *
+       * The server writes a provider-worded note here when an authorisation
+       * succeeded and returned no accounts — including the provider's own
+       * refusal, where there was one. Without it an empty drawer is silent
+       * about the one thing the operator needs to know.
+       */
+      lastError: string | null;
       accounts: DiscoveredAccountRow[];
     };
   }>(id ? `/integrations/${id}/accounts` : null, [id]);
@@ -1073,30 +1103,36 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
   };
 
   const accounts = useMemo(() => data?.integration.accounts ?? [], [data]);
+  const platform = data?.integration.platform ?? null;
+  const copy = useMemo(() => accountPickerCopy(platform), [platform]);
 
   /**
-   * Which Page an Instagram account belongs to, by the Page's *external* id.
+   * The "reached through X" line for each account, or null where there is none.
    *
-   * `parentExternalId` carries Meta's id, not ours, because that is the only
+   * Parents are resolved against every discovered account, not just the Pages:
+   * a Google Ads customer's parent is the manager account it sits under, which
+   * is itself an AD_ACCOUNT row. The lookup is on the *provider's* id, the only
    * identifier that survives re-running discovery.
    */
-  const pageByExternalId = useMemo(() => {
-    const map = new Map<string, DiscoveredAccountRow>();
-    for (const row of accounts) if (row.kind === 'PAGE') map.set(row.externalId, row);
-    return map;
-  }, [accounts]);
+  const parentLines = useMemo(() => {
+    const byExternalId = new Map(accounts.map((row) => [row.externalId, row]));
+    return new Map(accounts.map((row) => [
+      row.id,
+      parentAccountLine({
+        platform,
+        parentExternalId: row.parentExternalId,
+        parentName: row.parentExternalId ? byExternalId.get(row.parentExternalId)?.name : undefined,
+      }),
+    ]));
+  }, [accounts, platform]);
 
   const byKind = useMemo(() => {
     const map = new Map<string, DiscoveredAccountRow[]>();
     for (const row of accounts) {
       map.set(row.kind, [...(map.get(row.kind) ?? []), row]);
     }
-    return [...map.entries()].sort(([a], [b]) => {
-      const ai = ACCOUNT_KIND_ORDER.indexOf(a);
-      const bi = ACCOUNT_KIND_ORDER.indexOf(b);
-      return (ai === -1 ? ACCOUNT_KIND_ORDER.length : ai) - (bi === -1 ? ACCOUNT_KIND_ORDER.length : bi);
-    });
-  }, [accounts]);
+    return [...map.entries()].sort(([a], [b]) => compareAccountKinds(platform, a, b));
+  }, [accounts, platform]);
 
   return (
     <Drawer
@@ -1116,14 +1152,13 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
       ) : (
         <div className="space-y-5">
           <p className="text-[13px] leading-relaxed text-muted">
-            Meta returned everything {data?.integration.accountName ?? 'this login'} can see. Attach only what belongs
-            to this restaurant — publishing needs one ad account and one Page.
+            {copy.intro(data?.integration.accountName ?? 'this login')}
           </p>
 
           {byKind.map(([kind, rows]) => (
             <div key={kind}>
               <p className="mb-1.5 text-[11px] uppercase tracking-wide text-muted">
-                {accountKindLabel(kind)}
+                {accountKindLabel(platform, kind)}
               </p>
               <div className="space-y-1.5">
                 {rows.map((row) => (
@@ -1152,22 +1187,24 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
                         ) : null}
                       </span>
                       <span className="block truncate text-[11px] text-muted">
-                        {accountKindLabel(row.kind)}
+                        {accountKindLabel(platform, row.kind)}
                         {' · '}
-                        {row.externalId}
+                        {/* Google Ads prints a customer id as 123-456-7890 everywhere
+                            an operator will be comparing this against. */}
+                        {formatExternalId(platform, row.externalId)}
                         {row.currency ? ` · ${row.currency}` : ''}
                         {row.timezone ? ` · ${row.timezone}` : ''}
                       </span>
                       {/*
-                        Meta exposes Instagram only through the Page it is linked to.
-                        Naming that Page here is what stops someone attaching an
-                        Instagram account whose Page they never selected.
+                        What an account was reached through, named as this provider
+                        names it: the Facebook Page an Instagram account is linked
+                        to, the manager account a Google Ads customer sits under.
+                        Null where the provider has no such relationship, rather
+                        than the unconditional "via Page …" this used to render.
                       */}
-                      {row.parentExternalId ? (
+                      {parentLines.get(row.id) ? (
                         <span className="block truncate text-[11px] text-muted">
-                          via{' '}
-                          {pageByExternalId.get(row.parentExternalId)?.name ??
-                            `Page ${row.parentExternalId}`}
+                          {parentLines.get(row.id)}
                         </span>
                       ) : null}
                     </span>
@@ -1178,8 +1215,14 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
           ))}
 
           {byKind.length === 0 ? (
+            /*
+             * The server's note first, the provider's generic advice second.
+             * When discovery came back empty because the provider refused an
+             * account, the refusal is the only sentence worth reading — and it
+             * is the one thing this screen could never say before.
+             */
             <p className="text-[13px] text-muted">
-              Meta returned no accounts for this login. Check that it administers a Page and an ad account.
+              {data?.integration.lastError ?? copy.empty}
             </p>
           ) : null}
         </div>
@@ -1271,6 +1314,74 @@ function ProjectPicker() {
   );
 }
 
+/**
+ * Which connection each network actually publishes through.
+ *
+ * A restaurant can reach the same network two ways — directly, or through its
+ * Upload-Post profile — and exactly one of them carries the post. Until now
+ * that answer existed only inside the resolver, so the only way to learn it was
+ * to publish something and look at where it appeared.
+ *
+ * It reads the resolver's own answer rather than recomputing it from the cards,
+ * which is the point: a panel that decided independently would eventually
+ * disagree with what publishes, and be believed.
+ */
+function PublishingRoutes({ clientId }: { clientId: string | null }) {
+  const { data, loading } = useQuery<{
+    configured: boolean;
+    profile: string;
+    routes: Array<{ platform: Platform; route: 'DIRECT' | 'UPLOAD_POST' | null; accountName: string | null }>;
+  }>(clientId ? `/integrations/${clientId}/publishing-routes` : null, [clientId]);
+
+  if (!clientId || loading || !data) return null;
+
+  const covered = data.routes.filter((row) => row.route !== null);
+  // Nothing connected and no key set: an empty panel would read as a failure
+  // rather than as "there is nothing to say yet".
+  if (covered.length === 0 && !data.configured) return null;
+
+  return (
+    <Card className="mb-4 p-4">
+      <p className="text-[13px] font-medium text-fg">Where posts go</p>
+      <p className="mt-1 text-[12px] leading-relaxed text-muted">
+        One connection per network, resolved before anything is sent. A direct connection always wins, so a
+        network reachable both ways is published to once — never twice.
+      </p>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {data.routes.map((row) => (
+          <span
+            key={row.platform}
+            className={cn(
+              'inline-flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[12px]',
+              row.route ? 'border-line text-fg' : 'border-line/60 text-muted',
+            )}
+          >
+            <PlatformChip platform={row.platform} size="sm" />
+            {row.route === null ? (
+              <span className="text-muted">not connected</span>
+            ) : (
+              <>
+                <span className="text-muted">{row.route === 'DIRECT' ? 'direct' : 'via Upload-Post'}</span>
+                {row.accountName ? (
+                  <span className="max-w-[14rem] truncate text-fg">{row.accountName}</span>
+                ) : null}
+              </>
+            )}
+          </span>
+        ))}
+      </div>
+
+      {data.configured ? (
+        <p className="mt-3 text-[11px] text-muted">
+          {/* A name, not a secret — the operator needs it to find the right profile in Upload-Post. */}
+          Upload-Post profile for this restaurant: <span className="text-fg">{data.profile}</span>
+        </p>
+      ) : null}
+    </Card>
+  );
+}
+
 export function IntegrationsPage() {
   const { t, lang } = useI18n();
   const { push } = useToast();
@@ -1303,6 +1414,31 @@ export function IntegrationsPage() {
       push({ tone: 'error', title: t('common.pickProject') });
       return;
     }
+
+    /*
+     * Upload-Post has no OAuth, so it has its own connect endpoint.
+     *
+     * The generic route correctly refuses it — the adapter reports no OAuth
+     * flow — and sending it there anyway would show the operator a 501 for a
+     * provider that connects perfectly well. What comes back is still a URL to
+     * go to: Upload-Post's hosted page for this restaurant's profile.
+     */
+    if (platform === 'UPLOAD_POST') {
+      try {
+        const { redirectTo } = await api.post<{ redirectTo: string; profile: string }>(
+          `/integrations/${clientId}/upload-post/connect`,
+        );
+        window.location.href = redirectTo;
+      } catch (err) {
+        push({
+          tone: 'error',
+          title: 'Could not open Upload-Post',
+          body: err instanceof Error ? err.message : undefined,
+        });
+      }
+      return;
+    }
+
     try {
       /*
        * The server answers with the provider's own authorization URL, and the
@@ -1332,14 +1468,34 @@ export function IntegrationsPage() {
    * pressing the button again — reconnecting means going back through Meta.
    * That is worth one confirmation.
    */
-  const disconnect = async (integrationId: string, label: string) => {
-    if (!window.confirm(`Disconnect ${label}? The stored credentials are deleted and reconnecting needs a new Meta login.`)) {
-      return;
-    }
+  const disconnect = async (integrationId: string, label: string, platform: Platform) => {
+    /*
+     * Upload-Post has nothing stored to delete — the deployment's API key
+     * authorises it — so the warning about discarded credentials would be
+     * false. What disconnecting does there is detach every linked account so
+     * nothing publishes through it, and the profile itself is left in place so
+     * reconnecting does not mean linking seven networks again.
+     */
+    const routed = platform === 'UPLOAD_POST';
+    const warning = routed
+      ? `Disconnect ${label}? Every linked account is detached and nothing will publish through it. `
+        + 'The Upload-Post profile itself is kept, so reconnecting finds the accounts already linked.'
+      : `Disconnect ${label}? The stored credentials are deleted and reconnecting needs a new ${label} login.`;
+    if (!window.confirm(warning)) return;
+
     setDisconnecting(integrationId);
     try {
-      await api.post(`/integrations/${integrationId}/disconnect`);
-      push({ tone: 'success', title: `${label} disconnected`, body: 'The stored credentials were deleted.' });
+      if (routed) {
+        if (!clientId) return;
+        await api.post(`/integrations/${clientId}/upload-post/disconnect`, { deleteProfile: false });
+      } else {
+        await api.post(`/integrations/${integrationId}/disconnect`);
+      }
+      push({
+        tone: 'success',
+        title: `${label} disconnected`,
+        body: routed ? 'Every linked account was detached.' : 'The stored credentials were deleted.',
+      });
       refetch();
     } catch (err) {
       push({ tone: 'error', title: 'Could not disconnect', body: err instanceof Error ? err.message : undefined });
@@ -1407,11 +1563,46 @@ export function IntegrationsPage() {
     const failure = params.get('error');
 
     if (failure) {
-      const { title, body } = describeCallbackFailure(failure);
+      const { title, body } = describeCallbackFailure(failure, params.get('provider'));
       push({ tone: 'error', title, body });
     }
     if (integrationId) setSelecting(integrationId);
-    if (failure || integrationId) {
+
+    /*
+     * Back from Upload-Post's hosted linking page.
+     *
+     * The return carries no secret and nothing the server trusts: the client id
+     * only says which restaurant to re-read, and the server re-derives the
+     * profile name from it rather than accepting one. Refreshing here is what
+     * turns "I linked Instagram" into rows on the selection drawer.
+     */
+    const linkedClient = params.get('uploadPost') === 'linked' ? params.get('client') : null;
+    if (linkedClient) {
+      void (async () => {
+        try {
+          const result = await api.post<{ integrationId: string; discovered: number }>(
+            `/integrations/${linkedClient}/upload-post/refresh`,
+          );
+          push({
+            tone: result.discovered > 0 ? 'success' : 'info',
+            title: 'Upload-Post linked',
+            body: result.discovered > 0
+              ? `${result.discovered} social account(s) found. Choose which to attach.`
+              : 'No social accounts are linked to this profile yet.',
+          });
+          setSelecting(result.integrationId);
+          refetch();
+        } catch (err) {
+          push({
+            tone: 'error',
+            title: 'Could not read the Upload-Post profile',
+            body: err instanceof Error ? err.message : undefined,
+          });
+        }
+      })();
+    }
+
+    if (failure || integrationId || linkedClient) {
       // Clear the query so a refresh does not replay the toast.
       window.history.replaceState({}, '', window.location.pathname);
       refetch();
@@ -1440,6 +1631,8 @@ export function IntegrationsPage() {
       />
 
       <ProjectPicker />
+
+      <PublishingRoutes clientId={clientId} />
 
       <Card className="mb-4 p-4">
         <div className="flex flex-wrap items-center gap-3 text-[13px]">
@@ -1570,7 +1763,7 @@ export function IntegrationsPage() {
                     this on a half-connected provider would put a real post on a
                     customer's Page behind a button that looks diagnostic.
                    */}
-                  {integration && connected && adapter.capabilities.publish ? (
+                  {integration && connected && adapter.organicPublish ? (
                     <Button
                       size="sm"
                       variant="secondary"
@@ -1585,7 +1778,7 @@ export function IntegrationsPage() {
                       size="sm"
                       variant="ghost"
                       loading={disconnecting === integration.id}
-                      onClick={() => disconnect(integration.id, adapter.label)}
+                      onClick={() => disconnect(integration.id, adapter.label, adapter.platform)}
                     >
                       {t('integration.disconnect')}
                     </Button>
