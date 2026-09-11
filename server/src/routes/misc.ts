@@ -22,6 +22,8 @@ import {
 import { beginAuthorization, selectAccounts } from '../services/integrations/connect-flow.js';
 import { validateToken } from '../services/integrations/meta.js';
 import { METRIC_SYNC_PLATFORMS, syncMetaMetrics } from '../services/integrations/metric-sync.js';
+import { syncGoogleAdsMetrics, listGoogleAdsCampaigns } from '../services/integrations/google-ads-metrics.js';
+import { GoogleAdsError } from '../services/integrations/google-ads.js';
 import { decryptSecret } from '../lib/crypto.js';
 import { env } from '../env.js';
 import { hashPassword, passwordProblems } from '../lib/password.js';
@@ -31,6 +33,7 @@ import { testPublish } from '../services/publishing/service.js';
 import {
   missingPublishGrant, noTargetMessage, resolveTargetForIntegration,
 } from '../services/publishing/target.js';
+import { publisherFor } from '../services/publishing/registry.js';
 
 // ------------------------------------------------------------------ notifications
 
@@ -125,6 +128,13 @@ integrationsRouter.get(
            */
           implementation: adapter.implementation,
           canConnect: supportsOAuth(adapter) && readiness.state === 'READY',
+          /*
+           * Whether a *post* can be sent, as distinct from `capabilities.publish`.
+           * Google Ads publishes advertisements and has no organic publisher at
+           * all, so a card reading `capabilities.publish` alone would offer a
+           * Test publish button whose only possible outcome is a refusal.
+           */
+          organicPublish: Boolean(publisherFor(adapter.platform)?.canPublish),
           scopes: oauth.scopes,
           docsUrl: oauth.docsUrl,
         };
@@ -192,10 +202,10 @@ integrationsRouter.post(
     /*
      * Two different refusals, asked in this order.
      *
-     * "Not built" comes first because it is not fixable by configuration: a
-     * Google Ads adapter with all four variables set is configured and still
-     * cannot start a flow. Reporting NOT_CONFIGURED there would send an
-     * operator to add variables that are already present.
+     * "Not built" comes first because it is not fixable by configuration: an
+     * X adapter with all three variables set is configured and still cannot
+     * start a flow. Reporting NOT_CONFIGURED there would send an operator to
+     * add variables that are already present.
      */
     if (!supportsOAuth(adapter)) {
       res.status(501).json({
@@ -581,12 +591,24 @@ integrationsRouter.post(
       return;
     }
 
-    const result = await syncMetaMetrics({
-      prisma,
-      integrationId: integration.id,
-      organizationId: orgId(actor),
-      fetchImpl: fetch as unknown as Parameters<typeof syncMetaMetrics>[0]['fetchImpl'],
-    });
+    /*
+     * Dispatched on the platform rather than branched inside one sync: Meta and
+     * Google Ads read entirely different APIs, and the shared part — the run
+     * record and the snapshot grain — is shared already.
+     */
+    const result = integration.platform === Platform.GOOGLE_ADS
+      ? await syncGoogleAdsMetrics({
+        prisma,
+        integrationId: integration.id,
+        organizationId: orgId(actor),
+        fetchImpl: fetch as unknown as Parameters<typeof syncGoogleAdsMetrics>[0]['fetchImpl'],
+      })
+      : await syncMetaMetrics({
+        prisma,
+        integrationId: integration.id,
+        organizationId: orgId(actor),
+        fetchImpl: fetch as unknown as Parameters<typeof syncMetaMetrics>[0]['fetchImpl'],
+      });
     if (!result) throw notFound('Integration');
 
     await recordAudit({
@@ -601,6 +623,67 @@ integrationsRouter.post(
     // A failed run answers 200 with the failure described: the operator needs
     // to read what happened, and the run row already records it.
     res.json(result);
+  }),
+);
+
+/**
+ * The campaigns running in the connected Google Ads account.
+ *
+ * Read-only, and unattributed on purpose: it answers "what is live in this ad
+ * account", which is a different question from "how did what NORIVA published
+ * perform". The second is answered by the snapshots `POST /:id/sync` writes,
+ * and mixing the two would file a campaign created in Google Ads Manager under
+ * a local campaign it has nothing to do with.
+ *
+ * Ratios are absent for the same reason they are absent everywhere else: the
+ * analytics layer derives them and refuses the ones it cannot.
+ */
+integrationsRouter.get(
+  '/:id/google-ads/campaigns',
+  validateParams(idParam),
+  validateQuery(z.object({
+    since: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const query = req.query as { since?: string; until?: string };
+
+    // Tenant scoping is the `organizationId` filter inside the service; a
+    // connection belonging to another organisation is simply not found.
+    const integration = await prisma.integration.findFirst({
+      where: { id: req.params.id, organizationId: orgId(actor), platform: Platform.GOOGLE_ADS },
+      select: { id: true },
+    });
+    if (!integration) throw notFound('Integration');
+
+    const now = new Date();
+    const since = query.since ?? new Date(now.getTime() - 30 * 86_400_000).toISOString().slice(0, 10);
+    const until = query.until ?? now.toISOString().slice(0, 10);
+
+    try {
+      res.json(await listGoogleAdsCampaigns({
+        prisma,
+        integrationId: integration.id,
+        organizationId: orgId(actor),
+        since,
+        until,
+        fetchImpl: fetch as unknown as Parameters<typeof listGoogleAdsCampaigns>[0]['fetchImpl'],
+      }));
+    } catch (error) {
+      /*
+       * Google's own words, mapped to an explanation an operator can act on,
+       * and never the raw error: a Google Ads failure message can carry request
+       * identifiers and account ids that have no business on a screen.
+       */
+      if (error instanceof GoogleAdsError) {
+        res.status(error.failure === 'NOT_AUTHORIZED' ? 403 : 502).json({
+          error: { code: error.failure, message: error.explanation },
+        });
+        return;
+      }
+      throw error;
+    }
   }),
 );
 

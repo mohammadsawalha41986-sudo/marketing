@@ -133,5 +133,11 @@ mountCallback({ slug: 'meta', platform: Platform.FACEBOOK, label: 'Meta' });
 mountCallback({ slug: 'instagram', platform: Platform.INSTAGRAM, label: 'Instagram' });
 mountCallback({ slug: 'tiktok', platform: Platform.TIKTOK, label: 'TikTok' });
 mountCallback({ slug: 'google', platform: Platform.GOOGLE_BUSINESS, label: 'Google' });
+/*
+ * Google Ads: the same Google OAuth client, a different product, a different
+ * grant, and a state bound to Platform.GOOGLE_ADS. Its own route for the same
+ * reason YouTube has one.
+ */
+mountCallback({ slug: 'google-ads', platform: Platform.GOOGLE_ADS, label: 'Google Ads' });
 mountCallback({ slug: 'youtube', platform: Platform.YOUTUBE, label: 'YouTube' });
 mountCallback({ slug: 'linkedin', platform: Platform.LINKEDIN, label: 'LinkedIn' });
