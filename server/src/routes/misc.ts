@@ -19,8 +19,7 @@ import {
   adapterFor, providerReadiness, allAdapters, supportsOAuth,
   ProviderNotConfiguredError, ProviderNotImplementedError,
 } from '../services/integrations/index.js';
-import { beginAuthorization, selectAccounts } from '../services/integrations/connect-flow.js';
-import { validateToken } from '../services/integrations/meta.js';
+import { beginAuthorization, bindProvider, selectAccounts } from '../services/integrations/connect-flow.js';
 import { METRIC_SYNC_PLATFORMS, syncMetaMetrics } from '../services/integrations/metric-sync.js';
 import { syncGoogleAdsMetrics, listGoogleAdsCampaigns } from '../services/integrations/google-ads-metrics.js';
 import { GoogleAdsError } from '../services/integrations/google-ads.js';
@@ -459,10 +458,15 @@ integrationsRouter.post(
 /**
  * Ask the provider whether this connection still works.
  *
- * A stored token is not a connection. This spends a real API call on `/me` so
- * the answer comes from Meta rather than from our own status column, and parks
- * the integration in ERROR when the provider rejects the credential — which is
- * how an expired token stops being a mystery.
+ * A stored token is not a connection. This spends a real validation call so the
+ * answer comes from the provider rather than from our own status column, and
+ * parks the integration in ERROR when the credential is rejected — which is how
+ * an expired token stops being a mystery.
+ *
+ * The call is the connection's own provider's, not Meta's. It used to be Meta's
+ * for every platform, so checking the health of a working Google Ads connection
+ * sent a Google token to Facebook's Graph `/me` — a guaranteed refusal — and
+ * wrote ERROR over a connection that was fine.
  */
 integrationsRouter.get(
   '/:id/health',
@@ -502,11 +506,11 @@ integrationsRouter.get(
     }
 
     try {
-      const identity = await validateToken({
+      const identity = await bindProvider(integration.platform).validate({
         accessToken: decryptSecret(integration.accessTokenEnc),
-        fetchImpl: fetch as unknown as Parameters<typeof validateToken>[0]['fetchImpl'],
+        fetchImpl: fetch as never,
       });
-      res.json({ ...base, live: true, detail: `Meta answered as ${identity.name}.` });
+      res.json({ ...base, live: true, detail: `${adapter.label} answered as ${identity.name}.` });
     } catch (error) {
       const message = (error as Error).message.slice(0, 500);
       await prisma.integration.update({

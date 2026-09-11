@@ -14,6 +14,9 @@ import { useAuth } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
 import { useRestaurant } from '../lib/restaurant';
 import { bytes, cn } from '../lib/utils';
+import {
+  accountKindLabel, accountPickerCopy, compareAccountKinds, formatExternalId, parentAccountLine,
+} from '../lib/account-picker';
 import { date, dateTime, humanize, isoDate, relative } from '../lib/format';
 import {
   Badge, Button, Card, CardHeader, CardSkeleton, Drawer, EmptyState, ErrorState, Field, Input, Modal,
@@ -922,37 +925,17 @@ interface DiscoveredAccountRow {
   currency: string | null;
   timezone: string | null;
   /**
-   * For an Instagram Professional account this is the id of the Facebook Page
-   * it is linked through — Meta only ever exposes Instagram as a property of a
-   * Page, and attaching one without the other publishes nothing.
+   * The account this one was reached through, by the *provider's* id, not ours
+   * — the only identifier that survives re-running discovery.
+   *
+   * What a parent is differs per provider, which is why nothing here names one:
+   * on Meta it is the Facebook Page an Instagram Professional account is linked
+   * through, and on Google Ads it is the manager account a customer sits under.
+   * `parentAccountLine` decides what to call it.
    */
   parentExternalId: string | null;
   selected: boolean;
 }
-
-/**
- * What each kind is called on screen.
- *
- * Meta's own vocabulary, not the enum's. An operator looking for their
- * "Instagram Professional account" should not have to guess that we call it
- * INSTAGRAM.
- */
-const ACCOUNT_KIND_LABEL: Record<string, string> = {
-  PAGE: 'Facebook Page',
-  INSTAGRAM: 'Instagram Professional',
-  AD_ACCOUNT: 'Ad account',
-  BUSINESS: 'Business',
-  CUSTOMER: 'Customer',
-  LOCATION: 'Location',
-  ORGANIZATION: 'Organization',
-  PROFILE: 'Profile',
-};
-
-/** Pages first, then the Instagram accounts hanging off them, then the money. */
-const ACCOUNT_KIND_ORDER = ['PAGE', 'INSTAGRAM', 'AD_ACCOUNT', 'BUSINESS'];
-
-const accountKindLabel = (kind: string) =>
-  ACCOUNT_KIND_LABEL[kind] ?? kind.replace(/_/g, ' ').toLowerCase();
 
 /**
  * Turn the callback's `?error=` into something worth reading.
@@ -1039,11 +1022,18 @@ interface IntegrationRow {
  * Choosing which accounts belong to this restaurant.
  *
  * This is the step that turns an authorized token into a connection, and it is
- * deliberately manual. Meta hands back every Page, Instagram account and ad
- * account the person who authorized can see — which, for anyone who manages
- * more than one business, includes accounts that have nothing to do with this
- * restaurant. Attaching them all is how one brand's ad account ends up wired
- * into another's campaigns, so discovery marks everything unselected and waits.
+ * deliberately manual. A provider hands back every asset the person who
+ * authorized can see — Pages and ad accounts on Meta, every Google Ads customer
+ * a login can reach on Google Ads — which, for anyone who manages more than one
+ * business, includes accounts that have nothing to do with this restaurant.
+ * Attaching them all is how one brand's ad account ends up wired into another's
+ * campaigns, so discovery marks everything unselected and waits.
+ *
+ * Everything the operator reads here is the *connection's own* provider's
+ * words, resolved from `platform` through `account-picker.ts`. This screen used
+ * to be Meta's regardless of what had been connected, which is how a successful
+ * Google Ads authorisation produced a drawer explaining that "publishing needs
+ * one ad account and one Page" above a list of nothing.
  */
 function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose: () => void; onSaved: () => void }) {
   const { push } = useToast();
@@ -1053,8 +1043,22 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
   const { data, loading, error } = useQuery<{
     integration: {
       id: string;
+      /*
+       * The provider this drawer is speaking for. The endpoint has always
+       * returned it; nothing read it, which is the whole of this bug.
+       */
+      platform: Platform;
       status: string;
       accountName: string | null;
+      /**
+       * Why discovery found what it found, when that needs saying.
+       *
+       * The server writes a provider-worded note here when an authorisation
+       * succeeded and returned no accounts — including the provider's own
+       * refusal, where there was one. Without it an empty drawer is silent
+       * about the one thing the operator needs to know.
+       */
+      lastError: string | null;
       accounts: DiscoveredAccountRow[];
     };
   }>(id ? `/integrations/${id}/accounts` : null, [id]);
@@ -1099,30 +1103,36 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
   };
 
   const accounts = useMemo(() => data?.integration.accounts ?? [], [data]);
+  const platform = data?.integration.platform ?? null;
+  const copy = useMemo(() => accountPickerCopy(platform), [platform]);
 
   /**
-   * Which Page an Instagram account belongs to, by the Page's *external* id.
+   * The "reached through X" line for each account, or null where there is none.
    *
-   * `parentExternalId` carries Meta's id, not ours, because that is the only
+   * Parents are resolved against every discovered account, not just the Pages:
+   * a Google Ads customer's parent is the manager account it sits under, which
+   * is itself an AD_ACCOUNT row. The lookup is on the *provider's* id, the only
    * identifier that survives re-running discovery.
    */
-  const pageByExternalId = useMemo(() => {
-    const map = new Map<string, DiscoveredAccountRow>();
-    for (const row of accounts) if (row.kind === 'PAGE') map.set(row.externalId, row);
-    return map;
-  }, [accounts]);
+  const parentLines = useMemo(() => {
+    const byExternalId = new Map(accounts.map((row) => [row.externalId, row]));
+    return new Map(accounts.map((row) => [
+      row.id,
+      parentAccountLine({
+        platform,
+        parentExternalId: row.parentExternalId,
+        parentName: row.parentExternalId ? byExternalId.get(row.parentExternalId)?.name : undefined,
+      }),
+    ]));
+  }, [accounts, platform]);
 
   const byKind = useMemo(() => {
     const map = new Map<string, DiscoveredAccountRow[]>();
     for (const row of accounts) {
       map.set(row.kind, [...(map.get(row.kind) ?? []), row]);
     }
-    return [...map.entries()].sort(([a], [b]) => {
-      const ai = ACCOUNT_KIND_ORDER.indexOf(a);
-      const bi = ACCOUNT_KIND_ORDER.indexOf(b);
-      return (ai === -1 ? ACCOUNT_KIND_ORDER.length : ai) - (bi === -1 ? ACCOUNT_KIND_ORDER.length : bi);
-    });
-  }, [accounts]);
+    return [...map.entries()].sort(([a], [b]) => compareAccountKinds(platform, a, b));
+  }, [accounts, platform]);
 
   return (
     <Drawer
@@ -1142,14 +1152,13 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
       ) : (
         <div className="space-y-5">
           <p className="text-[13px] leading-relaxed text-muted">
-            Meta returned everything {data?.integration.accountName ?? 'this login'} can see. Attach only what belongs
-            to this restaurant — publishing needs one ad account and one Page.
+            {copy.intro(data?.integration.accountName ?? 'this login')}
           </p>
 
           {byKind.map(([kind, rows]) => (
             <div key={kind}>
               <p className="mb-1.5 text-[11px] uppercase tracking-wide text-muted">
-                {accountKindLabel(kind)}
+                {accountKindLabel(platform, kind)}
               </p>
               <div className="space-y-1.5">
                 {rows.map((row) => (
@@ -1178,22 +1187,24 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
                         ) : null}
                       </span>
                       <span className="block truncate text-[11px] text-muted">
-                        {accountKindLabel(row.kind)}
+                        {accountKindLabel(platform, row.kind)}
                         {' · '}
-                        {row.externalId}
+                        {/* Google Ads prints a customer id as 123-456-7890 everywhere
+                            an operator will be comparing this against. */}
+                        {formatExternalId(platform, row.externalId)}
                         {row.currency ? ` · ${row.currency}` : ''}
                         {row.timezone ? ` · ${row.timezone}` : ''}
                       </span>
                       {/*
-                        Meta exposes Instagram only through the Page it is linked to.
-                        Naming that Page here is what stops someone attaching an
-                        Instagram account whose Page they never selected.
+                        What an account was reached through, named as this provider
+                        names it: the Facebook Page an Instagram account is linked
+                        to, the manager account a Google Ads customer sits under.
+                        Null where the provider has no such relationship, rather
+                        than the unconditional "via Page …" this used to render.
                       */}
-                      {row.parentExternalId ? (
+                      {parentLines.get(row.id) ? (
                         <span className="block truncate text-[11px] text-muted">
-                          via{' '}
-                          {pageByExternalId.get(row.parentExternalId)?.name ??
-                            `Page ${row.parentExternalId}`}
+                          {parentLines.get(row.id)}
                         </span>
                       ) : null}
                     </span>
@@ -1204,8 +1215,14 @@ function AccountSelection({ id, onClose, onSaved }: { id: string | null; onClose
           ))}
 
           {byKind.length === 0 ? (
+            /*
+             * The server's note first, the provider's generic advice second.
+             * When discovery came back empty because the provider refused an
+             * account, the refusal is the only sentence worth reading — and it
+             * is the one thing this screen could never say before.
+             */
             <p className="text-[13px] text-muted">
-              Meta returned no accounts for this login. Check that it administers a Page and an ad account.
+              {data?.integration.lastError ?? copy.empty}
             </p>
           ) : null}
         </div>
