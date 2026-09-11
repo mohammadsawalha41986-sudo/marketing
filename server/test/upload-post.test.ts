@@ -34,6 +34,7 @@ import {
 
 import { createTenant, prisma, resetDatabase, type Tenant } from './helpers.js';
 import {
+  UPLOAD_POST_EXPLANATION,
   UploadPostError,
   classifyUploadPostError,
   discoverFromProfile,
@@ -1368,6 +1369,66 @@ describe('upload-post', () => {
     expect(platforms).not.toContain(Platform.SNAPCHAT);
     expect(platforms).not.toContain(Platform.GOOGLE_ADS);
     expect(platforms).not.toContain(Platform.UPLOAD_POST);
+  });
+
+  // ------------------------------------------------- a plan, not a broken link
+
+  it('calls a plan restriction what it is, not a disconnected account', async () => {
+    /*
+     * Straight from production. TikTok was linked, working and visible in
+     * Upload-Post; publishing answered:
+     *
+     *   POST /upload_photos → HTTP 403 application/json
+     *   "TikTok uploads are not available on the Free plan. Please upgrade to
+     *    a paid plan."
+     *
+     * The bare `status === 403` rule classified that as ACCOUNT_NOT_LINKED, so
+     * the operator was told the account was "no longer linked to the
+     * restaurant's Upload-Post profile" and went looking for a disconnection
+     * that had never happened. The provider said "plan"; nothing said "link".
+     */
+    const failure = classifyUploadPostError(
+      'TikTok uploads are not available on the Free plan. Please upgrade to a paid plan.',
+      403,
+    );
+
+    expect(failure).toBe('PLAN_RESTRICTED');
+    expect(failure).not.toBe('ACCOUNT_NOT_LINKED');
+    expect(UPLOAD_POST_EXPLANATION[failure]).toMatch(/plan/i);
+    expect(UPLOAD_POST_EXPLANATION[failure]).not.toMatch(/no longer linked|link it again/i);
+  });
+
+  it('fails the post permanently on a plan restriction rather than retrying it', async () => {
+    /*
+     * A plan does not change because a job ran again. Retrying would spin the
+     * post through the whole backoff to the same 403, and the state machine
+     * would keep it alive as though it were on its way.
+     */
+    const { content } = await publishThroughUploadPost({
+      tenant: alpha,
+      upload: {
+        status: 403,
+        body: {
+          success: false,
+          message: 'TikTok uploads are not available on the Free plan. Please upgrade to a paid plan.',
+        },
+      },
+    });
+
+    const job = await prisma.publishingJob.findFirstOrThrow({ where: { contentId: content.id } });
+    expect(job.status).not.toBe(PublishingJobStatus.PUBLISHED);
+    expect(job.externalPostId).toBeNull();
+    expect(job.errorMessage).toMatch(/plan/i);
+    expect(job.errorMessage).not.toMatch(/no longer linked/i);
+    // Permanent: a plan does not change because a job ran again.
+    expect(job.status).not.toBe(PublishingJobStatus.QUEUED);
+  });
+
+  it('still says a link is broken when the provider says a link is broken', async () => {
+    // The repair must not swallow the real case: a genuinely unlinked account
+    // is still ACCOUNT_NOT_LINKED, and still tells the operator to relink.
+    expect(classifyUploadPostError('This account is not linked to the profile', 403))
+      .toBe('ACCOUNT_NOT_LINKED');
   });
 
   // ------------------------------- a 2xx that did not carry what Connect needed

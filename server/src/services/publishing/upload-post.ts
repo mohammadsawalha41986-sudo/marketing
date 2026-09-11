@@ -78,6 +78,13 @@ const ERROR_KIND: Record<UploadPostFailure, PublishErrorKind> = {
   INVALID_KEY: 'NOT_CONFIGURED',
   PROFILE_NOT_FOUND: 'INVALID_ACCOUNT',
   ACCOUNT_NOT_LINKED: 'INVALID_ACCOUNT',
+  /*
+   * The deployment's Upload-Post plan, not the restaurant's account. Permanent
+   * until someone changes a plan, so it must not be retried — and emphatically
+   * not INVALID_ACCOUNT, which would tell the operator to reconnect a network
+   * that is linked and working.
+   */
+  PLAN_RESTRICTED: 'MISSING_PERMISSION',
   INVALID_MEDIA: 'INVALID_MEDIA',
   RATE_LIMITED: 'RATE_LIMITED',
   PROVIDER_UNAVAILABLE: 'PROVIDER_UNAVAILABLE',
