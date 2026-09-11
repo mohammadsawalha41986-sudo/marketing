@@ -1069,6 +1069,89 @@ describe('upload-post', () => {
 
   // ------------------------------------------- the production connect failure
 
+  it('never answers a Connect with media language, whatever the upstream said', async () => {
+    /*
+     * The exact production symptom, reproduced.
+     *
+     * Upload-Post's gateway answered `GET /uploadposts/users` with an nginx 502
+     * HTML page. The message built from it read "Upload-Post profiles: …", and
+     * the classifier matched media words as loose substrings — so "profiles"
+     * contained "file" and the operator pressing Connect was told to check a
+     * video's format, size and duration.
+     *
+     * Every 4xx and 5xx is swept, because the guarantee is not "this one status
+     * is fixed" but "a connect call cannot produce a media verdict".
+     */
+    const { UploadPostError } = await import('../src/services/integrations/upload-post.js');
+
+    for (const status of [400, 401, 403, 404, 409, 422, 429, 500, 502, 503]) {
+      for (const jsonBody of [true, false]) {
+        for (const stage of ['LIST_PROFILES', 'CREATE_PROFILE', 'GENERATE_LINK'] as const) {
+          const error = new UploadPostError(
+            status,
+            `Upload-Post profiles: Upload-Post returned HTTP ${status} with a non-JSON body. `
+              + '502 Bad Gateway 502 Bad Gateway nginx/1.22.1',
+            { stage, jsonBody },
+          );
+
+          expect(error.connectFailure).not.toBe('INVALID_MEDIA');
+          const said = error.connectExplanation;
+          expect(said).not.toMatch(/\bmedia\b|\bvideo\b|\bduration\b|aspect|\bformat\b, size/i);
+          expect(said).not.toMatch(/will be retried|\bthe post\b/i);
+          expect(said.length).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  it('calls an nginx 502 an outage on their side, not a rejected request', async () => {
+    // Exactly what production returned: a gateway page, not the API answering.
+    const { UploadPostError } = await import('../src/services/integrations/upload-post.js');
+    const error = new UploadPostError(
+      502,
+      'Upload-Post profiles: Upload-Post returned HTTP 502 with a non-JSON body. 502 Bad Gateway nginx/1.22.1',
+      { stage: 'LIST_PROFILES', jsonBody: false, endpoint: '/uploadposts/users' },
+    );
+
+    expect(error.connectFailure).toBe('PROVIDER_UNAVAILABLE');
+    expect(error.connectExplanation).toMatch(/gateway/i);
+    expect(error.connectExplanation).toMatch(/nothing was connected/i);
+    expect(error.endpoint).toBe('/uploadposts/users');
+  });
+
+  it('names the connect stage that failed rather than guessing from prose', async () => {
+    const { UploadPostError } = await import('../src/services/integrations/upload-post.js');
+
+    // A real 4xx from the API itself, per step.
+    const create = new UploadPostError(400, 'quota exceeded', { stage: 'CREATE_PROFILE', jsonBody: true });
+    expect(create.connectFailure).toBe('PROFILE_CREATE_FAILED');
+
+    const link = new UploadPostError(400, 'bad request', { stage: 'GENERATE_LINK', jsonBody: true });
+    expect(link.connectFailure).toBe('LINK_GENERATION_FAILED');
+
+    const missing = new UploadPostError(404, 'not found', { stage: 'LIST_PROFILES', jsonBody: true });
+    expect(missing.connectFailure).toBe('PROFILE_NOT_FOUND');
+
+    // Authentication is the deployment's problem at any stage.
+    for (const stage of ['LIST_PROFILES', 'CREATE_PROFILE', 'GENERATE_LINK'] as const) {
+      expect(new UploadPostError(401, 'nope', { stage, jsonBody: true }).connectFailure).toBe('INVALID_KEY');
+    }
+
+    // A readable body that is not JSON, under 500: something answered in their
+    // place, and that is not a verdict about what we sent.
+    const odd = new UploadPostError(404, 'html', { stage: 'LIST_PROFILES', jsonBody: false });
+    expect(odd.connectFailure).toBe('INVALID_PROVIDER_RESPONSE');
+  });
+
+  it('does not let "profiles" read as a file', () => {
+    // The substring that caused it. Publishing keeps its media classification,
+    // but only for whole words.
+    expect(classifyUploadPostError('Upload-Post profiles: something failed', 500))
+      .not.toBe('INVALID_MEDIA');
+    expect(classifyUploadPostError('the video duration is too long', 400)).toBe('INVALID_MEDIA');
+    expect(classifyUploadPostError('unsupported image format', 400)).toBe('INVALID_MEDIA');
+  });
+
   it('reports a Connect failure in Connect language, never a post\'s', async () => {
     /*
      * The exact production symptom. Pressing Connect answered:
@@ -1080,7 +1163,9 @@ describe('upload-post', () => {
      * only one there was.
      */
     const { UploadPostError } = await import('../src/services/integrations/upload-post.js');
-    const error = new UploadPostError(503, 'Service Unavailable');
+    const error = new UploadPostError(503, 'Service Unavailable', {
+      stage: 'LIST_PROFILES', jsonBody: true,
+    });
 
     expect(error.failure).toBe('PROVIDER_UNAVAILABLE');
     // Publishing keeps its own wording, which is correct where a post exists.

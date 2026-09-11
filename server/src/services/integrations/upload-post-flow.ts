@@ -142,7 +142,7 @@ export async function refreshUploadPostAccounts(input: {
       throw new UploadPostError(
         404,
         `Upload-Post profiles: no profile named ${username} exists.`,
-        'PROFILE_NOT_FOUND',
+        { failure: 'PROFILE_NOT_FOUND', stage: 'LIST_PROFILES' },
       );
     }
 
