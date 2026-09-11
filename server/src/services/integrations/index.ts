@@ -33,6 +33,7 @@ import { encryptionConfigured } from '../../lib/crypto.js';
  */
 import { INSTAGRAM_SCOPES } from './instagram.js';
 import { TIKTOK_SCOPES } from './tiktok.js';
+import { GOOGLE_ADS_SCOPES } from './google-ads.js';
 import { GOOGLE_SCOPES } from './google.js';
 import { YOUTUBE_SCOPES } from './youtube.js';
 import { LINKEDIN_SCOPES } from './linkedin.js';
@@ -334,18 +335,33 @@ class GoogleAdsAdapter extends BaseAdapter {
   readonly label = 'Google Ads';
   override readonly capabilities = { publish: true, metrics: true, audiences: true };
   override readonly implementation: ImplementationReport = {
-    oauth: 'ARCHITECTURE_ONLY',
-    accountDiscovery: 'ARCHITECTURE_ONLY',
+    oauth: 'IMPLEMENTED',
+    accountDiscovery: 'IMPLEMENTED',
     publish: 'IMPLEMENTED',
-    metrics: 'ARCHITECTURE_ONLY',
+    // Campaign-day performance is read through GAQL and written to
+    // AnalyticsSnapshot by `google-ads-metrics.ts`.
+    metrics: 'IMPLEMENTED',
+    // Conversion *actions* are read as a metric; uploading offline conversions
+    // back to Google is a different API and is not built.
     conversions: 'NOT_SUPPORTED',
   };
 
   override oauth(): OAuthDescriptor {
     return {
       authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-      scopes: ['https://www.googleapis.com/auth/adwords'],
-      requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_ADS_DEVELOPER_TOKEN', 'GOOGLE_REDIRECT_URI'],
+      scopes: [...GOOGLE_ADS_SCOPES],
+      /*
+       * Two variables, and only two.
+       *
+       * `GOOGLE_REDIRECT_URI` belongs to Business Profile's callback route;
+       * Google Ads has its own, derived from the request host when unset, as
+       * YouTube's is. And `GOOGLE_ADS_DEVELOPER_TOKEN` is no longer a
+       * credential at all: Google sunset developer tokens on 9 September 2026
+       * and access now attaches to the Cloud project behind the OAuth client.
+       * Requiring either would report a deployment that Google would happily
+       * answer as unconfigured.
+       */
+      requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'],
       docsUrl: 'https://developers.google.com/google-ads/api/docs/start',
     };
   }

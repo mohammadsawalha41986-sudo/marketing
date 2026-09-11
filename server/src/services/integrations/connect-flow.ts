@@ -41,6 +41,7 @@ import {
 import * as instagram from './instagram.js';
 import * as tiktok from './tiktok.js';
 import * as google from './google.js';
+import * as googleAds from './google-ads.js';
 import * as youtube from './youtube.js';
 import * as linkedin from './linkedin.js';
 
@@ -55,7 +56,15 @@ export function callbackPath(platform: Platform): string {
      * which is the binding check, deleted.
      */
     INSTAGRAM: 'instagram',
-    GOOGLE_ADS: 'google',
+    /*
+     * Google Ads authorises through the same Google OAuth client as Business
+     * Profile but lands on its own route, for the reason YouTube does: the
+     * state is bound to one platform and the callback route is what proves
+     * which provider redirected. Sharing Business Profile's route would mean
+     * reading the platform out of the state instead of checking the state
+     * against the route.
+     */
+    GOOGLE_ADS: 'google-ads',
     GOOGLE_BUSINESS: 'google',
     TIKTOK: 'tiktok',
     SNAPCHAT: 'snapchat',
@@ -97,7 +106,8 @@ export interface AuthorizeResult {
  * receiving Meta's authorization URL — which is exactly what happened while
  * TikTok was routed through `metaConfig()`.
  */
-export type OAuthProvider = 'META' | 'INSTAGRAM' | 'TIKTOK' | 'GOOGLE' | 'YOUTUBE' | 'LINKEDIN';
+export type OAuthProvider =
+  | 'META' | 'INSTAGRAM' | 'TIKTOK' | 'GOOGLE' | 'GOOGLE_ADS' | 'YOUTUBE' | 'LINKEDIN';
 
 const OAUTH_PROVIDER: Partial<Record<Platform, OAuthProvider>> = {
   [Platform.FACEBOOK]: 'META',
@@ -110,6 +120,8 @@ const OAUTH_PROVIDER: Partial<Record<Platform, OAuthProvider>> = {
   [Platform.INSTAGRAM]: 'INSTAGRAM',
   [Platform.TIKTOK]: 'TIKTOK',
   [Platform.GOOGLE_BUSINESS]: 'GOOGLE',
+  // Google's OAuth client, an adwords-shaped grant. See `google-ads.ts`.
+  [Platform.GOOGLE_ADS]: 'GOOGLE_ADS',
   // Google's OAuth client, a YouTube-shaped grant. See `youtube.ts`.
   [Platform.YOUTUBE]: 'YOUTUBE',
   [Platform.LINKEDIN]: 'LINKEDIN',
@@ -229,6 +241,31 @@ const PROVIDERS: Record<OAuthProvider, () => BoundProvider> = {
       grantedScopes: async ({ tokens }) => tokens.scopes,
       publishScope: google.BUSINESS_SCOPE,
       discover: (input) => google.discoverAccounts(input),
+    };
+  },
+
+  /*
+   * The same Google OAuth client again, asking for `adwords` and discovering ad
+   * accounts rather than Business Profile accounts. One NORIVA application,
+   * many clients: each restaurant authorises its own Google login through it.
+   */
+  GOOGLE_ADS: () => {
+    const config = googleAds.googleAdsConfig();
+    return {
+      redirectUri: config.redirectUri,
+      redirectVariable: 'GOOGLE_ADS_REDIRECT_URI',
+      authorize: ({ state, redirectUri }) =>
+        google.authorizationUrl({
+          config: { ...config, redirectUri },
+          state,
+          scopes: googleAds.GOOGLE_ADS_SCOPES,
+        }),
+      exchange: ({ code, redirectUri, fetchImpl }) =>
+        google.exchangeCode({ config: { ...config, redirectUri }, code, fetchImpl }),
+      validate: (input) => google.validateToken(input),
+      grantedScopes: async ({ tokens }) => tokens.scopes,
+      publishScope: googleAds.ADWORDS_SCOPE,
+      discover: (input) => googleAds.discoverAccounts(input),
     };
   },
 

@@ -905,6 +905,8 @@ interface AdapterInfo {
     conversions: ImplementationState;
   };
   canConnect: boolean;
+  /** Organic posting, as distinct from advertising. Google Ads has none. */
+  organicPublish: boolean;
   scopes: string[];
   docsUrl: string;
 }
@@ -1570,7 +1572,7 @@ export function IntegrationsPage() {
                     this on a half-connected provider would put a real post on a
                     customer's Page behind a button that looks diagnostic.
                    */}
-                  {integration && connected && adapter.capabilities.publish ? (
+                  {integration && connected && adapter.organicPublish ? (
                     <Button
                       size="sm"
                       variant="secondary"
