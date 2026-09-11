@@ -908,6 +908,16 @@ interface AdapterInfo {
     conversions: ImplementationState;
   };
   canConnect: boolean;
+  /**
+   * How this provider is connected, and the field the card's own "is this
+   * built" classification is derived from.
+   *
+   * It used to be derived from `implementation.oauth === 'IMPLEMENTED'`, which
+   * is a different question: Upload-Post connects through a hosted linking page
+   * and truthfully reports no OAuth surface, so a fully implemented, fully
+   * configured provider was rendered as NOT BUILT YET with Connect disabled.
+   */
+  connectMethod: 'OAUTH' | 'HOSTED_LINK' | 'NONE';
   /** Organic posting, as distinct from advertising. Google Ads has none. */
   organicPublish: boolean;
   scopes: string[];
@@ -1673,7 +1683,8 @@ export function IntegrationsPage() {
           {catalog.data?.adapters.map((adapter) => {
             const integration = byPlatform.get(adapter.platform);
             const connected = integration?.status === 'CONNECTED';
-            const buildable = adapter.implementation.oauth === 'IMPLEMENTED';
+            // Built means "there is a way to connect this", not "this is OAuth".
+            const buildable = adapter.connectMethod !== 'NONE';
             // Authorized but nothing attached yet — the flow is half done.
             const awaitingSelection = integration?.status === 'CONNECTING';
             return (
@@ -1734,7 +1745,7 @@ export function IntegrationsPage() {
 
                 {!buildable ? (
                   <div className="mt-3 rounded-lg border border-line bg-elevated p-2.5 text-[12px] text-muted">
-                    Not implemented in this application yet. Its OAuth descriptor exists; the code behind it does not,
+                    Not implemented in this application yet. Its descriptor exists; the code behind it does not,
                     so credentials would not help.
                   </div>
                 ) : adapter.missingEnv.length > 0 ? (
