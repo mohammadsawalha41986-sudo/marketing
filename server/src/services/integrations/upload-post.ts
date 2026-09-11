@@ -155,6 +155,7 @@ export type UploadPostFailure =
   | 'INVALID_KEY'
   | 'PROFILE_NOT_FOUND'
   | 'ACCOUNT_NOT_LINKED'
+  | 'PLAN_RESTRICTED'
   | 'INVALID_MEDIA'
   | 'RATE_LIMITED'
   | 'PROVIDER_UNAVAILABLE'
@@ -248,6 +249,18 @@ export function classifyUploadPostError(message: string, status: number): Upload
   if (/invalid.?api.?key|unauthori[sz]ed|authentication failed/.test(text) || status === 401) {
     return 'INVALID_KEY';
   }
+  /*
+   * A plan restriction, which is neither a broken link nor a broken request.
+   *
+   * Checked before the linkage and 403 rules because it arrives as a 403 and
+   * would otherwise fall through to ACCOUNT_NOT_LINKED — which is what
+   * production did: publishing to a TikTok account that *was* linked answered
+   * "This social account is no longer linked to the restaurant's Upload-Post
+   * profile", sending an operator to reconnect an account that had never been
+   * disconnected. The provider's own words were "TikTok uploads are not
+   * available on the Free plan."
+   */
+  if (/\b(plan|upgrade|subscription|billing)\b/.test(text)) return 'PLAN_RESTRICTED';
   if (/profile.?not.?found|user.?not.?found|unknown user/.test(text)) return 'PROFILE_NOT_FOUND';
   if (/not.?(linked|connected)|no.?(linked|connected).?account|missing.?connection/.test(text)) {
     return 'ACCOUNT_NOT_LINKED';
@@ -279,6 +292,9 @@ export const UPLOAD_POST_EXPLANATION: Record<UploadPostFailure, string> = {
   ACCOUNT_NOT_LINKED:
     'This social account is no longer linked to the restaurant\'s Upload-Post profile. Open Upload-Post from '
     + 'Integrations and link it again.',
+  PLAN_RESTRICTED:
+    'Upload-Post\'s plan on this deployment does not cover posting to this network. The account is linked and '
+    + 'nothing needs reconnecting — upgrade the Upload-Post plan, or connect this network directly instead.',
   INVALID_MEDIA:
     'Upload-Post refused the attached media for this network. Check its format, size and duration against '
     + 'the network\'s own limits.',
