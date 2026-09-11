@@ -160,6 +160,88 @@ export type UploadPostFailure =
   | 'PROVIDER_UNAVAILABLE'
   | 'INVALID_REQUEST';
 
+/**
+ * Which call was being made, known at the call site rather than guessed.
+ *
+ * This is the fix for a whole class of defect rather than one instance of it.
+ * Failures used to be classified by matching words in the provider's prose,
+ * which is guesswork: it cannot tell a media complaint from a gateway page, and
+ * it produced `INVALID_MEDIA` for a connect request carrying no media at all —
+ * because "profiles" contains "file".
+ *
+ * The caller always knows which step it is on. Passing that in makes the
+ * classification a decision over (stage, status, shape) instead of a guess over
+ * text, and makes a publishing-only verdict unreachable from a connect call by
+ * construction rather than by carefulness.
+ */
+export type UploadPostStage =
+  | 'LIST_PROFILES'
+  | 'CREATE_PROFILE'
+  | 'DELETE_PROFILE'
+  | 'GENERATE_LINK'
+  | 'PUBLISH'
+  | 'UPLOAD_STATUS';
+
+/** The stages that are part of connecting, and may never answer about media. */
+const CONNECT_STAGES: ReadonlySet<UploadPostStage> = new Set<UploadPostStage>([
+  'LIST_PROFILES', 'CREATE_PROFILE', 'DELETE_PROFILE', 'GENERATE_LINK',
+]);
+
+export function isConnectStage(stage: UploadPostStage | null | undefined): boolean {
+  return stage ? CONNECT_STAGES.has(stage) : false;
+}
+
+/**
+ * What can go wrong while connecting — and nothing that cannot.
+ *
+ * Deliberately disjoint from the publishing set: there is no `INVALID_MEDIA`
+ * here to leak, because a connect call cannot produce one.
+ */
+export type UploadPostConnectFailure =
+  | 'NOT_CONFIGURED'
+  | 'INVALID_KEY'
+  | 'PROFILE_NOT_FOUND'
+  | 'PROFILE_CREATE_FAILED'
+  | 'LINK_GENERATION_FAILED'
+  | 'RATE_LIMITED'
+  | 'PROVIDER_UNAVAILABLE'
+  | 'INVALID_PROVIDER_RESPONSE'
+  | 'INVALID_REQUEST';
+
+/**
+ * The connect verdict, from facts rather than prose.
+ *
+ * `jsonBody` is the one piece of shape that matters: a JSON body is the API
+ * answering, and an HTML one is something in front of it — which is exactly
+ * what production returned, an nginx 502 page that never reached their
+ * application. Calling that "Upload-Post rejected the request" would blame the
+ * request for an outage.
+ */
+export function classifyConnectFailure(input: {
+  stage: UploadPostStage;
+  status: number;
+  jsonBody: boolean;
+}): UploadPostConnectFailure {
+  if (input.status === 401 || input.status === 403) return 'INVALID_KEY';
+  if (input.status === 429) return 'RATE_LIMITED';
+
+  /*
+   * Not the API's own answer. A 5xx from a gateway is an outage on their side;
+   * a non-JSON body under 500 means something is answering in their place, and
+   * neither is a verdict about what we sent.
+   */
+  if (!input.jsonBody) {
+    return input.status >= 500 ? 'PROVIDER_UNAVAILABLE' : 'INVALID_PROVIDER_RESPONSE';
+  }
+  if (input.status >= 500) return 'PROVIDER_UNAVAILABLE';
+
+  // A real 4xx from the API, named for the step that received it.
+  if (input.stage === 'CREATE_PROFILE') return 'PROFILE_CREATE_FAILED';
+  if (input.stage === 'GENERATE_LINK') return 'LINK_GENERATION_FAILED';
+  if (input.status === 404) return 'PROFILE_NOT_FOUND';
+  return 'INVALID_REQUEST';
+}
+
 export function classifyUploadPostError(message: string, status: number): UploadPostFailure {
   const text = message.toLowerCase();
 
@@ -170,7 +252,15 @@ export function classifyUploadPostError(message: string, status: number): Upload
   if (/not.?(linked|connected)|no.?(linked|connected).?account|missing.?connection/.test(text)) {
     return 'ACCOUNT_NOT_LINKED';
   }
-  if (/media|video|image|file|format|duration|aspect|too large/.test(text)) return 'INVALID_MEDIA';
+  /*
+   * Whole words only. Without the boundaries this matched "file" inside
+   * "profiles", so every connect error that mentioned a profile — which is all
+   * of them — was classified as a media problem and the operator was told to
+   * check a video's duration while pressing Connect.
+   */
+  if (/\b(media|video|image|file|files|format|duration|aspect)\b|too large/.test(text)) {
+    return 'INVALID_MEDIA';
+  }
   if (/quota|rate.?limit|too many requests/.test(text) || status === 429) return 'RATE_LIMITED';
   if (status >= 500) return 'PROVIDER_UNAVAILABLE';
   if (status === 403) return 'ACCOUNT_NOT_LINKED';
@@ -209,28 +299,33 @@ export const UPLOAD_POST_EXPLANATION: Record<UploadPostFailure, string> = {
  * Everything else falls through, because duplicating a sentence that is already
  * right is how the two copies drift.
  */
-const CONNECT_EXPLANATION: Partial<Record<UploadPostFailure, string>> = {
+const CONNECT_EXPLANATION: Record<UploadPostConnectFailure, string> = {
+  NOT_CONFIGURED:
+    `Upload-Post is not configured on this deployment. Set ${API_KEY_VARIABLE} on the server and restart.`,
+  INVALID_KEY:
+    'Upload-Post rejected this deployment\'s API key. It may have been rotated or revoked — set a current '
+    + `${API_KEY_VARIABLE} on the server. Reconnecting this restaurant cannot fix it.`,
+  PROFILE_NOT_FOUND:
+    'Upload-Post has no profile for this restaurant yet. Press Connect again to create one.',
+  PROFILE_CREATE_FAILED:
+    'Upload-Post refused to create a profile for this restaurant. Check the plan behind this deployment\'s '
+    + 'Upload-Post account — profile limits are the usual cause.',
+  LINK_GENERATION_FAILED:
+    'Upload-Post would not issue an account-linking page for this restaurant. Its profile exists; the link '
+    + 'request was refused.',
   RATE_LIMITED:
     'Upload-Post is rate limiting this deployment. Wait a moment and press Connect again.',
   PROVIDER_UNAVAILABLE:
-    'Upload-Post did not answer this request. Nothing was connected — press Connect again in a moment, '
-    + 'and if it repeats, the detail is in the server log for this attempt.',
-  PROFILE_NOT_FOUND:
-    'Upload-Post has no profile for this restaurant yet. Press Connect again to create one.',
-  ACCOUNT_NOT_LINKED:
-    'Upload-Post refused access to this restaurant\'s profile. Check the account behind this '
-    + `deployment's ${API_KEY_VARIABLE} on Upload-Post.`,
+    'Upload-Post is not answering right now — its gateway returned an error before the request reached their '
+    + 'API. Nothing was connected. This is on their side: wait and press Connect again.',
+  INVALID_PROVIDER_RESPONSE:
+    'Upload-Post returned something this application could not read. Nothing was connected. The exact status '
+    + 'and response type are in the server log for this attempt.',
+  INVALID_REQUEST: 'Upload-Post rejected the connection request.',
 };
 
-/** What to tell the operator, in the language of the thing they were doing. */
-export type UploadPostOperation = 'CONNECT' | 'PUBLISH';
-
-export function explainUploadPostFailure(
-  failure: UploadPostFailure,
-  operation: UploadPostOperation,
-): string {
-  if (operation === 'CONNECT') return CONNECT_EXPLANATION[failure] ?? UPLOAD_POST_EXPLANATION[failure];
-  return UPLOAD_POST_EXPLANATION[failure];
+export function explainConnectFailure(failure: UploadPostConnectFailure): string {
+  return CONNECT_EXPLANATION[failure];
 }
 
 /**
@@ -247,18 +342,45 @@ export class UploadPostError extends Error {
   readonly failure: UploadPostFailure;
   /** Which call failed, as a path. Never carries a query string or a token. */
   readonly endpoint: string | null;
+  /** Which step it was, so a connect verdict needs no guesswork. */
+  readonly stage: UploadPostStage | null;
+  /** Whether the API itself answered, as opposed to something in front of it. */
+  readonly jsonBody: boolean;
 
   constructor(
     status: number,
     message: string,
-    failure?: UploadPostFailure,
-    endpoint?: string | null,
+    options?: {
+      failure?: UploadPostFailure;
+      endpoint?: string | null;
+      stage?: UploadPostStage | null;
+      jsonBody?: boolean;
+    },
   ) {
     super(message);
     this.name = 'UploadPostError';
     this.status = status;
-    this.failure = failure ?? classifyUploadPostError(message, status);
-    this.endpoint = endpoint ?? null;
+    this.failure = options?.failure ?? classifyUploadPostError(message, status);
+    this.endpoint = options?.endpoint ?? null;
+    this.stage = options?.stage ?? null;
+    this.jsonBody = options?.jsonBody ?? true;
+  }
+
+  /**
+   * The connect verdict for this failure.
+   *
+   * Computed from the stage, the status and the body shape — never from the
+   * publishing classification, which is how `INVALID_MEDIA` reached a connect
+   * screen. A failure raised outside a connect stage has no connect verdict to
+   * give and says the request was refused, which is the truthful minimum.
+   */
+  get connectFailure(): UploadPostConnectFailure {
+    if (!isConnectStage(this.stage)) return 'INVALID_REQUEST';
+    return classifyConnectFailure({
+      stage: this.stage as UploadPostStage,
+      status: this.status,
+      jsonBody: this.jsonBody,
+    });
   }
 
   /** Safe for a UI: no key material, no stack, and it names Upload-Post. */
@@ -268,7 +390,7 @@ export class UploadPostError extends Error {
 
   /** The same, said to someone who pressed Connect rather than Publish. */
   get connectExplanation(): string {
-    return explainUploadPostFailure(this.failure, 'CONNECT');
+    return explainConnectFailure(this.connectFailure);
   }
 }
 
@@ -356,13 +478,14 @@ function logUploadPostFailure(input: {
   contentType: string | null;
   message: string;
   apiKey: string;
+  stage: UploadPostStage;
 }): void {
   const detail = scrubSecret(input.message, input.apiKey).replace(/\s+/g, ' ').trim().slice(0, 300);
 
   // One line, one failure, and every field safe to read over someone's
   // shoulder. `console.error` because this is the application's only voice.
   console.error(
-    `[upload-post] ${input.method} ${input.path} failed: HTTP ${input.status}`
+    `[upload-post] ${input.stage} ${input.method} ${input.path} failed: HTTP ${input.status}`
     + ` content-type=${input.contentType ?? 'none'} detail="${detail}"`,
   );
 }
@@ -370,7 +493,7 @@ function logUploadPostFailure(input: {
 async function readJson(
   response: Awaited<ReturnType<UploadPostFetch>>,
   context: string,
-  call?: { method: string; path: string; apiKey: string },
+  call?: { method: string; path: string; apiKey: string; stage: UploadPostStage },
 ): Promise<Record<string, unknown>> {
   const text = await response.text();
 
@@ -392,6 +515,7 @@ async function readJson(
         contentType,
         message,
         apiKey: call.apiKey,
+        stage: call.stage,
       });
     }
   };
@@ -414,8 +538,8 @@ async function readJson(
       throw new UploadPostError(
         response.status,
         `${context}: Upload-Post returned HTTP ${response.status} with a non-JSON body. ${body}`,
-        undefined,
-        call?.path ?? null,
+        // The decisive fact for a connect verdict: the API did not answer this.
+        { endpoint: call?.path ?? null, stage: call?.stage ?? null, jsonBody: false },
       );
     }
   }
@@ -432,8 +556,7 @@ async function readJson(
     throw new UploadPostError(
       response.status,
       `${context}: ${described}`,
-      undefined,
-      call?.path ?? null,
+      { endpoint: call?.path ?? null, stage: call?.stage ?? null, jsonBody: true },
     );
   }
   return payload;
@@ -446,6 +569,8 @@ async function request(input: {
   json?: unknown;
   form?: unknown;
   query?: Record<string, string>;
+  /** Which step this is, so a failure classifies itself without guessing. */
+  stage: UploadPostStage;
   idempotencyKey?: string;
   fetchImpl: UploadPostFetch;
   context: string;
@@ -487,6 +612,7 @@ async function request(input: {
     method: input.method,
     path: input.path,
     apiKey: input.config.apiKey,
+    stage: input.stage,
   });
 }
 
@@ -525,6 +651,7 @@ export async function listProfiles(input: {
     method: 'GET',
     fetchImpl: input.fetchImpl,
     context: 'Upload-Post profiles',
+    stage: 'LIST_PROFILES',
   });
 
   const profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
@@ -565,6 +692,7 @@ export async function ensureProfile(input: {
     json: { username: input.username },
     fetchImpl: input.fetchImpl,
     context: 'Upload-Post create profile',
+    stage: 'CREATE_PROFILE',
   });
 
   /*
@@ -591,6 +719,7 @@ export async function deleteProfile(input: {
     json: { username: input.username },
     fetchImpl: input.fetchImpl,
     context: 'Upload-Post delete profile',
+    stage: 'DELETE_PROFILE',
   });
 }
 
@@ -632,6 +761,7 @@ export async function connectionUrl(input: {
     },
     fetchImpl: input.fetchImpl,
     context: 'Upload-Post connection link',
+    stage: 'GENERATE_LINK',
   });
 
   const url = payload.connection_url;
@@ -762,7 +892,7 @@ export async function discoverAccounts(input: {
     throw new UploadPostError(
       404,
       `Upload-Post profiles: no profile named ${input.username} exists.`,
-      'PROFILE_NOT_FOUND',
+      { failure: 'PROFILE_NOT_FOUND', stage: 'LIST_PROFILES' },
     );
   }
   return discoverFromProfile(profile);
@@ -892,6 +1022,7 @@ export async function publish(input: UploadPostPublishInput): Promise<UploadPost
     idempotencyKey: input.idempotencyKey,
     fetchImpl: input.fetchImpl,
     context: `Upload-Post ${input.platform} publish`,
+    stage: 'PUBLISH',
     timeoutMs: input.timeoutMs,
   });
 
@@ -933,6 +1064,7 @@ export async function uploadStatus(input: {
     query: { request_id: input.requestId },
     fetchImpl: input.fetchImpl,
     context: 'Upload-Post upload status',
+    stage: 'UPLOAD_STATUS',
     timeoutMs: input.timeoutMs,
   });
 
