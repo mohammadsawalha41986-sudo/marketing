@@ -30,6 +30,7 @@ import { overall, validateMediaForPlatform } from '../services/social/media-rule
 import { postGroupAnalytics, socialOverview } from '../services/social/analytics.js';
 import { allCapabilities } from '../services/social/capabilities.js';
 import { recommendForPost } from '../services/social/recommend.js';
+import { resolveRoute, routeForIntegrationPlatform, routeNeedsAccountCredential } from '../services/publishing/route.js';
 
 export const socialRouter: Router = Router();
 socialRouter.use(requireAuth);
@@ -381,7 +382,13 @@ socialRouter.get(
       where: { id: req.params.id, postGroup: { organizationId: orgId(actor) } },
       select: {
         platform: true, caption: true, headline: true, config: true,
-        integrationAccount: { select: { name: true, tokenStatus: true, accessTokenEnc: true } },
+        postGroup: { select: { clientId: true } },
+        integrationAccount: {
+          select: {
+            name: true, tokenStatus: true, accessTokenEnc: true,
+            integration: { select: { platform: true } },
+          },
+        },
         media: {
           orderBy: { position: 'asc' },
           select: {
@@ -399,15 +406,44 @@ socialRouter.get(
 
     const problems: Array<{ level: string; message: string }> = [];
 
-    if (!post.integrationAccount) {
+    /*
+     * The connection this post *would* publish through, asked the same way the
+     * publisher asks it.
+     *
+     * The composer creates posts without an account — it asks for platforms —
+     * so reading only the attached one reported "no account is attached" for
+     * every post ever composed, including ones that publish perfectly well.
+     * Resolving here is a read: nothing is written until a publish actually
+     * happens, and this screen then says what that publish will do.
+     */
+    const attached = post.integrationAccount;
+    const resolved = attached
+      ? {
+        route: routeForIntegrationPlatform(attached.integration.platform),
+        name: attached.name,
+        accessTokenEnc: attached.accessTokenEnc,
+      }
+      : await resolveRoute({
+        prisma,
+        organizationId: orgId(actor),
+        clientId: post.postGroup.clientId,
+        platform: post.platform,
+      }).then((route) => (route
+        ? { route: route.route, name: route.target.name, accessTokenEnc: route.target.accessTokenEnc }
+        : null));
+
+    if (!resolved) {
       problems.push({
         level: 'INCOMPATIBLE',
-        message: `No ${post.platform} account is attached. Connect one under Integrations.`,
+        message: `No ${post.platform} account is connected for this restaurant. Connect one under Integrations.`,
       });
-    } else if (!post.integrationAccount.accessTokenEnc) {
+    } else if (routeNeedsAccountCredential(resolved.route) && !resolved.accessTokenEnc) {
+      // Only a direct connection publishes with the account's own credential.
+      // An Upload-Post account has none by design, so demanding one here would
+      // block a post that would have gone out.
       problems.push({
         level: 'INCOMPATIBLE',
-        message: `${post.integrationAccount.name} has no usable publishing token. Reconnect it.`,
+        message: `${resolved.name} has no usable publishing token. Reconnect it.`,
       });
     }
 
