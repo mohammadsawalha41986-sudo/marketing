@@ -43,6 +43,13 @@ function callbackRedirect(
   provider = 'meta',
 ): string {
   const url = new URL('/app/integrations', env.APP_URL);
+  /*
+   * The provider is carried on both outcomes. It used to be set only on
+   * success, so the failure banner had nothing to name and said "Meta" for
+   * every provider — telling an operator whose Google Ads connection failed to
+   * go and check their Meta app.
+   */
+  url.searchParams.set('provider', provider);
   if (outcome.ok) {
     url.searchParams.set('connected', provider);
     url.searchParams.set('integration', outcome.integrationId);
