@@ -198,6 +198,42 @@ export const UPLOAD_POST_EXPLANATION: Record<UploadPostFailure, string> = {
 };
 
 /**
+ * The same failures, said to someone who pressed Connect.
+ *
+ * The map above is publishing's, and it leaked: pressing Connect answered
+ * "Upload-Post is temporarily unavailable. **The post will be retried**" — a
+ * sentence about a post, on a screen where no post exists and nothing will be
+ * retried, because a failed Connect is simply a button that did not work.
+ *
+ * Only the entries whose wording or remedy actually differs are overridden.
+ * Everything else falls through, because duplicating a sentence that is already
+ * right is how the two copies drift.
+ */
+const CONNECT_EXPLANATION: Partial<Record<UploadPostFailure, string>> = {
+  RATE_LIMITED:
+    'Upload-Post is rate limiting this deployment. Wait a moment and press Connect again.',
+  PROVIDER_UNAVAILABLE:
+    'Upload-Post did not answer this request. Nothing was connected — press Connect again in a moment, '
+    + 'and if it repeats, the detail is in the server log for this attempt.',
+  PROFILE_NOT_FOUND:
+    'Upload-Post has no profile for this restaurant yet. Press Connect again to create one.',
+  ACCOUNT_NOT_LINKED:
+    'Upload-Post refused access to this restaurant\'s profile. Check the account behind this '
+    + `deployment's ${API_KEY_VARIABLE} on Upload-Post.`,
+};
+
+/** What to tell the operator, in the language of the thing they were doing. */
+export type UploadPostOperation = 'CONNECT' | 'PUBLISH';
+
+export function explainUploadPostFailure(
+  failure: UploadPostFailure,
+  operation: UploadPostOperation,
+): string {
+  if (operation === 'CONNECT') return CONNECT_EXPLANATION[failure] ?? UPLOAD_POST_EXPLANATION[failure];
+  return UPLOAD_POST_EXPLANATION[failure];
+}
+
+/**
  * Extends `Error` directly rather than `ProviderApiError`, for the reason
  * `GoogleAdsError` does: `index.ts` imports this module for the adapter's
  * descriptor and `meta.ts` — where `ProviderApiError` lives — imports
@@ -209,17 +245,30 @@ export class UploadPostError extends Error {
   readonly platform = Platform.UPLOAD_POST;
   readonly status: number;
   readonly failure: UploadPostFailure;
+  /** Which call failed, as a path. Never carries a query string or a token. */
+  readonly endpoint: string | null;
 
-  constructor(status: number, message: string, failure?: UploadPostFailure) {
+  constructor(
+    status: number,
+    message: string,
+    failure?: UploadPostFailure,
+    endpoint?: string | null,
+  ) {
     super(message);
     this.name = 'UploadPostError';
     this.status = status;
     this.failure = failure ?? classifyUploadPostError(message, status);
+    this.endpoint = endpoint ?? null;
   }
 
   /** Safe for a UI: no key material, no stack, and it names Upload-Post. */
   get explanation(): string {
     return UPLOAD_POST_EXPLANATION[this.failure];
+  }
+
+  /** The same, said to someone who pressed Connect rather than Publish. */
+  get connectExplanation(): string {
+    return explainUploadPostFailure(this.failure, 'CONNECT');
   }
 }
 
@@ -252,22 +301,100 @@ export type UploadPostFetch = (
     body?: unknown;
     signal?: AbortSignal;
   },
-) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown>; text: () => Promise<string> }>;
+) => Promise<{
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+  text: () => Promise<string>;
+  /**
+   * Optional, because the shared `FetchLike` does not declare it and the test
+   * stubs that satisfy that type must keep satisfying this one. Read only for
+   * diagnostics — a JSON content type says the API answered, an HTML one says
+   * something in front of it did, and that distinction is most of the triage.
+   */
+  headers?: { get(name: string): string | null };
+}>;
 
 function authHeaders(config: UploadPostConfig): Record<string, string> {
-  return {
-    authorization: `Apikey ${config.apiKey}`,
-    // Identifies the integration in Upload-Post's own logs. Carries nothing
-    // about the tenant: the profile name already does that, per request.
-    'x-upload-post-source': 'noriva-marketing-os',
-  };
+  /*
+   * Authorisation, and deliberately nothing else.
+   *
+   * This used to also send `X-Upload-Post-Source: noriva-marketing-os`, which
+   * was my invention: both official clients send that header with a value from
+   * their own small set (`npm`, `pip`), and it exists to attribute an SDK. We
+   * are not one of their SDKs, so there is no correct value for us to send —
+   * and sending an unrecognised one was the single respect in which this
+   * client's requests differed from a known-good one, while production
+   * answered a consistent 5xx. A header that buys nothing is not worth being
+   * the difference between a request that works and one that does not.
+   */
+  return { authorization: `Apikey ${config.apiKey}` };
+}
+
+/**
+ * What may be written to a log about a failed call.
+ *
+ * Everything here is chosen rather than passed through: the method, the path
+ * with no query string, the status, the content type, and the provider's own
+ * message. Headers are never logged at all, so the key cannot leak by
+ * accident — and `scrubSecret` removes it from the provider's message too, on
+ * the assumption that any upstream may one day echo a request back.
+ *
+ * This exists because its absence is what made a production failure
+ * undiagnosable: the browser showed a sentence, the server recorded nothing,
+ * and no one could say which of three calls had failed or what it answered.
+ */
+function scrubSecret(text: string, apiKey: string): string {
+  if (!apiKey) return text;
+  return text.split(apiKey).join('[redacted]');
+}
+
+function logUploadPostFailure(input: {
+  method: string;
+  path: string;
+  status: number;
+  contentType: string | null;
+  message: string;
+  apiKey: string;
+}): void {
+  const detail = scrubSecret(input.message, input.apiKey).replace(/\s+/g, ' ').trim().slice(0, 300);
+
+  // One line, one failure, and every field safe to read over someone's
+  // shoulder. `console.error` because this is the application's only voice.
+  console.error(
+    `[upload-post] ${input.method} ${input.path} failed: HTTP ${input.status}`
+    + ` content-type=${input.contentType ?? 'none'} detail="${detail}"`,
+  );
 }
 
 async function readJson(
   response: Awaited<ReturnType<UploadPostFetch>>,
   context: string,
+  call?: { method: string; path: string; apiKey: string },
 ): Promise<Record<string, unknown>> {
   const text = await response.text();
+
+  /*
+   * Read before anything can throw, because it is one of the few facts that
+   * distinguishes "the API answered" from "something in front of it did": a
+   * JSON body is theirs, an HTML one is a gateway's.
+   */
+  const contentType = typeof response.headers?.get === 'function'
+    ? response.headers.get('content-type')
+    : null;
+
+  const report = (status: number, message: string) => {
+    if (call) {
+      logUploadPostFailure({
+        method: call.method,
+        path: call.path,
+        status,
+        contentType,
+        message,
+        apiKey: call.apiKey,
+      });
+    }
+  };
 
   let payload: Record<string, unknown> = {};
   if (text) {
@@ -282,10 +409,13 @@ async function readJson(
        * swallowing it into "unreadable response" is what makes this class of
        * failure take an afternoon.
        */
+      const body = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+      report(response.status, `non-JSON body: ${body}`);
       throw new UploadPostError(
         response.status,
-        `${context}: Upload-Post returned HTTP ${response.status} with a non-JSON body. `
-          + text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160),
+        `${context}: Upload-Post returned HTTP ${response.status} with a non-JSON body. ${body}`,
+        undefined,
+        call?.path ?? null,
       );
     }
   }
@@ -297,7 +427,14 @@ async function readJson(
    * marked PUBLISHED.
    */
   if (!response.ok || payload.success === false) {
-    throw new UploadPostError(response.status, `${context}: ${describeError(payload, response.status)}`);
+    const described = describeError(payload, response.status);
+    report(response.status, described);
+    throw new UploadPostError(
+      response.status,
+      `${context}: ${described}`,
+      undefined,
+      call?.path ?? null,
+    );
   }
   return payload;
 }
@@ -341,7 +478,16 @@ async function request(input: {
     ...(input.timeoutMs ? { signal: AbortSignal.timeout(input.timeoutMs) } : {}),
   });
 
-  return readJson(response, input.context);
+  /*
+   * The path, not the URL: the query string can carry a request id and there is
+   * no reason for a log line to grow one. The key is passed only so the
+   * provider's own message can be scrubbed of it before it is written.
+   */
+  return readJson(response, input.context, {
+    method: input.method,
+    path: input.path,
+    apiKey: input.config.apiKey,
+  });
 }
 
 // --------------------------------------------------------------- profiles
