@@ -418,6 +418,12 @@ const PAID: Partial<Record<Platform, ChannelDeclaration>> = {
 
 /** Which credential group each platform's channel depends on. */
 const CREDENTIAL_FOR: Record<Platform, { organic: CredentialKey; paid: CredentialKey }> = {
+  /*
+   * Nothing is ever authored *for* Upload-Post — content names the real network
+   * it is going to and the route is resolved at publish time — so it has no
+   * channel of its own to depend on a credential for.
+   */
+  [Platform.UPLOAD_POST]: { organic: 'NONE', paid: 'NONE' },
   [Platform.FACEBOOK]: { organic: 'META', paid: 'META' },
   // Organic Instagram connects on its own; Instagram ads are a Meta ad set.
   [Platform.INSTAGRAM]: { organic: 'INSTAGRAM', paid: 'META' },

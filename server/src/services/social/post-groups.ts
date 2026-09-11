@@ -26,6 +26,7 @@ import { readObject } from '../storage/objects.js';
 import type { FetchLike, PublishMedia } from '../publishing/contract.js';
 import { isRetryable } from '../publishing/contract.js';
 import { publisherFor } from '../publishing/registry.js';
+import { routeForIntegrationPlatform, routeNeedsAccountCredential } from '../publishing/route.js';
 import { canTransition, deriveGroupStatus, transitionError } from './state.js';
 
 /** Three tries, matching the single-platform pipeline rather than inventing a second policy. */
@@ -317,7 +318,15 @@ export async function publishPlatformPost(input: {
     select: {
       id: true, postGroupId: true, platform: true, status: true, caption: true, headline: true,
       hashtags: true, attemptCount: true, externalPostId: true, config: true,
-      integrationAccount: { select: { externalId: true, name: true, accessTokenEnc: true } },
+      integrationAccount: {
+        select: {
+          externalId: true, name: true, accessTokenEnc: true, metadata: true,
+          // The connection that owns the account is what says how to reach it:
+          // directly with its own credential, or routed through Upload-Post
+          // with the deployment's. Read here so the checks below can differ.
+          integration: { select: { platform: true } },
+        },
+      },
       media: {
         orderBy: { position: 'asc' },
         select: { media: { select: { type: true, mimeType: true, filename: true, originalName: true } } },
@@ -331,13 +340,28 @@ export async function publishPlatformPost(input: {
     return { published: true, externalPostId: post.externalPostId, error: null };
   }
 
-  const publisher = publisherFor(post.platform);
+  /*
+   * The route is the attached account's, not a fresh resolution.
+   *
+   * The account was chosen when the post was drafted; re-resolving here would
+   * let a connection made in between move the post to a different one, and a
+   * retry that switched routes is exactly how the same post goes out twice.
+   */
+  const route = post.integrationAccount
+    ? routeForIntegrationPlatform(post.integrationAccount.integration.platform)
+    : 'DIRECT';
+
+  const publisher = publisherFor(post.platform, route);
   if (!publisher?.canPublish) {
     return fail(prisma, post, now, false, 'NOT_CONFIGURED',
       `Publishing to ${post.platform} is not implemented yet.`);
   }
 
-  if (!post.integrationAccount?.accessTokenEnc) {
+  // Only a direct account publishes with its own credential. An Upload-Post
+  // account has none by design, so demanding one would refuse every routed post
+  // as needing a reauthorisation that cannot be performed.
+  if (!post.integrationAccount
+    || (routeNeedsAccountCredential(route) && !post.integrationAccount.accessTokenEnc)) {
     return fail(prisma, post, now, false, 'ACCOUNT_NEEDS_REAUTH',
       `No connected ${post.platform} account with a usable publishing token. Reconnect it under Integrations.`);
   }
@@ -407,13 +431,28 @@ export async function publishPlatformPost(input: {
     account: {
       externalId: post.integrationAccount.externalId,
       name: post.integrationAccount.name,
-      // Decrypted immediately before the call and never held longer.
-      accessToken: decryptSecret(post.integrationAccount.accessTokenEnc),
+      // Decrypted immediately before the call and never held longer. Empty
+      // where the route's credential is the deployment's, never a placeholder
+      // a publisher could mistake for a real token.
+      accessToken: post.integrationAccount.accessTokenEnc
+        ? decryptSecret(post.integrationAccount.accessTokenEnc)
+        : '',
+      // Provider-shaped facts about the account, never credentials — which
+      // Instagram reads for its Graph host and Upload-Post for the profile and
+      // network this post is addressed to.
+      metadata: (post.integrationAccount.metadata ?? {}) as Record<string, unknown>,
     },
     fetchImpl,
     // Provider-specific settings the operator chose, e.g. TikTok's privacy
     // level or YouTube's visibility. Never credentials.
     config: (post.config ?? {}) as Record<string, unknown>,
+    /*
+     * This post's own id, stable across every attempt at it and unique to it.
+     * A provider that deduplicates — Upload-Post does, for 24 hours — uses it
+     * to collapse a retry into the post it is retrying rather than publishing a
+     * second one.
+     */
+    idempotencyKey: post.id,
   });
 
   if (!result.success) {

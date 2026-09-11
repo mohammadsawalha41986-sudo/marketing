@@ -37,6 +37,7 @@ import { GOOGLE_ADS_SCOPES } from './google-ads.js';
 import { GOOGLE_SCOPES } from './google.js';
 import { YOUTUBE_SCOPES } from './youtube.js';
 import { LINKEDIN_SCOPES } from './linkedin.js';
+import { routablePlatforms } from './upload-post.js';
 
 export interface AdapterMetric {
   date: string;
@@ -464,7 +465,56 @@ class XAdapter extends BaseAdapter {
   }
 }
 
+/**
+ * Upload-Post: a publishing route, listed as a connection.
+ *
+ * It appears in this catalogue because an operator connects it exactly as they
+ * connect a provider — one connection per restaurant, with its own linked
+ * accounts to attach — even though it is not a network. What it is *not* is an
+ * OAuth provider: there is no authorize URL, no scopes and no per-client
+ * credential, so `oauth()` describes the hosted linking page it actually uses
+ * rather than inventing an OAuth flow that does not exist.
+ *
+ * `supportsOAuth` therefore answers false for it and the generic Connect route
+ * refuses — which is correct, because Upload-Post has its own connect endpoint.
+ * Reporting a flow it does not have would send the operator through a redirect
+ * that cannot work.
+ */
+class UploadPostAdapter extends BaseAdapter {
+  readonly platform = 'UPLOAD_POST' as Platform;
+  readonly label = 'Upload-Post';
+  // Organic publishing to several networks at once. No advertising surface,
+  // and post metrics belong to the network rather than to the route.
+  override readonly capabilities = { publish: true, metrics: false, audiences: false };
+  override readonly implementation: ImplementationReport = {
+    /*
+     * ARCHITECTURE_ONLY is wrong here and IMPLEMENTED would be misleading: this
+     * provider has no OAuth at all. NOT_SUPPORTED is the honest value — the
+     * flow does not exist rather than being unbuilt — and it is what keeps the
+     * generic Connect button from offering it.
+     */
+    oauth: 'NOT_SUPPORTED',
+    accountDiscovery: 'IMPLEMENTED',
+    publish: 'IMPLEMENTED',
+    metrics: 'NOT_SUPPORTED',
+    conversions: 'NOT_SUPPORTED',
+  };
+
+  override oauth(): OAuthDescriptor {
+    return {
+      // The hosted page the operator links their accounts on. Minted per
+      // profile at connect time; this is the product's own documentation of it.
+      authorizeUrl: 'https://app.upload-post.com/',
+      // Not OAuth scopes: the networks this deployment will route to.
+      scopes: routablePlatforms().map((platform) => platform.toLowerCase()),
+      requiredEnv: ['UPLOAD_POST_API_KEY'],
+      docsUrl: 'https://docs.upload-post.com/',
+    };
+  }
+}
+
 const adapters: Record<string, PlatformAdapter> = {
+  UPLOAD_POST: new UploadPostAdapter(),
   FACEBOOK: new MetaAdapter('FACEBOOK' as Platform, 'Facebook'),
   INSTAGRAM: new InstagramLoginAdapter(),
   TIKTOK: new TikTokAdapter(),
@@ -534,6 +584,18 @@ export interface ReadinessReport {
  * an OAuth token without `TOKEN_ENCRYPTION_KEY` would put a live bearer
  * credential in the database in plaintext, which is worse than not connecting.
  */
+/**
+ * Providers that store no per-client credential, and so need no encryption key.
+ *
+ * `TOKEN_ENCRYPTION_KEY` guards provider tokens at rest. Upload-Post issues
+ * none — the deployment's API key authorises every call and the linked accounts
+ * are addressed by name — so there is nothing of its to encrypt, and reporting
+ * it as blocked on that key would refuse a connection that is fully configured.
+ */
+function storesNoCredential(adapter: PlatformAdapter): boolean {
+  return adapter.platform === ('UPLOAD_POST' as Platform);
+}
+
 export function providerReadiness(adapter: PlatformAdapter): ReadinessReport {
   const missingEnv = adapter.oauth().requiredEnv.filter((name) => !process.env[name]);
 
@@ -544,7 +606,7 @@ export function providerReadiness(adapter: PlatformAdapter): ReadinessReport {
       detail: `Not configured — set ${missingEnv.join(', ')} on the server.`,
     };
   }
-  if (!encryptionConfigured()) {
+  if (!storesNoCredential(adapter) && !encryptionConfigured()) {
     return {
       state: 'NO_ENCRYPTION',
       missingEnv: ['TOKEN_ENCRYPTION_KEY'],

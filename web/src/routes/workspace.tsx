@@ -1314,6 +1314,74 @@ function ProjectPicker() {
   );
 }
 
+/**
+ * Which connection each network actually publishes through.
+ *
+ * A restaurant can reach the same network two ways — directly, or through its
+ * Upload-Post profile — and exactly one of them carries the post. Until now
+ * that answer existed only inside the resolver, so the only way to learn it was
+ * to publish something and look at where it appeared.
+ *
+ * It reads the resolver's own answer rather than recomputing it from the cards,
+ * which is the point: a panel that decided independently would eventually
+ * disagree with what publishes, and be believed.
+ */
+function PublishingRoutes({ clientId }: { clientId: string | null }) {
+  const { data, loading } = useQuery<{
+    configured: boolean;
+    profile: string;
+    routes: Array<{ platform: Platform; route: 'DIRECT' | 'UPLOAD_POST' | null; accountName: string | null }>;
+  }>(clientId ? `/integrations/${clientId}/publishing-routes` : null, [clientId]);
+
+  if (!clientId || loading || !data) return null;
+
+  const covered = data.routes.filter((row) => row.route !== null);
+  // Nothing connected and no key set: an empty panel would read as a failure
+  // rather than as "there is nothing to say yet".
+  if (covered.length === 0 && !data.configured) return null;
+
+  return (
+    <Card className="mb-4 p-4">
+      <p className="text-[13px] font-medium text-fg">Where posts go</p>
+      <p className="mt-1 text-[12px] leading-relaxed text-muted">
+        One connection per network, resolved before anything is sent. A direct connection always wins, so a
+        network reachable both ways is published to once — never twice.
+      </p>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {data.routes.map((row) => (
+          <span
+            key={row.platform}
+            className={cn(
+              'inline-flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[12px]',
+              row.route ? 'border-line text-fg' : 'border-line/60 text-muted',
+            )}
+          >
+            <PlatformChip platform={row.platform} size="sm" />
+            {row.route === null ? (
+              <span className="text-muted">not connected</span>
+            ) : (
+              <>
+                <span className="text-muted">{row.route === 'DIRECT' ? 'direct' : 'via Upload-Post'}</span>
+                {row.accountName ? (
+                  <span className="max-w-[14rem] truncate text-fg">{row.accountName}</span>
+                ) : null}
+              </>
+            )}
+          </span>
+        ))}
+      </div>
+
+      {data.configured ? (
+        <p className="mt-3 text-[11px] text-muted">
+          {/* A name, not a secret — the operator needs it to find the right profile in Upload-Post. */}
+          Upload-Post profile for this restaurant: <span className="text-fg">{data.profile}</span>
+        </p>
+      ) : null}
+    </Card>
+  );
+}
+
 export function IntegrationsPage() {
   const { t, lang } = useI18n();
   const { push } = useToast();
@@ -1346,6 +1414,31 @@ export function IntegrationsPage() {
       push({ tone: 'error', title: t('common.pickProject') });
       return;
     }
+
+    /*
+     * Upload-Post has no OAuth, so it has its own connect endpoint.
+     *
+     * The generic route correctly refuses it — the adapter reports no OAuth
+     * flow — and sending it there anyway would show the operator a 501 for a
+     * provider that connects perfectly well. What comes back is still a URL to
+     * go to: Upload-Post's hosted page for this restaurant's profile.
+     */
+    if (platform === 'UPLOAD_POST') {
+      try {
+        const { redirectTo } = await api.post<{ redirectTo: string; profile: string }>(
+          `/integrations/${clientId}/upload-post/connect`,
+        );
+        window.location.href = redirectTo;
+      } catch (err) {
+        push({
+          tone: 'error',
+          title: 'Could not open Upload-Post',
+          body: err instanceof Error ? err.message : undefined,
+        });
+      }
+      return;
+    }
+
     try {
       /*
        * The server answers with the provider's own authorization URL, and the
@@ -1375,14 +1468,34 @@ export function IntegrationsPage() {
    * pressing the button again — reconnecting means going back through Meta.
    * That is worth one confirmation.
    */
-  const disconnect = async (integrationId: string, label: string) => {
-    if (!window.confirm(`Disconnect ${label}? The stored credentials are deleted and reconnecting needs a new Meta login.`)) {
-      return;
-    }
+  const disconnect = async (integrationId: string, label: string, platform: Platform) => {
+    /*
+     * Upload-Post has nothing stored to delete — the deployment's API key
+     * authorises it — so the warning about discarded credentials would be
+     * false. What disconnecting does there is detach every linked account so
+     * nothing publishes through it, and the profile itself is left in place so
+     * reconnecting does not mean linking seven networks again.
+     */
+    const routed = platform === 'UPLOAD_POST';
+    const warning = routed
+      ? `Disconnect ${label}? Every linked account is detached and nothing will publish through it. `
+        + 'The Upload-Post profile itself is kept, so reconnecting finds the accounts already linked.'
+      : `Disconnect ${label}? The stored credentials are deleted and reconnecting needs a new ${label} login.`;
+    if (!window.confirm(warning)) return;
+
     setDisconnecting(integrationId);
     try {
-      await api.post(`/integrations/${integrationId}/disconnect`);
-      push({ tone: 'success', title: `${label} disconnected`, body: 'The stored credentials were deleted.' });
+      if (routed) {
+        if (!clientId) return;
+        await api.post(`/integrations/${clientId}/upload-post/disconnect`, { deleteProfile: false });
+      } else {
+        await api.post(`/integrations/${integrationId}/disconnect`);
+      }
+      push({
+        tone: 'success',
+        title: `${label} disconnected`,
+        body: routed ? 'Every linked account was detached.' : 'The stored credentials were deleted.',
+      });
       refetch();
     } catch (err) {
       push({ tone: 'error', title: 'Could not disconnect', body: err instanceof Error ? err.message : undefined });
@@ -1454,7 +1567,42 @@ export function IntegrationsPage() {
       push({ tone: 'error', title, body });
     }
     if (integrationId) setSelecting(integrationId);
-    if (failure || integrationId) {
+
+    /*
+     * Back from Upload-Post's hosted linking page.
+     *
+     * The return carries no secret and nothing the server trusts: the client id
+     * only says which restaurant to re-read, and the server re-derives the
+     * profile name from it rather than accepting one. Refreshing here is what
+     * turns "I linked Instagram" into rows on the selection drawer.
+     */
+    const linkedClient = params.get('uploadPost') === 'linked' ? params.get('client') : null;
+    if (linkedClient) {
+      void (async () => {
+        try {
+          const result = await api.post<{ integrationId: string; discovered: number }>(
+            `/integrations/${linkedClient}/upload-post/refresh`,
+          );
+          push({
+            tone: result.discovered > 0 ? 'success' : 'info',
+            title: 'Upload-Post linked',
+            body: result.discovered > 0
+              ? `${result.discovered} social account(s) found. Choose which to attach.`
+              : 'No social accounts are linked to this profile yet.',
+          });
+          setSelecting(result.integrationId);
+          refetch();
+        } catch (err) {
+          push({
+            tone: 'error',
+            title: 'Could not read the Upload-Post profile',
+            body: err instanceof Error ? err.message : undefined,
+          });
+        }
+      })();
+    }
+
+    if (failure || integrationId || linkedClient) {
       // Clear the query so a refresh does not replay the toast.
       window.history.replaceState({}, '', window.location.pathname);
       refetch();
@@ -1483,6 +1631,8 @@ export function IntegrationsPage() {
       />
 
       <ProjectPicker />
+
+      <PublishingRoutes clientId={clientId} />
 
       <Card className="mb-4 p-4">
         <div className="flex flex-wrap items-center gap-3 text-[13px]">
@@ -1628,7 +1778,7 @@ export function IntegrationsPage() {
                       size="sm"
                       variant="ghost"
                       loading={disconnecting === integration.id}
-                      onClick={() => disconnect(integration.id, adapter.label)}
+                      onClick={() => disconnect(integration.id, adapter.label, adapter.platform)}
                     >
                       {t('integration.disconnect')}
                     </Button>

@@ -23,7 +23,10 @@ import { readObject } from '../storage/objects.js';
 import { deliveryConfig, publishableImageUrl } from '../storage/public-delivery.js';
 import { isRetryable, type FetchLike, type PublishMedia } from './contract.js';
 import { publisherFor } from './registry.js';
-import { missingPublishGrant, noTargetMessage, resolvePublishingTarget } from './target.js';
+import {
+  resolveRoute, routeForIntegrationPlatform, routeNeedsAccountCredential, type PublishRoute,
+} from './route.js';
+import { missingPublishGrant, noTargetMessage } from './target.js';
 
 /**
  * How many times a retryable failure is tried before it becomes a person's
@@ -83,13 +86,16 @@ const READINESS_MESSAGE: Record<ReadinessProblem, string> = {
     'Only a single image is supported per post today. Remove the extra media.',
 };
 
-/** The account this content will publish to, if there is one. */
 /**
- * The account this content will publish to, if there is one.
+ * The account this content will publish to, and the connection carrying it.
  *
- * The decision itself lives in `target.ts`, because the test-publish route asks
- * the same question and the two answering it separately is exactly how one of
- * them came to hard-code a Facebook Page.
+ * The decision itself lives in `route.ts`, because the test-publish route and
+ * the post-group path ask the same question and three places answering it
+ * separately is exactly how one of them came to hard-code a Facebook Page.
+ *
+ * It returns a *route* as well as a target because a restaurant can now reach
+ * one network two ways — directly, or through its Upload-Post profile — and
+ * picking one of them, once, is what stops a post going out twice.
  */
 async function resolveAccount(input: {
   prisma: PrismaClient;
@@ -97,7 +103,7 @@ async function resolveAccount(input: {
   clientId: string;
   platform: Platform;
 }) {
-  return resolvePublishingTarget(input);
+  return resolveRoute(input);
 }
 
 /**
@@ -132,23 +138,39 @@ export async function checkReadiness(input: {
 
   if (!content) return { ready: false, problems: [] };
 
-  const publisher = publisherFor(content.platform);
-  if (!publisher?.canPublish) problems.push('NO_PLATFORM_SUPPORT');
-
-  const account = await resolveAccount({
+  /*
+   * The route decides which publisher answers, so it is resolved before the
+   * platform-support question rather than after: Upload-Post can publish to a
+   * network this deployment has no direct adapter for, and asking the direct
+   * table alone would refuse a post that would have gone out fine.
+   */
+  const resolved = await resolveAccount({
     prisma,
     organizationId,
     clientId: content.clientId,
     platform: content.platform,
   });
+  const account = resolved?.target ?? null;
+  const route: PublishRoute = resolved?.route ?? 'DIRECT';
+
+  const publisher = publisherFor(content.platform, route);
+  if (!publisher?.canPublish) problems.push('NO_PLATFORM_SUPPORT');
 
   if (!account) problems.push('NO_ACCOUNT_SELECTED');
-  else if (!account.accessTokenEnc || account.tokenStatus === AccountTokenStatus.REAUTH_REQUIRED) {
-    problems.push('ACCOUNT_NEEDS_REAUTH');
-  } else if (account.tokenStatus === AccountTokenStatus.MISSING_PERMISSION) {
-    // The token works; the app was never granted the permission that publishes.
-    // A different problem with a different fix, so it gets its own.
-    problems.push('ACCOUNT_MISSING_GRANT');
+  else if (routeNeedsAccountCredential(route)) {
+    /*
+     * Only a direct connection publishes with the account's own credential.
+     * An Upload-Post account has none by design — the deployment's API key
+     * authorises the call — so applying this check to it would refuse every
+     * routed post as needing a reauthorisation that cannot be performed.
+     */
+    if (!account.accessTokenEnc || account.tokenStatus === AccountTokenStatus.REAUTH_REQUIRED) {
+      problems.push('ACCOUNT_NEEDS_REAUTH');
+    } else if (account.tokenStatus === AccountTokenStatus.MISSING_PERMISSION) {
+      // The token works; the app was never granted the permission that publishes.
+      // A different problem with a different fix, so it gets its own.
+      problems.push('ACCOUNT_MISSING_GRANT');
+    }
   }
 
   if (!composeCaption(content.caption, content.headline)) problems.push('NO_CAPTION');
@@ -214,12 +236,13 @@ export async function enqueue(input: {
   const readiness = await checkReadiness({ prisma, contentId, organizationId });
   if (!readiness.ready) return { refused: readiness };
 
-  const account = await resolveAccount({
+  const resolved = await resolveAccount({
     prisma,
     organizationId,
     clientId: content.clientId,
     platform: content.platform,
   });
+  const account = resolved?.target ?? null;
 
   const job = await prisma.publishingJob.upsert({
     where: { contentId_platform: { contentId: content.id, platform: content.platform } },
@@ -397,7 +420,34 @@ export async function runJob(input: {
     });
   }
 
-  const publisher = publisherFor(job.platform);
+  /*
+   * The route this job's account belongs to, read from the account rather than
+   * resolved again.
+   *
+   * Resolving fresh here would be a second answer to a question already
+   * answered at enqueue — and a restaurant that connected a direct account
+   * between queueing and draining would have its post sent through one
+   * connection while the job row named another. The account on the job is what
+   * was chosen; the integration that owns it is what says how to reach it.
+   */
+  const jobAccount = job.accountId
+    ? await prisma.integrationAccount.findUnique({
+        where: { id: job.accountId },
+        select: {
+          externalId: true,
+          name: true,
+          accessTokenEnc: true,
+          metadata: true,
+          integration: { select: { platform: true } },
+        },
+      })
+    : null;
+
+  const route: PublishRoute = jobAccount
+    ? routeForIntegrationPlatform(jobAccount.integration.platform)
+    : 'DIRECT';
+
+  const publisher = publisherFor(job.platform, route);
   if (!publisher?.canPublish) {
     return finishFailed({
       prisma, job, now, retryable: false,
@@ -418,14 +468,11 @@ export async function runJob(input: {
     },
   });
 
-  const account = job.accountId
-    ? await prisma.integrationAccount.findUnique({
-        where: { id: job.accountId },
-        select: { externalId: true, name: true, accessTokenEnc: true, metadata: true },
-      })
-    : null;
+  const account = jobAccount;
 
-  if (!account?.accessTokenEnc) {
+  // Only a direct account publishes with its own credential; an Upload-Post
+  // account is authorised by the deployment's key and has none to be missing.
+  if (!account || (routeNeedsAccountCredential(route) && !account.accessTokenEnc)) {
     return finishFailed({
       prisma, job, now, retryable: false,
       code: 'ACCOUNT_NEEDS_REAUTH',
@@ -487,7 +534,7 @@ export async function runJob(input: {
 
   let media: PublishMedia[] = [];
   try {
-    media = await loadMedia(content.mediaLinks, job.platform);
+    media = await loadMedia(content.mediaLinks, job.platform, route);
   } catch {
     return finishFailed({
       prisma, job, now, attemptId: attempt.id, retryable: false,
@@ -503,11 +550,20 @@ export async function runJob(input: {
     account: {
       externalId: account.externalId,
       name: account.name,
-      // Decrypted here and nowhere else, immediately before the call.
-      accessToken: decryptSecret(account.accessTokenEnc),
+      // Decrypted here and nowhere else, immediately before the call. Empty
+      // where the route's credential is the deployment's, never a placeholder
+      // that a publisher could mistake for a real token.
+      accessToken: account.accessTokenEnc ? decryptSecret(account.accessTokenEnc) : '',
       metadata: (account.metadata ?? {}) as Record<string, unknown>,
     },
     fetchImpl,
+    /*
+     * The job's own id, stable across every attempt at this post and unique to
+     * it. A provider that deduplicates — Upload-Post does, for 24 hours — uses
+     * it to collapse a retry into the post it is retrying instead of publishing
+     * a second one.
+     */
+    idempotencyKey: job.id,
   });
 
   if (result.success) {
@@ -548,11 +604,39 @@ export async function runJob(input: {
  */
 const NEEDS_PUBLIC_URL: Platform[] = [Platform.INSTAGRAM];
 
-/** Read each image out of storage. Only images, and only the first, today. */
+/**
+ * Read the post's media out of storage.
+ *
+ * Direct routes get exactly what they have always got: the first image, or
+ * nothing. Every direct adapter was written against that and several would
+ * behave differently if handed a video — Facebook's photo endpoint would be
+ * sent one — so the widening is scoped to the route that asked for it.
+ *
+ * The Upload-Post route takes a video when the post has one, because that is
+ * how a Reel or a Short is published, and falls back to the same single image
+ * otherwise. A video wins over an image: a post carrying both is a video post
+ * with a thumbnail, not two posts.
+ */
 async function loadMedia(
   links: Array<{ media: { type: MediaType; mimeType: string; filename: string; originalName: string } }>,
   platform: Platform,
+  route: PublishRoute = 'DIRECT',
 ): Promise<PublishMedia[]> {
+  if (route === 'UPLOAD_POST') {
+    const video = links.find((link) => link.media.type === MediaType.VIDEO);
+    if (video?.media.filename) {
+      return [{
+        kind: 'VIDEO',
+        data: await readObject(video.media.filename),
+        mimeType: video.media.mimeType,
+        filename: video.media.originalName,
+        // Upload-Post receives the bytes, so no public copy of a customer's
+        // creative is made for it.
+        publicUrl: null,
+      }];
+    }
+  }
+
   const image = links.find((link) => link.media.type === MediaType.IMAGE);
   if (!image?.media.filename) return [];
 
@@ -568,7 +652,9 @@ async function loadMedia(
    * than handing Meta a link it will fail to fetch.
    */
   let publicUrl: string | null = null;
-  if (NEEDS_PUBLIC_URL.includes(platform)) {
+  // Never for the routed path: Upload-Post takes the bytes, so making a public
+  // copy of the image would expose a customer's creative for no reason.
+  if (route === 'DIRECT' && NEEDS_PUBLIC_URL.includes(platform)) {
     const config = deliveryConfig();
     if (config) {
       publicUrl = await publishableImageUrl({

@@ -39,6 +39,13 @@ import { UPLOAD_SCOPE as YOUTUBE_UPLOAD_SCOPE } from '../integrations/youtube.js
 
 /** The account kind a post on this platform is delivered to. */
 const TARGET_KIND: Record<Platform, ExternalAccountKind> = {
+  /*
+   * Present to satisfy the map, never used to resolve anything. An Upload-Post
+   * connection holds accounts for several networks at once and three of them
+   * are PROFILE-kind, so kind alone cannot identify one — `route.ts` matches on
+   * the network recorded in the account's metadata instead.
+   */
+  [Platform.UPLOAD_POST]: ExternalAccountKind.PROFILE,
   [Platform.FACEBOOK]: ExternalAccountKind.PAGE,
   [Platform.INSTAGRAM]: ExternalAccountKind.INSTAGRAM,
   [Platform.TIKTOK]: ExternalAccountKind.PROFILE,
@@ -65,6 +72,7 @@ const SOURCE_PLATFORMS: Partial<Record<Platform, Platform[]>> = {
 
 /** What to call the target when telling an operator one is missing. */
 const TARGET_NOUN: Record<Platform, string> = {
+  [Platform.UPLOAD_POST]: 'linked social account',
   [Platform.FACEBOOK]: 'Facebook Page',
   [Platform.INSTAGRAM]: 'Instagram account',
   [Platform.TIKTOK]: 'TikTok account',
