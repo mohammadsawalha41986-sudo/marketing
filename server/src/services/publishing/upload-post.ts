@@ -188,7 +188,7 @@ async function awaitOutcome(input: {
   throw new UploadPostError(
     503,
     'Upload-Post is still processing this upload. It will be checked again shortly.',
-    'PROVIDER_UNAVAILABLE',
+    { failure: 'PROVIDER_UNAVAILABLE', stage: 'UPLOAD_STATUS' },
   );
 }
 
