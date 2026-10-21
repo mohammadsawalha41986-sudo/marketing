@@ -63,6 +63,67 @@ Owners and managers may connect and disconnect accounts. Content creators may
 view connections but not change them. Consumption & cost is visible to Super
 Admin and Agency Admin only.
 
+## Activation runbook
+
+Nothing below needs the key to pass through a chat, a ticket, or this repository.
+
+### 1. Create the API key in Composio
+
+1. Sign in at https://platform.composio.dev (the Composio dashboard).
+2. Create or open the project you want this deployment to use. Use one project
+   per environment if you later add staging.
+3. Open the project's **Settings → API Keys**, create a key, and copy it once.
+   Composio does not show it again; if you lose it, revoke it and create a new one.
+
+### 2. Put it straight into Railway
+
+1. Railway → project **Marketing Server** → service **@marketing-os/server** → **Variables**.
+2. **New Variable**: name `COMPOSIO_API_KEY`, value: paste the key. Save.
+3. Railway stages the change: press **Deploy** to apply it. The service
+   restarts with the key. No code deploy is needed.
+4. Optional, same screen: `COMPOSIO_PLAN_MONTHLY_USD`, `COMPOSIO_INCLUDED_CALLS`,
+   `COMPOSIO_OVERAGE_PER_1K_USD` from your Composio plan, for the cost estimate.
+
+To rotate the key, create a new one in Composio, replace the value in Railway,
+deploy, then revoke the old key in Composio.
+
+### 3. Check it from inside the deployment
+
+Integrations Center → **Composio diagnostics** (Super Admin / Agency Admin). It runs on the Railway
+server itself and reports:
+
+- whether the server reaches `backend.composio.dev`. This is decided before the key matters;
+- every auth config in the project, with its **real toolkit slug**;
+- which of the slugs this code groups by actually exist in Composio.
+
+If a platform's real slug is missing from `PLATFORM_FAMILIES`, its auth configs
+still appear, as a card under the slug itself. Add the slug to the list to group it.
+
+### 4. Create the auth configs
+
+Composio dashboard → **Auth Configs** → **Create** → choose the toolkit
+(Instagram first, then Facebook, then TikTok and Google). For production, choose
+**your own OAuth app** and enter the platform app's client id and secret there,
+in Composio and not in this application. Copy the redirect URI Composio shows
+into the platform's developer console. Enable the auth config. It appears in the
+Integrations Center within a minute (the catalogue is cached for 60 s).
+
+### 5. First live test (safe)
+
+1. Integrations Center → choose a test restaurant → Instagram → **Connect account**.
+   Complete the Instagram consent with an account you are authorised to use.
+2. Back on the page, the card shows **Connected** only once Composio reports ACTIVE.
+3. **Add another account**: connect a second Instagram account to the same restaurant;
+   both cards should show Connected.
+4. Sign in as another restaurant's owner: none of the first restaurant's accounts are visible.
+5. **Test connection**, **Sync now**, **Reconnect** (complete the login, and the old card
+   disappears once the new one is active), **Disconnect** (on a test account).
+
+None of these steps publishes, posts or spends: connecting only authorises.
+Test connection makes a platform call only when `COMPOSIO_VERIFY_TOOL_<TOOLKIT>`
+names a read-only tool. Choose one from the toolkit's tool list in Composio,
+one whose name reads GET/LIST/FETCH, never CREATE/POST/PUBLISH.
+
 ## Setup (an administrator, once)
 
 1. Create a Composio project and an API key; set `COMPOSIO_API_KEY` on the server.

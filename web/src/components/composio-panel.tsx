@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { History, Link2, Plug, RefreshCw } from 'lucide-react';
+import { History, Link2, Plug, RefreshCw, Stethoscope } from 'lucide-react';
 
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -76,6 +76,7 @@ export function ComposioPanel({ clientId }: { clientId: string }) {
   const [alias, setAlias] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [historyOf, setHistoryOf] = useState<Connection | null>(null);
+  const [diagnosing, setDiagnosing] = useState(false);
 
   const sync = async (quiet = false) => {
     setBusy('sync');
@@ -155,18 +156,45 @@ export function ComposioPanel({ clientId }: { clientId: string }) {
   };
 
   const rows = connections.data?.items ?? [];
-  const families = catalog.data?.platforms ?? [];
+  /*
+   * The known platforms, then every auth config whose toolkit slug none of them
+   * claims — as its own card under Composio's own slug. The grouping is a
+   * convenience; an auth config the project really has is never hidden because
+   * its slug was not guessed in advance.
+   */
+  const known = catalog.data?.platforms ?? [];
+  const extraToolkits = [...new Set([
+    ...(catalog.data?.other ?? []).map((config) => config.toolkit),
+    ...rows.filter((row) => !row.platform && !(catalog.data?.other ?? []).some((c) => c.toolkit === row.toolkit)).map((row) => row.toolkit),
+  ])];
+  const families = [
+    ...known,
+    ...extraToolkits.map((toolkit) => {
+      const configs = (catalog.data?.other ?? []).filter((config) => config.toolkit === toolkit);
+      return { key: `toolkit:${toolkit}`, label: toolkit, labelAr: toolkit, supported: configs.length > 0, authConfigs: configs };
+    }),
+  ];
+  const isAdmin = user?.permissions?.includes('usage.view') ?? false;
 
   return (
     <Card className="mb-4">
       <CardHeader
         title={t('composio.title')}
         subtitle={t('composio.subtitle')}
-        action={catalog.data?.configured ? (
-          <Button size="sm" variant="secondary" icon={RefreshCw} loading={busy === 'sync'} onClick={() => sync()}>
-            {t('composio.syncNow')}
-          </Button>
-        ) : undefined}
+        action={(
+          <div className="flex flex-wrap gap-2">
+            {isAdmin ? (
+              <Button size="sm" variant="ghost" icon={Stethoscope} onClick={() => setDiagnosing(true)}>
+                {t('composio.diagnostics')}
+              </Button>
+            ) : null}
+            {catalog.data?.configured ? (
+              <Button size="sm" variant="secondary" icon={RefreshCw} loading={busy === 'sync'} onClick={() => sync()}>
+                {t('composio.syncNow')}
+              </Button>
+            ) : null}
+          </div>
+        )}
       />
       <div className="p-5 pt-0">
         {catalog.loading || connections.loading ? (
@@ -279,6 +307,7 @@ export function ComposioPanel({ clientId }: { clientId: string }) {
       </Modal>
 
       <HistoryModal row={historyOf} onClose={() => setHistoryOf(null)} />
+      <DiagnosticsModal open={diagnosing} onClose={() => { setDiagnosing(false); catalog.refetch(); }} />
     </Card>
   );
 }
@@ -301,6 +330,78 @@ function HistoryModal({ row, onClose }: { row: Connection | null; onClose: () =>
           ))}
         </ul>
       ) : <EmptyState compact icon={History} title={t('composio.noHistory')} body="" />}
+    </Modal>
+  );
+}
+
+interface Diagnostics {
+  configured: boolean;
+  reachability: { reachable: boolean; httpStatus: number | null; detail: string };
+  authConfigs: Array<{ id: string; name: string; toolkit: string; authScheme: string | null; managedByComposio: boolean; enabled: boolean; grouped: string | null }>;
+  families: Array<{ key: string; label: string; toolkitSlugsFound: string[]; authConfigured: boolean }>;
+}
+
+/**
+ * What the live Composio project holds, read from inside this deployment. The
+ * first thing to open after setting COMPOSIO_API_KEY: it settles whether the
+ * host reaches Composio and what the real toolkit slugs are.
+ */
+function DiagnosticsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { t } = useI18n();
+  const { data, loading, error, refetch } = useQuery<Diagnostics>(open ? '/composio/diagnostics' : null, [open]);
+  return (
+    <Modal open={open} onClose={onClose} title={t('composio.diagnostics')} size="lg"
+      footer={<Button variant="secondary" icon={RefreshCw} onClick={refetch}>{t('composio.runAgain')}</Button>}>
+      {loading ? <CardSkeleton rows={4} /> : error ? (
+        <p className="rounded-lg border border-danger/25 bg-danger/10 p-3 text-[13px] text-fg">{error}</p>
+      ) : data ? (
+        <div dir="ltr" className="space-y-4 text-[13px]">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={data.reachability.reachable ? 'ok' : 'danger'} dot>
+              {data.reachability.reachable ? t('composio.reachable') : t('composio.unreachable')}
+            </Badge>
+            <Badge tone={data.configured ? 'ok' : 'warn'} dot>
+              {data.configured ? 'COMPOSIO_API_KEY set' : 'COMPOSIO_API_KEY missing'}
+            </Badge>
+          </div>
+          <p className="text-muted">{data.reachability.detail}</p>
+          {data.configured ? (
+            <>
+              <div>
+                <p className="mb-1.5 font-medium text-fg">{t('composio.authConfigs')} ({data.authConfigs.length})</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <tbody className="divide-y divide-line/60">
+                      {data.authConfigs.map((config) => (
+                        <tr key={config.id}>
+                          <td className="py-1.5 pe-3 text-fg">{config.name}</td>
+                          <td className="py-1.5 pe-3 font-mono text-[12px]">{config.toolkit}</td>
+                          <td className="py-1.5 pe-3 text-muted">{config.managedByComposio ? 'Composio-managed' : 'own OAuth app'}</td>
+                          <td className="py-1.5"><Badge tone={config.enabled ? 'ok' : 'neutral'}>{config.enabled ? 'enabled' : 'disabled'}</Badge></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div>
+                <p className="mb-1.5 font-medium text-fg">{t('composio.toolkitCheck')}</p>
+                <ul className="space-y-1">
+                  {data.families.map((family) => (
+                    <li key={family.key} className="flex flex-wrap justify-between gap-2">
+                      <span className="text-fg">{family.label}</span>
+                      <span className="font-mono text-[12px] text-muted">
+                        {family.toolkitSlugsFound.length ? family.toolkitSlugsFound.join(', ') : 'no toolkit found'}
+                        {family.authConfigured ? ' · auth config ✓' : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : null}
     </Modal>
   );
 }

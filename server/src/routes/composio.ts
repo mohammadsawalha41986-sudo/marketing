@@ -26,7 +26,7 @@ import { env } from '../env.js';
 import { recordAudit } from '../services/audit.js';
 import { ComposioError, type ComposioFetch } from '../services/composio/client.js';
 import {
-  ComposioRequestError, catalog, clientFor, disconnect, reconcile, serializeConnection, startConnection, testConnection,
+  ComposioRequestError, catalog, clientFor, diagnostics, disconnect, reconcile, serializeConnection, startConnection, testConnection,
 } from '../services/composio/service.js';
 import { usageSummary } from '../services/composio/usage.js';
 
@@ -260,6 +260,25 @@ composioRouter.get(
       select: { id: true, action: true, meta: true, createdAt: true, user: { select: { name: true } } },
     });
     res.json({ items: events });
+  }),
+);
+
+/**
+ * Setup diagnostics, run from inside the deployment: does *this* host reach
+ * Composio, and what does the real project contain. Administrators only — it
+ * lists the project's auth configs (names and slugs, never credentials).
+ */
+composioRouter.get(
+  '/diagnostics',
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertCan(actor, 'usage.view');
+    const composio = clientFor({ prisma, organizationId: orgId(actor), clientId: null, fetchImpl: fetchNow() });
+    try {
+      res.json(await diagnostics({ client: composio, fetchImpl: fetchNow() }));
+    } catch (error) {
+      rethrow(error);
+    }
   }),
 );
 

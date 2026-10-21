@@ -74,6 +74,28 @@ export interface ComposioClient {
   getAccount(id: string): Promise<RemoteAccount>;
   deleteAccount(id: string): Promise<void>;
   executeTool(input: { toolSlug: string; connectedAccountId: string; userId: string; arguments?: Record<string, unknown> }): Promise<{ successful: boolean; error: string | null }>;
+  /** Whether Composio knows a toolkit by this slug. */
+  toolkitExists(slug: string): Promise<boolean>;
+}
+
+/**
+ * Can this host reach Composio at all — DNS, TLS, route — independent of the
+ * key. An unauthenticated request answering 401 proves the path is open, which
+ * is the question to settle before blaming a key or a config.
+ */
+export async function probeReachability(fetchImpl: ComposioFetch, env: NodeJS.ProcessEnv = process.env): Promise<{
+  reachable: boolean; httpStatus: number | null; detail: string;
+}> {
+  try {
+    const response = await fetchImpl(`${baseUrl(env)}/api/v3.1/toolkits?limit=1`, {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    return { reachable: true, httpStatus: response.status, detail: `${baseUrl(env)} answered HTTP ${response.status}.` };
+  } catch (error) {
+    return { reachable: false, httpStatus: null, detail: `${baseUrl(env)} could not be reached (${(error as Error).name}: ${(error as Error).message.slice(0, 120)}).` };
+  }
 }
 
 export interface AuthConfigSummary {
@@ -242,6 +264,16 @@ export function createComposioClient(input: {
         error: (payload.error as string | null | undefined) ?? null,
         // `data` deliberately not returned: it is the provider's payload.
       };
+    },
+
+    async toolkitExists(slug) {
+      try {
+        await call('toolkits.get', 'GET', `/api/v3.1/toolkits/${encodeURIComponent(slug)}`);
+        return true;
+      } catch (error) {
+        if (error instanceof ComposioError && (error.kind === 'NOT_FOUND' || error.kind === 'BAD_REQUEST')) return false;
+        throw error;
+      }
     },
   };
 }

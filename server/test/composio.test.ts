@@ -32,6 +32,7 @@ function fakeComposio() {
   let seq = 0;
   let outage = false;
   let toolResult: { successful: boolean; error: string | null } = { successful: true, error: null };
+  let extraConfig = false;
 
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { 'content-type': 'application/json' },
@@ -53,6 +54,12 @@ function fakeComposio() {
     calls.push({ method, path: url.pathname + url.search, body, key: new Headers(init?.headers).get('x-api-key') });
     if (!url.hostname.endsWith('composio.dev')) return json({}, 404);
     if (new Headers(init?.headers).get('x-api-key') !== API_KEY) return json({ error: { message: 'Invalid API key' } }, 401);
+    const toolkit = url.pathname.match(/^\/api\/v3\.1\/toolkits\/([^/]+)$/);
+    if (toolkit) {
+      return ['instagram', 'facebook', 'google_analytics', 'tiktok', 'yelp'].includes(toolkit[1]!)
+        ? json({ slug: toolkit[1], name: toolkit[1] })
+        : json({ error: { message: 'Toolkit not found' } }, 404);
+    }
     if (outage) return json({ error: { message: 'upstream unavailable' } }, 503);
 
     if (url.pathname === '/api/v3.1/auth_configs') {
@@ -62,7 +69,8 @@ function fakeComposio() {
         credentials: { client_id: 'cid', client_secret: OAUTH_SECRET },
       });
       return json({ items: [config('ac_ig', 'instagram'), config('ac_fb', 'facebook'), config('ac_ga', 'google_analytics'),
-        { ...config('ac_off', 'tiktok'), status: 'DISABLED' }], current_page: 1, total_items: 4, total_pages: 1 });
+        { ...config('ac_off', 'tiktok'), status: 'DISABLED' }, ...(extraConfig ? [config('ac_yelp', 'yelp')] : [])],
+      current_page: 1, total_items: 4, total_pages: 1 });
     }
     if (url.pathname === '/api/v3.1/connected_accounts/link' && method === 'POST') {
       seq += 1;
@@ -100,6 +108,7 @@ function fakeComposio() {
     activateAll: () => { for (const account of accounts.values()) account.status = 'ACTIVE'; },
     setOutage: (value: boolean) => { outage = value; },
     setToolResult: (value: typeof toolResult) => { toolResult = value; },
+    addUnknownToolkitConfig: () => { extraConfig = true; },
   };
 }
 
@@ -185,6 +194,51 @@ describe('Composio connections', () => {
     expect(response.status).toBe(502);
     expect(response.body.error.code).toBe('COMPOSIO_AUTH');
     expect(JSON.stringify(response.body)).not.toContain('wrong-key');
+  });
+
+  it('makes no call to Composio at all when the key is absent, and the rest of the API is untouched', async () => {
+    delete process.env.COMPOSIO_API_KEY;
+    const client = await login(alpha.adminEmail);
+    expect((await client.get('/api/composio/catalog')).body.configured).toBe(false);
+    expect((await client.get(`/api/composio/${alpha.clientId}/connections`)).status).toBe(200);
+    expect((await client.post(`/api/composio/${alpha.clientId}/connections`, { authConfigId: 'ac_ig' })).status).toBe(503);
+    expect((await client.get(`/api/integrations?clientId=${alpha.clientId}`)).status).toBe(200);
+    expect((await client.get('/api/composio/usage')).status).toBe(200);
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it('offers an auth config whose toolkit slug no platform claims, under its own slug', async () => {
+    fake.addUnknownToolkitConfig();
+    const client = await login(alpha.adminEmail);
+    const response = await client.get('/api/composio/catalog');
+    expect(response.body.other.map((config: { toolkit: string }) => config.toolkit)).toEqual(['yelp']);
+  });
+
+  // -------------------------------------------------------- diagnostics
+
+  it('reports reachability, real auth configs and which guessed slugs exist, to administrators only', async () => {
+    const client = await login(alpha.adminEmail);
+    const response = await client.get('/api/composio/diagnostics');
+
+    expect(response.status).toBe(200);
+    expect(response.body.reachability.reachable).toBe(true);
+    expect(response.body.authConfigs.map((config: { toolkit: string }) => config.toolkit)).toContain('instagram');
+    const byKey = Object.fromEntries(response.body.families.map((f: { key: string }) => [f.key, f]));
+    expect(byKey.INSTAGRAM.toolkitSlugsFound).toEqual(['instagram']);
+    expect(byKey.GOOGLE_SEARCH_CONSOLE.toolkitSlugsFound).toEqual([]);
+    expect(JSON.stringify(response.body)).not.toContain(OAUTH_SECRET);
+
+    const owner = await login(alpha.clientAdminEmail);
+    expect((await owner.get('/api/composio/diagnostics')).status).toBe(403);
+  });
+
+  it('says plainly when this host cannot reach Composio', async () => {
+    vi.stubGlobal('fetch', async () => { throw new TypeError('fetch failed'); });
+    delete process.env.COMPOSIO_API_KEY;
+    const client = await login(alpha.adminEmail);
+    const response = await client.get('/api/composio/diagnostics');
+    expect(response.body.reachability.reachable).toBe(false);
+    expect(response.body.configured).toBe(false);
   });
 
   // ------------------------------------------------------------ connect

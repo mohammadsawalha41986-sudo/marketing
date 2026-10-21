@@ -1,0 +1,138 @@
+# What must be true before anything reaches main — and so, through Railway's
+# auto-deploy from main, before anything reaches production.
+#
+# Railway runs `prisma migrate deploy` before every deploy. The `migrations`
+# job is the rehearsal for that step: it applies every migration to an empty
+# database, then checks that schema.prisma and the migrations describe the same
+# database, so a schema edit without a migration (or the reverse) fails here and
+# not during a production deploy.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  migrations:
+    name: Prisma migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mos
+          POSTGRES_PASSWORD: mos
+          POSTGRES_DB: marketing_os_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mos" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://mos:mos@localhost:5432/marketing_os_ci?schema=public
+      SHADOW_DATABASE_URL: postgresql://mos:mos@localhost:5432/marketing_os_shadow?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Validate schema
+        run: npx prisma validate
+      - name: Apply every migration to an empty database
+        run: npx prisma migrate deploy
+      - name: Schema and migrations agree
+        run: |
+          PGPASSWORD=mos psql -h localhost -U mos -d marketing_os_ci -c 'CREATE DATABASE marketing_os_shadow'
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "$SHADOW_DATABASE_URL" \
+            --exit-code
+      - name: No destructive statement in a new migration
+        # Railway applies migrations to production unattended. A DROP or a
+        # column type change in a migration this PR adds must be a deliberate,
+        # reviewed decision, so it fails here until the PR says so.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'destructive-migration-approved') }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          added=$(git diff --name-only --diff-filter=A "origin/$BASE_REF" -- 'prisma/migrations/*/migration.sql')
+          if [ -z "$added" ]; then echo "No new migrations."; exit 0; fi
+          echo "$added"
+          if grep -nEi '^\s*(DROP\s|ALTER\s+TABLE\s+.*\s(DROP|ALTER\s+COLUMN\s+.*\sTYPE)\s|TRUNCATE\s|DELETE\s+FROM\s)' $added; then
+            if [ "$APPROVED" = "true" ]; then
+              echo "Destructive statement approved by label."
+            else
+              echo "::error::A new migration contains a destructive statement. Add the 'destructive-migration-approved' label after confirming a restorable backup."
+              exit 1
+            fi
+          fi
+
+  backend:
+    name: Backend (typecheck, lint, tests)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mos
+          POSTGRES_PASSWORD: mos
+          POSTGRES_DB: marketing_os_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mos" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://mos:mos@localhost:5432/marketing_os_test?schema=public
+      DATABASE_URL: postgresql://mos:mos@localhost:5432/marketing_os_test?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck -w server
+      - run: npm run lint
+      # No provider credential is set here, Composio included: the suite must
+      # pass exactly as a deployment without them would run.
+      - run: npm run test -w server
+
+  frontend:
+    name: Frontend (typecheck, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck -w web
+      - run: npm run test -w web
+
+  build:
+    name: Production build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      # The same command Railway runs.
+      - run: npm run build

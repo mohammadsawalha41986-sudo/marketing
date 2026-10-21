@@ -1130,6 +1130,9 @@ model AiRecommendation {
   client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
   @@index([organizationId, status])
+  /// Created by 20260826100000_ai_advertising_engine and never declared here,
+  /// which left every `migrate diff` proposing to drop it.
+  @@index([organizationId, priority])
   @@index([clientId, createdAt])
   @@index([campaignId])
   @@index([creativeId])

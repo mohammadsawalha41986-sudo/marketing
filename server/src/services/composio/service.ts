@@ -23,7 +23,7 @@
 import { NotificationType, type PrismaClient, type ComposioConnection } from '@prisma/client';
 
 import {
-  ComposioError, composioConfigured, createComposioClient,
+  ComposioError, composioConfigured, createComposioClient, probeReachability,
   type AuthConfigSummary, type ComposioClient, type ComposioFetch, type RemoteAccount,
 } from './client.js';
 import { notify } from '../notify.js';
@@ -420,5 +420,42 @@ export function serializeConnection(row: ComposioConnection) {
     lastError: row.lastError,
     replacing: Boolean(row.replacesId),
     createdAt: row.createdAt,
+  };
+}
+
+/**
+ * What a live Composio project actually holds, for the administrator setting
+ * it up: whether this host reaches Composio, which auth configs exist with
+ * their real toolkit slugs, and which of the slugs `PLATFORM_FAMILIES` guesses
+ * Composio really knows. The guesses were written without access to Composio;
+ * this is how they get checked against the real catalogue.
+ */
+export async function diagnostics(input: { client: ComposioClient; fetchImpl: ComposioFetch }) {
+  const reachability = await probeReachability(input.fetchImpl);
+  if (!composioConfigured()) {
+    return { configured: false, reachability, authConfigs: [], families: [] };
+  }
+  resetCatalogCache();
+  const configs = await authConfigs(input.client);
+  const families = [];
+  for (const family of PLATFORM_FAMILIES) {
+    const known: string[] = [];
+    for (const slug of family.slugs) {
+      if (await input.client.toolkitExists(slug)) known.push(slug);
+    }
+    families.push({
+      key: family.key,
+      label: family.label,
+      toolkitSlugsFound: known,
+      authConfigured: configs.some((config) => config.enabled && family.slugs.includes(config.toolkit.toLowerCase())),
+    });
+  }
+  return {
+    configured: true,
+    reachability,
+    authConfigs: configs.map(({ id, name, toolkit, authScheme, managedByComposio, enabled }) => ({
+      id, name, toolkit, authScheme, managedByComposio, enabled, grouped: familyOf(toolkit),
+    })),
+    families,
   };
 }
