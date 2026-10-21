@@ -11,7 +11,7 @@
 import { useState, type FormEvent } from 'react';
 import { ShieldCheck, UserPlus, Users } from 'lucide-react';
 
-import { api, qs, type Paginated, type Role } from '../lib/api';
+import { api, qs, type ClientRole, type Paginated, type Role } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useQuery, useDebounced } from '../lib/hooks';
 import { useI18n } from '../lib/i18n';
@@ -27,6 +27,7 @@ interface TeamMember {
   name: string;
   email: string;
   role: Role;
+  clientRole: ClientRole | null;
   isActive: boolean;
   lastLoginAt: string | null;
   createdAt: string;
@@ -35,6 +36,12 @@ interface TeamMember {
 
 const AGENCY_ROLES: Role[] = ['AGENCY_ADMIN', 'AGENCY_STAFF'];
 const PORTAL_ROLES: Role[] = ['CLIENT_ADMIN', 'CLIENT_USER'];
+/*
+ * What a restaurant user does inside their restaurant. CLIENT_ADMIN is always
+ * the owner; a CLIENT_USER takes one of the rest. Enforced on the server
+ * (`lib/rbac.ts`) — this list only decides what the form offers.
+ */
+const STAFF_CLIENT_ROLES: ClientRole[] = ['MANAGER', 'MARKETING_MANAGER', 'CONTENT_CREATOR', 'FINANCIAL_ANALYST', 'VIEWER'];
 
 function roleTone(role: Role): 'danger' | 'brand' | 'neutral' {
   if (role === 'SUPER_ADMIN') return 'danger';
@@ -54,6 +61,7 @@ function InviteDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<Role>('AGENCY_STAFF');
   const [clientId, setClientId] = useState('');
+  const [clientRole, setClientRole] = useState<ClientRole>('VIEWER');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -71,6 +79,7 @@ function InviteDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
         password,
         role,
         clientId: needsClient ? clientId : null,
+        clientRole: role === 'CLIENT_ADMIN' ? 'OWNER' : role === 'CLIENT_USER' ? clientRole : null,
       });
       push({ tone: 'success', title: t('team.created') });
       setName(''); setEmail(''); setPassword(''); setClientId('');
@@ -119,6 +128,15 @@ function InviteDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
             </Select>
           </Field>
         ) : null}
+        {role === 'CLIENT_USER' ? (
+          <Field label={t('team.clientRole')} hint={t('team.clientRoleHint')} required>
+            <Select value={clientRole} onChange={(event) => setClientRole(event.target.value as ClientRole)}>
+              {STAFF_CLIENT_ROLES.map((value) => (
+                <option key={value} value={value}>{t(`clientRole.${value}`)}</option>
+              ))}
+            </Select>
+          </Field>
+        ) : null}
 
         {error ? <p className="text-[13px] text-danger">{error}</p> : null}
 
@@ -159,6 +177,16 @@ export function TeamPage() {
   const changeRole = async (member: TeamMember, next: Role) => {
     try {
       await api.patch(`/users/${member.id}`, { role: next });
+      push({ tone: 'success', title: t('team.updated') });
+      refetch();
+    } catch (err) {
+      push({ tone: 'error', title: err instanceof Error ? err.message : 'Could not update this member' });
+    }
+  };
+
+  const changeClientRole = async (member: TeamMember, next: ClientRole) => {
+    try {
+      await api.patch(`/users/${member.id}`, { clientRole: next });
       push({ tone: 'success', title: t('team.updated') });
       refetch();
     } catch (err) {
@@ -250,6 +278,23 @@ export function TeamPage() {
                     ) : (
                       <Badge tone={roleTone(member.role)}>{humanize(member.role.toLowerCase())}</Badge>
                     )}
+                    {/* The restaurant-side role, under the portal role it refines. */}
+                    {member.role === 'CLIENT_USER' && canManage && member.id !== user?.id ? (
+                      <Select
+                        value={member.clientRole ?? 'VIEWER'}
+                        onChange={(event) => void changeClientRole(member, event.target.value as ClientRole)}
+                        className="mt-1.5 w-44"
+                        aria-label={t('team.clientRole')}
+                      >
+                        {STAFF_CLIENT_ROLES.map((value) => (
+                          <option key={value} value={value}>{t(`clientRole.${value}`)}</option>
+                        ))}
+                      </Select>
+                    ) : member.role === 'CLIENT_ADMIN' || member.role === 'CLIENT_USER' ? (
+                      <span className="mt-1 block text-[12px] text-muted">
+                        {t(`clientRole.${member.clientRole ?? (member.role === 'CLIENT_ADMIN' ? 'OWNER' : 'VIEWER')}`)}
+                      </span>
+                    ) : null}
                   </Td>
                   <Td className="text-muted">{member.client?.name ?? '—'}</Td>
                   <Td className="text-muted">

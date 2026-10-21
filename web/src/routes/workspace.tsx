@@ -25,6 +25,7 @@ import {
 import { PlatformChip, StatusBadge } from '../components/domain';
 import { ContentPreview } from '../components/content-preview';
 import { ThemeSwitch } from '../components/layout';
+import { ComposioPanel, UsagePanel } from '../components/composio-panel';
 
 // ---------------------------------------------------------------- calendar
 
@@ -1835,6 +1836,11 @@ export function IntegrationsPage() {
 
       <PublishingRoutes clientId={clientId} />
 
+      <UsagePanel />
+
+      {/* Composio first: it is the route a restaurant can complete on its own. */}
+      {clientId ? <ComposioPanel clientId={clientId} /> : null}
+
       <Card className="mb-4 p-4">
         <div className="flex flex-wrap items-center gap-3 text-[13px]">
           <Badge tone={catalog.data?.ai.configured ? 'ok' : 'warn'} dot>
@@ -2154,6 +2160,24 @@ export function IntegrationsPage() {
           are supplied, rather than reporting a connection that does not exist.
         </p>
       </Card>
+    </>
+  );
+}
+
+/**
+ * The restaurant's own integrations page in the portal.
+ *
+ * Only the Composio panel: direct OAuth connections are made by the agency,
+ * while a restaurant owner or manager links their own accounts here without
+ * the agency ever seeing a password.
+ */
+export function ClientIntegrationsPage() {
+  const { t } = useI18n();
+  const { user } = useAuth();
+  return (
+    <>
+      <PageHeader title={t('integration.center')} subtitle={user?.client?.businessName} />
+      {user?.clientId ? <ComposioPanel clientId={user.clientId} /> : null}
     </>
   );
 }
