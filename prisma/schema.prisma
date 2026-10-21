@@ -61,6 +61,22 @@ enum Role {
   CLIENT_USER
 }
 
+/// What a restaurant-side user may do inside their own restaurant.
+///
+/// Layered on `Role` rather than replacing it: `Role` says which side of the
+/// tenancy a user is on (agency or restaurant), this says what they do there.
+/// Null means "the default for the role" — CLIENT_ADMIN acts as OWNER and
+/// CLIENT_USER as VIEWER — so every existing account keeps exactly the access
+/// it had before this column existed.
+enum ClientRole {
+  OWNER
+  MANAGER
+  MARKETING_MANAGER
+  CONTENT_CREATOR
+  FINANCIAL_ANALYST
+  VIEWER
+}
+
 enum ClientStatus {
   ACTIVE
   PAUSED
@@ -364,6 +380,8 @@ model Organization {
   postGroups          PostGroup[]
   googleLocations     GoogleLocation[]
   googleReviews       GoogleReview[]
+  composioConnections ComposioConnection[]
+  providerCalls       ProviderCallLog[]
 }
 
 model User {
@@ -380,6 +398,7 @@ model User {
   organizationId String?
   // Set for CLIENT_ADMIN / CLIENT_USER: pins the user to a single client.
   clientId       String?
+  clientRole     ClientRole?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -469,6 +488,7 @@ model Client {
   postGroups          PostGroup[]
   googleLocations     GoogleLocation[]
   googleReviews       GoogleReview[]
+  composioConnections ComposioConnection[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -2069,4 +2089,70 @@ model GoogleReview {
   @@index([sentiment])
   @@index([replyStatus])
   @@index([createTime])
+}
+
+// ---------------------------------------------------------------- composio
+
+/// One social or ads account a restaurant connected through Composio.
+///
+/// Composio holds the OAuth credential; this row holds only Composio's id for
+/// it and what we last learned about it. There is deliberately no token column:
+/// nothing here can be used to call a provider without our Composio API key.
+///
+/// Many rows per restaurant per toolkit are allowed — a restaurant with two
+/// Instagram accounts connects both — which the direct `Integration` model
+/// (one per platform per client) cannot express.
+model ComposioConnection {
+  id                  String    @id @default(cuid())
+  organizationId      String
+  clientId            String
+  /// Composio's toolkit slug, as its auth config reports it (e.g. "instagram").
+  toolkit             String
+  authConfigId        String
+  /// Composio's connected account id. Unique: one Composio account is one row.
+  composioAccountId   String    @unique
+  /// INITIALIZING | INITIATED | ACTIVE | FAILED | EXPIRED | INACTIVE | REVOKED, verbatim.
+  remoteStatus        String
+  statusReason        String?
+  alias               String?
+  /// Which row this one was opened to replace, for Reconnect.
+  replacesId          String?
+  /// Set only after a check that reached Composio and found the account usable.
+  verifiedAt          DateTime?
+  /// "COMPOSIO_STATUS" or "PROVIDER_CALL" — how `verifiedAt` was earned.
+  verification        String?
+  lastCheckedAt       DateTime?
+  lastSuccessfulSyncAt DateTime?
+  lastError           String?
+  /// ComposioErrorKind of `lastError`: AUTH, FORBIDDEN, RATE_LIMIT, UNAVAILABLE…
+  lastErrorKind       String?
+  createdById         String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([clientId, toolkit])
+}
+
+/// One outbound call to a metered provider, for the consumption dashboard.
+///
+/// Counts, not payloads: no request or response body is stored, so nothing in
+/// here can leak a token or a customer's data.
+model ProviderCallLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  clientId       String?
+  provider       String
+  operation      String
+  success        Boolean
+  httpStatus     Int?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@index([provider, createdAt])
 }

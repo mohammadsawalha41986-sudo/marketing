@@ -5,7 +5,7 @@
 
 import { Router } from 'express';
 import {
-  IntegrationStatus, Language, Platform, Prisma, Role,
+  ClientRole, IntegrationStatus, Language, Platform, Prisma, Role,
 } from '@prisma/client';
 import { z } from 'zod';
 
@@ -1098,7 +1098,7 @@ usersRouter.get(
         ...paginate(query),
         orderBy: { createdAt: 'desc' },
         select: {
-          id: true, name: true, email: true, role: true, isActive: true, locale: true,
+          id: true, name: true, email: true, role: true, clientRole: true, isActive: true, locale: true,
           lastLoginAt: true, createdAt: true, client: { select: { id: true, name: true } },
         },
       }),
@@ -1119,6 +1119,8 @@ const createUserSchema = z.object({
   }),
   role: z.nativeEnum(Role),
   clientId: z.string().max(40).nullish(),
+  /** What a restaurant-side user does inside the restaurant. See `lib/rbac.ts`. */
+  clientRole: z.nativeEnum(ClientRole).nullish(),
   locale: z.nativeEnum(Language).default(Language.EN),
 });
 
@@ -1158,8 +1160,9 @@ usersRouter.post(
         locale: body.locale,
         organizationId: orgId(actor),
         clientId: needsClient ? body.clientId ?? null : null,
+        clientRole: needsClient ? body.clientRole ?? null : null,
       },
-      select: { id: true, name: true, email: true, role: true, isActive: true, clientId: true, createdAt: true },
+      select: { id: true, name: true, email: true, role: true, isActive: true, clientId: true, clientRole: true, createdAt: true },
     });
 
     await recordAudit({ actor, action: 'user.create', entity: 'User', entityId: user.id, ip: req.ip });
@@ -1177,11 +1180,25 @@ usersRouter.patch(
       role: z.nativeEnum(Role).optional(),
       isActive: z.boolean().optional(),
       clientId: z.string().max(40).nullish(),
+      clientRole: z.nativeEnum(ClientRole).nullish(),
     }),
   ),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    const body = req.body as { role?: Role; isActive?: boolean; name?: string; clientId?: string | null };
+    const body = req.body as {
+      role?: Role; isActive?: boolean; name?: string; clientId?: string | null; clientRole?: ClientRole | null;
+    };
+
+    // A client id from the body is checked against this organisation, as the
+    // create route already does; pinning a user to a stranger's restaurant was
+    // possible through this route before.
+    if (body.clientId) {
+      const client = await prisma.client.findFirst({
+        where: { id: body.clientId, organizationId: orgId(actor) },
+        select: { id: true },
+      });
+      if (!client) throw notFound('Client');
+    }
 
     const existing = await prisma.user.findFirst({
       where: { id: req.params.id, organizationId: orgId(actor) },
@@ -1199,7 +1216,7 @@ usersRouter.patch(
     const user = await prisma.user.update({
       where: { id: existing.id },
       data: body,
-      select: { id: true, name: true, email: true, role: true, isActive: true, clientId: true },
+      select: { id: true, name: true, email: true, role: true, isActive: true, clientId: true, clientRole: true },
     });
 
     // Deactivating a user ends their sessions immediately.

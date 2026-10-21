@@ -10,7 +10,7 @@
  *     reach is granted only by `crossTenant()`, which the /api/admin router uses.
  */
 
-import { Role } from '@prisma/client';
+import { Role, type ClientRole } from '@prisma/client';
 import { forbidden, notFound } from './errors.js';
 
 export interface Actor {
@@ -20,6 +20,8 @@ export interface Actor {
   role: Role;
   organizationId: string | null;
   clientId: string | null;
+  /** Restaurant-side role; null or absent means the default for `role`. */
+  clientRole?: ClientRole | null;
 }
 
 export const AGENCY_ROLES: Role[] = [Role.SUPER_ADMIN, Role.AGENCY_ADMIN, Role.AGENCY_STAFF];
