@@ -316,6 +316,52 @@ export async function exchangeCode(input: {
   };
 }
 
+/**
+ * Trade the stored refresh token for a new access token.
+ *
+ * TikTok access tokens last 24 hours; the refresh token lasts a year and may be
+ * rotated by the response. Without this, every TikTok connection stopped
+ * working a day after it was made and nothing said why — the refresh token was
+ * stored and never read. The rotated refresh token is returned so the caller
+ * persists it; keeping the old one works until TikTok retires it, then fails.
+ */
+export async function refreshAccessToken(input: {
+  config: Pick<TikTokConfig, 'clientKey' | 'clientSecret'>;
+  refreshToken: string;
+  fetchImpl: FetchLike;
+  now?: Date;
+}): Promise<{ accessToken: string; refreshToken: string | null; expiresAt: Date | null }> {
+  const now = input.now ?? new Date();
+
+  const body = new URLSearchParams({
+    client_key: input.config.clientKey,
+    client_secret: input.config.clientSecret,
+    grant_type: 'refresh_token',
+    refresh_token: input.refreshToken,
+  });
+
+  const payload = await readJson(
+    await input.fetchImpl(`${API}/oauth/token/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    }),
+    'TikTok token refresh',
+  );
+
+  const accessToken = payload.access_token as string | undefined;
+  if (!accessToken) {
+    throw new ProviderApiError(Platform.TIKTOK, 401, 'TikTok token refresh returned no access token');
+  }
+  const expiresIn = payload.expires_in as number | undefined;
+
+  return {
+    accessToken,
+    refreshToken: (payload.refresh_token as string | undefined) ?? null,
+    expiresAt: typeof expiresIn === 'number' ? new Date(now.getTime() + expiresIn * 1000) : null,
+  };
+}
+
 export interface TikTokIdentity {
   id: string;
   name: string;
