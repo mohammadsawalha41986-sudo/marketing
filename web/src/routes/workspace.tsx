@@ -25,6 +25,7 @@ import {
 import { PlatformChip, StatusBadge } from '../components/domain';
 import { ContentPreview } from '../components/content-preview';
 import { ThemeSwitch } from '../components/layout';
+import { ComposioPanel, UsagePanel } from '../components/composio-panel';
 
 // ---------------------------------------------------------------- calendar
 
@@ -1016,15 +1017,154 @@ function describeCallbackFailure(reason: string, provider: string | null): { tit
   };
 }
 
+/** The six states the server derives; mirrors `ConnectionState` there. */
+type ConnectionState =
+  | 'CONNECTED' | 'DISCONNECTED' | 'TOKEN_EXPIRED' | 'MISSING_PERMISSIONS' | 'CONFIGURATION_REQUIRED' | 'API_ERROR';
+
+const STATE_TONE: Record<ConnectionState, 'ok' | 'neutral' | 'warn' | 'danger' | 'brand'> = {
+  CONNECTED: 'ok',
+  DISCONNECTED: 'neutral',
+  TOKEN_EXPIRED: 'danger',
+  MISSING_PERMISSIONS: 'warn',
+  CONFIGURATION_REQUIRED: 'warn',
+  API_ERROR: 'danger',
+};
+
 interface IntegrationRow {
   id: string;
   clientId: string;
   platform: Platform;
   status: string;
   accountName: string | null;
+  accountId: string | null;
+  scopes: string[];
   lastSyncAt: string | null;
   lastError: string | null;
+  tokenExpiresAt: string | null;
+  /** Derived on the server from the stored status, grant, expiry and last live check. */
+  state: ConnectionState;
+  stateReason: string;
+  lastCheck: { state: ConnectionState; checkedAt: string; live: boolean; detail: string } | null;
+  missingPermissions: string[];
   client: { id: string; name: string };
+}
+
+interface HealthResult {
+  state: ConnectionState;
+  live: boolean;
+  detail: string;
+  refreshed: boolean;
+}
+
+interface PermissionsView {
+  granted: string[];
+  requirements: Array<{
+    scope: string; purpose: string; required: boolean; grantedBy: string; approval: string | null; granted: boolean;
+  }>;
+  notes: string[];
+}
+
+/**
+ * What a connection's grant covers, and who has to act for what it does not.
+ *
+ * Read from the server rather than from the adapter's requested scopes: the
+ * request is what the app asked for, the grant is what the platform gave, and
+ * only the second decides whether a post goes out.
+ */
+function PermissionsModal({ integrationId, label, onClose }: { integrationId: string | null; label: string; onClose: () => void }) {
+  const { t } = useI18n();
+  const { data, loading, error } = useQuery<PermissionsView>(
+    integrationId ? `/integrations/${integrationId}/permissions` : null,
+    [integrationId],
+  );
+
+  return (
+    <Modal open={Boolean(integrationId)} onClose={onClose} title={`${t('integration.permissions')} — ${label}`} size="lg">
+      {loading ? (
+        <CardSkeleton rows={4} />
+      ) : error || !data ? (
+        <ErrorState message={error ?? 'Could not load permissions.'} />
+      ) : (
+        <div className="space-y-4">
+          {data.granted.length === 0 ? (
+            <p className="rounded-lg border border-warn/25 bg-warn/10 p-3 text-[13px] text-fg">{t('integration.permNotRecorded')}</p>
+          ) : null}
+          <div className="divide-y divide-line/60 rounded-lg border border-line">
+            {data.requirements.map((entry) => (
+              <div key={entry.scope} className="space-y-1.5 p-3 text-[13px]">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <code dir="ltr" className="break-all rounded bg-elevated px-1.5 py-0.5 text-[12px] text-fg">{entry.scope}</code>
+                  <span className="flex gap-1.5">
+                    <Badge tone={entry.required ? 'brand' : 'neutral'}>
+                      {entry.required ? t('integration.permRequired') : t('integration.permOptional')}
+                    </Badge>
+                    <Badge tone={entry.granted ? 'ok' : entry.required ? 'danger' : 'warn'} dot>
+                      {entry.granted ? t('integration.permGranted') : t('integration.permMissing')}
+                    </Badge>
+                  </span>
+                </div>
+                <p className="text-muted"><span className="text-fg">{t('integration.permPurpose')}: </span>{entry.purpose}</p>
+                <p className="text-muted"><span className="text-fg">{t('integration.permGrantedBy')}: </span>{entry.grantedBy}</p>
+                {entry.approval ? (
+                  <p className="text-muted"><span className="text-fg">{t('integration.permApproval')}: </span>{entry.approval}</p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          {data.notes.length > 0 ? (
+            <div className="rounded-lg border border-line bg-elevated p-3 text-[13px]">
+              <p className="mb-1.5 font-medium text-fg">{t('integration.notes')}</p>
+              <ul className="list-disc space-y-1 ps-5 text-muted">
+                {data.notes.map((note) => <li key={note}>{note}</li>)}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/** Everything recorded about why a connection is not healthy, and what to do. */
+function ErrorDetailsModal({ row, label, onClose }: { row: IntegrationRow | null; label: string; onClose: () => void }) {
+  const { t, lang } = useI18n();
+  const state = row?.state ?? 'DISCONNECTED';
+  const messages = row
+    ? [...new Set([row.stateReason, row.lastCheck && !row.lastCheck.live ? row.lastCheck.detail : null, row.lastError]
+      .filter((entry): entry is string => Boolean(entry)))]
+    : [];
+
+  return (
+    <Modal open={Boolean(row)} onClose={onClose} title={`${t('integration.errorTitle')} — ${label}`} size="md">
+      {row ? (
+        <div className="space-y-4 text-[13px]">
+          <Badge tone={STATE_TONE[state]} dot>{t(`integration.state.${state}`)}</Badge>
+          {messages.length > 0 ? (
+            <ul className="space-y-2">
+              {messages.map((message) => (
+                // Provider messages are English; keep them left-to-right inside an RTL page.
+                <li key={message} dir="auto" className="rounded-lg border border-line bg-elevated p-3 text-fg">{message}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-muted">{t('integration.noError')}</p>
+          )}
+          {row.lastCheck ? (
+            <p className="text-muted">
+              {t('integration.lastCheck')}: {dateTime(row.lastCheck.checkedAt, lang)} —{' '}
+              {row.lastCheck.live ? t('integration.liveYes') : t('integration.liveNo')}
+            </p>
+          ) : null}
+          {state !== 'CONNECTED' ? (
+            <div className="rounded-lg border border-brand/25 bg-brand/10 p-3">
+              <p className="mb-1 font-medium text-fg">{t('integration.howToFix')}</p>
+              <p className="text-fg">{t(`integration.fix.${state}`)}</p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </Modal>
+  );
 }
 
 
@@ -1401,6 +1541,10 @@ export function IntegrationsPage() {
 
   const [selecting, setSelecting] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  // Which card is mid-check, and what kind — one spinner per button.
+  const [busy, setBusy] = useState<{ id: string; action: 'test' | 'refresh' | 'sync' } | null>(null);
+  const [viewingPermissions, setViewingPermissions] = useState<{ id: string; label: string } | null>(null);
+  const [viewingError, setViewingError] = useState<{ row: IntegrationRow; label: string } | null>(null);
   /*
    * The test-publish dialog.
    *
@@ -1511,6 +1655,54 @@ export function IntegrationsPage() {
       push({ tone: 'error', title: 'Could not disconnect', body: err instanceof Error ? err.message : undefined });
     } finally {
       setDisconnecting(null);
+    }
+  };
+
+  /**
+   * Ask the platform, now, whether this connection works.
+   *
+   * `refresh` also renews the token first where the platform issues a refresh
+   * token. Either way the verdict is the provider's answer, and the card
+   * re-reads the stored state afterwards so badge and toast never disagree.
+   */
+  const check = async (integrationId: string, label: string, action: 'test' | 'refresh') => {
+    setBusy({ id: integrationId, action });
+    try {
+      const result = action === 'refresh'
+        ? await api.post<HealthResult>(`/integrations/${integrationId}/refresh-authorization`)
+        : await api.get<HealthResult>(`/integrations/${integrationId}/health`);
+      push({
+        tone: result.live && result.state === 'CONNECTED' ? 'success' : result.live ? 'info' : 'error',
+        title: `${label}: ${result.live ? t('integration.testPassed') : t('integration.testFailed')} — ${t(`integration.state.${result.state}`)}`,
+        body: result.detail,
+      });
+    } catch (err) {
+      push({ tone: 'error', title: `${label}: ${t('integration.testFailed')}`, body: err instanceof Error ? err.message : undefined });
+    } finally {
+      setBusy(null);
+      refetch();
+    }
+  };
+
+  /**
+   * Pull the platform's figures. Platforms whose ingestion is not built answer
+   * 501 with a sentence saying so, and that sentence is what the operator sees.
+   */
+  const sync = async (integrationId: string, label: string) => {
+    setBusy({ id: integrationId, action: 'sync' });
+    try {
+      const result = await api.post<{ status?: string; errorMessage?: string | null }>(`/integrations/${integrationId}/sync`);
+      const failed = result.status === 'FAILED';
+      push({
+        tone: failed ? 'error' : 'success',
+        title: `${label}: ${failed ? t('integration.syncFailed') : t('integration.syncDone')}`,
+        body: result.errorMessage ?? undefined,
+      });
+    } catch (err) {
+      push({ tone: 'info', title: `${label}: ${t('integration.syncFailed')}`, body: err instanceof Error ? err.message : undefined });
+    } finally {
+      setBusy(null);
+      refetch();
     }
   };
 
@@ -1632,10 +1824,10 @@ export function IntegrationsPage() {
   return (
     <>
       <PageHeader
-        title={t('nav.integrations')}
+        title={t('integration.center')}
         subtitle={
           current
-            ? `Connections for ${current.businessName}. A provider connects once its credentials are set.`
+            ? t('integration.centerSubtitle').replace('{name}', current.businessName)
             : t('integration.selectFirst')
         }
       />
@@ -1643,6 +1835,11 @@ export function IntegrationsPage() {
       <ProjectPicker />
 
       <PublishingRoutes clientId={clientId} />
+
+      <UsagePanel />
+
+      {/* Composio first: it is the route a restaurant can complete on its own. */}
+      {clientId ? <ComposioPanel clientId={clientId} /> : null}
 
       <Card className="mb-4 p-4">
         <div className="flex flex-wrap items-center gap-3 text-[13px]">
@@ -1687,27 +1884,25 @@ export function IntegrationsPage() {
             const buildable = adapter.connectMethod !== 'NONE';
             // Authorized but nothing attached yet — the flow is half done.
             const awaitingSelection = integration?.status === 'CONNECTING';
+            /*
+             * The badge is the server's derived state, never a guess from the
+             * status column here. A card with no row has never been connected,
+             * and the only thing left to say is whether it could be.
+             */
+            const state: ConnectionState = integration?.state
+              ?? (!buildable || !adapter.ready ? 'CONFIGURATION_REQUIRED' : 'DISCONNECTED');
+            // Upload-Post has no token of its own to test, renew or scope.
+            const oauth = adapter.connectMethod === 'OAUTH';
+            const checkable = Boolean(integration && oauth && integration.status !== 'DISCONNECTED');
+            const hasProblem = Boolean(integration && (integration.lastError || (integration.lastCheck && !integration.lastCheck.live)
+              || !['CONNECTED', 'DISCONNECTED'].includes(state)));
+            const missingCount = integration?.missingPermissions.length ?? 0;
+            const isBusy = (action: 'test' | 'refresh' | 'sync') => busy?.id === integration?.id && busy?.action === action;
             return (
               <Card key={adapter.platform} className="p-5">
                 <div className="flex items-start justify-between gap-3">
                   <PlatformChip platform={adapter.platform} />
-                  {/*
-                    * Three states, not two. "Not built" is not the same as "not
-                    * configured", and a provider whose credentials are all
-                    * present still cannot connect if nobody wrote the adapter.
-                    */}
-                  <Badge
-                    tone={connected ? 'ok' : !buildable ? 'neutral' : adapter.ready ? 'brand' : 'warn'}
-                    dot
-                  >
-                    {connected
-                      ? t('integration.connected')
-                      : !buildable
-                        ? t('integration.notBuilt')
-                        : adapter.ready
-                          ? t('integration.readyToConnect')
-                          : t('integration.notConfigured')}
-                  </Badge>
+                  <Badge tone={STATE_TONE[state]} dot>{t(`integration.state.${state}`)}</Badge>
                 </div>
 
                 {/*
@@ -1729,12 +1924,37 @@ export function IntegrationsPage() {
 
                 <div className="mt-4 space-y-1.5 text-[13px] text-muted">
                   <p className="flex justify-between gap-2">
-                    <span>Account</span><span className="text-fg">{integration?.accountName ?? '—'}</span>
+                    <span>{t('integration.accountName')}</span>
+                    <span className="truncate text-fg">{integration?.accountName ?? '—'}</span>
                   </p>
                   <p className="flex justify-between gap-2">
-                    <span>{t('integration.lastSync')}</span>
+                    <span>{t('integration.accountId')}</span>
+                    <span dir="ltr" className="truncate font-mono text-[12px] text-fg">{integration?.accountId ?? '—'}</span>
+                  </p>
+                  <p className="flex justify-between gap-2">
+                    <span>{t('integration.lastSuccessfulSync')}</span>
                     <span className="text-fg">{integration?.lastSyncAt ? relative(integration.lastSyncAt, lang) : '—'}</span>
                   </p>
+                  <p className="flex justify-between gap-2">
+                    <span>{t('integration.lastCheck')}</span>
+                    <span className="text-fg">
+                      {integration?.lastCheck
+                        ? `${relative(integration.lastCheck.checkedAt, lang)} · ${integration.lastCheck.live ? t('integration.liveYes') : t('integration.liveNo')}`
+                        : '—'}
+                    </span>
+                  </p>
+                  {oauth ? (
+                    <p className="flex justify-between gap-2">
+                      <span>{t('integration.permissions')}</span>
+                      <span className={cn('text-fg', missingCount > 0 && 'text-warn')}>
+                        {integration && integration.scopes.length > 0
+                          ? t('integration.permissionsSummary')
+                            .replace('{granted}', String(integration.scopes.length))
+                            .replace('{missing}', String(missingCount))
+                          : '—'}
+                      </span>
+                    </p>
+                  ) : null}
                   <p className="flex justify-between gap-2">
                     <span>Capabilities</span>
                     <span className="text-fg">
@@ -1749,8 +1969,12 @@ export function IntegrationsPage() {
                     so credentials would not help.
                   </div>
                 ) : adapter.missingEnv.length > 0 ? (
-                  <div className="mt-3 rounded-lg border border-warn/25 bg-warn/10 p-2.5 text-[12px] text-warn">
+                  <div dir="ltr" className="mt-3 rounded-lg border border-warn/25 bg-warn/10 p-2.5 text-[12px] text-warn">
                     Needs: {adapter.missingEnv.join(', ')}
+                  </div>
+                ) : integration && state !== 'CONNECTED' && state !== 'DISCONNECTED' ? (
+                  <div dir="auto" className="mt-3 line-clamp-3 rounded-lg border border-line bg-elevated p-2.5 text-[12px] text-muted">
+                    {integration.stateReason}
                   </div>
                 ) : null}
 
@@ -1762,11 +1986,40 @@ export function IntegrationsPage() {
                     onClick={() => connect(adapter.platform)}
                     disabled={!clientId || !buildable}
                   >
-                    {connected ? t('integration.reconnect') : t('integration.connect')}
+                    {integration && integration.status !== 'DISCONNECTED' ? t('integration.reconnect') : t('integration.connect')}
                   </Button>
                   {integration && (connected || awaitingSelection) ? (
                     <Button size="sm" variant="secondary" onClick={() => setSelecting(integration.id)}>
                       {awaitingSelection ? t('integration.chooseAccounts') : t('integration.accounts')}
+                    </Button>
+                  ) : null}
+                  {integration && checkable ? (
+                    <>
+                      <Button size="sm" variant="secondary" loading={isBusy('test')} disabled={Boolean(busy)}
+                        onClick={() => check(integration.id, adapter.label, 'test')}>
+                        {t('integration.testConnection')}
+                      </Button>
+                      <Button size="sm" variant="secondary" loading={isBusy('refresh')} disabled={Boolean(busy)}
+                        onClick={() => check(integration.id, adapter.label, 'refresh')}>
+                        {t('integration.refreshAuth')}
+                      </Button>
+                    </>
+                  ) : null}
+                  {integration && oauth ? (
+                    <Button size="sm" variant="ghost" onClick={() => setViewingPermissions({ id: integration.id, label: adapter.label })}>
+                      {t('integration.viewPermissions')}
+                    </Button>
+                  ) : null}
+                  {integration && hasProblem ? (
+                    <Button size="sm" variant="ghost" onClick={() => setViewingError({ row: integration, label: adapter.label })}>
+                      {t('integration.viewError')}
+                    </Button>
+                  ) : null}
+                  {/* Only where ingestion exists; the server answers 501 otherwise. */}
+                  {integration && connected && adapter.capabilities.metrics && adapter.implementation.metrics === 'IMPLEMENTED' ? (
+                    <Button size="sm" variant="secondary" loading={isBusy('sync')} disabled={Boolean(busy)}
+                      onClick={() => sync(integration.id, adapter.label)}>
+                      {t('integration.syncData')}
                     </Button>
                   ) : null}
                   {/*
@@ -1784,7 +2037,7 @@ export function IntegrationsPage() {
                       Test publish
                     </Button>
                   ) : null}
-                  {integration && (connected || awaitingSelection) ? (
+                  {integration && integration.status !== 'DISCONNECTED' ? (
                     <Button
                       size="sm"
                       variant="ghost"
@@ -1810,6 +2063,12 @@ export function IntegrationsPage() {
       )}
 
       <AccountSelection id={selecting} onClose={() => setSelecting(null)} onSaved={refetch} />
+      <PermissionsModal
+        integrationId={viewingPermissions?.id ?? null}
+        label={viewingPermissions?.label ?? ''}
+        onClose={() => setViewingPermissions(null)}
+      />
+      <ErrorDetailsModal row={viewingError?.row ?? null} label={viewingError?.label ?? ''} onClose={() => setViewingError(null)} />
 
       <Modal
         open={Boolean(testing)}
@@ -1901,6 +2160,24 @@ export function IntegrationsPage() {
           are supplied, rather than reporting a connection that does not exist.
         </p>
       </Card>
+    </>
+  );
+}
+
+/**
+ * The restaurant's own integrations page in the portal.
+ *
+ * Only the Composio panel: direct OAuth connections are made by the agency,
+ * while a restaurant owner or manager links their own accounts here without
+ * the agency ever seeing a password.
+ */
+export function ClientIntegrationsPage() {
+  const { t } = useI18n();
+  const { user } = useAuth();
+  return (
+    <>
+      <PageHeader title={t('integration.center')} subtitle={user?.client?.businessName} />
+      {user?.clientId ? <ComposioPanel clientId={user.clientId} /> : null}
     </>
   );
 }

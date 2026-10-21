@@ -19,6 +19,7 @@
 import { AccountTokenStatus, ContentStatus, MediaType, Platform, PrismaClient, PublishingAttemptResult, PublishingJobStatus } from '@prisma/client';
 
 import { decryptSecret } from '../../lib/crypto.js';
+import { freshAccountToken } from '../integrations/connection-health.js';
 import { readObject } from '../storage/objects.js';
 import { deliveryConfig, publishableImageUrl } from '../storage/public-delivery.js';
 import { isRetryable, type FetchLike, type PublishMedia } from './contract.js';
@@ -544,6 +545,16 @@ export async function runJob(input: {
     });
   }
 
+  /*
+   * Renewed first when it is about to lapse. TikTok tokens last a day and
+   * Google's an hour, so a post scheduled past either went out with a dead
+   * credential; `freshAccountToken` renews from the stored refresh token and
+   * writes the new one back before handing it over.
+   */
+  const accessToken = account.accessTokenEnc && job.accountId
+    ? await freshAccountToken({ prisma, accountId: job.accountId, fetchImpl: fetchImpl as never, now })
+    : null;
+
   const result = await publisher.publish({
     caption: composeCaption(content.caption, content.headline),
     media,
@@ -553,7 +564,7 @@ export async function runJob(input: {
       // Decrypted here and nowhere else, immediately before the call. Empty
       // where the route's credential is the deployment's, never a placeholder
       // that a publisher could mistake for a real token.
-      accessToken: account.accessTokenEnc ? decryptSecret(account.accessTokenEnc) : '',
+      accessToken: accessToken ?? (account.accessTokenEnc ? decryptSecret(account.accessTokenEnc) : ''),
       metadata: (account.metadata ?? {}) as Record<string, unknown>,
     },
     fetchImpl,

@@ -27,6 +27,7 @@ import { socialRouter } from './social.js';
 import { marketingRouter } from './marketing.js';
 import { advertisingRouter } from './advertising.js';
 import { oauthCallbackRouter } from './oauth-callback.js';
+import { composioRouter } from './composio.js';
 import { integrationsRouter, notificationsRouter, subscriptionsRouter, usersRouter } from './misc.js';
 
 export const apiRouter: Router = Router();
@@ -103,5 +104,6 @@ apiRouter.use('/notifications', notificationsRouter);
  */
 apiRouter.use('/integrations', oauthCallbackRouter);
 apiRouter.use('/integrations', integrationsRouter);
+apiRouter.use('/composio', composioRouter);
 apiRouter.use('/subscriptions', subscriptionsRouter);
 apiRouter.use('/admin', adminRouter);

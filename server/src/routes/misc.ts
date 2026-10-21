@@ -5,7 +5,7 @@
 
 import { Router } from 'express';
 import {
-  IntegrationStatus, Language, Platform, Prisma, Role,
+  ClientRole, IntegrationStatus, Language, Platform, Prisma, Role,
 } from '@prisma/client';
 import { z } from 'zod';
 
@@ -19,7 +19,7 @@ import {
   adapterFor, connectable, providerReadiness, allAdapters, supportsOAuth,
   ProviderNotConfiguredError, ProviderNotImplementedError,
 } from '../services/integrations/index.js';
-import { beginAuthorization, bindProvider, selectAccounts } from '../services/integrations/connect-flow.js';
+import { beginAuthorization, selectAccounts } from '../services/integrations/connect-flow.js';
 import { METRIC_SYNC_PLATFORMS, syncMetaMetrics } from '../services/integrations/metric-sync.js';
 import {
   beginUploadPostConnection, disconnectUploadPost, refreshUploadPostAccounts,
@@ -31,7 +31,8 @@ import {
 import { routeCoverage } from '../services/publishing/route.js';
 import { syncGoogleAdsMetrics, listGoogleAdsCampaigns } from '../services/integrations/google-ads-metrics.js';
 import { GoogleAdsError } from '../services/integrations/google-ads.js';
-import { decryptSecret } from '../lib/crypto.js';
+import { checkConnection, deriveState, healthOf } from '../services/integrations/connection-health.js';
+import { permissionReport, platformNotes } from '../services/integrations/permissions.js';
 import { env } from '../env.js';
 import { hashPassword, passwordProblems } from '../lib/password.js';
 import { recordAudit } from '../services/audit.js';
@@ -174,11 +175,43 @@ integrationsRouter.get(
       select: {
         id: true, clientId: true, platform: true, status: true, accountName: true,
         accountId: true, scopes: true, lastSyncAt: true, lastError: true, updatedAt: true,
+        tokenExpiresAt: true, metadata: true,
+        // Read only to say whether one is present; never returned.
+        accessTokenEnc: true, refreshTokenEnc: true,
         client: { select: { id: true, name: true } },
       },
     });
 
-    res.json({ items });
+    /*
+     * Each row carries its state as the database can tell it, so the screen
+     * never has to infer one from a status column. `accessTokenEnc` and
+     * `refreshTokenEnc` are reduced to booleans here and dropped from the
+     * response; the envelope itself never leaves this function.
+     */
+    res.json({
+      items: items.map(({ accessTokenEnc, refreshTokenEnc, metadata, ...item }) => {
+        const derived = deriveState({
+          platform: item.platform,
+          integration: {
+            status: item.status,
+            hasCredential: Boolean(accessTokenEnc),
+            hasRefreshToken: Boolean(refreshTokenEnc),
+            tokenExpiresAt: item.tokenExpiresAt,
+            scopes: item.scopes,
+            lastError: item.lastError,
+            metadata,
+          },
+        });
+        const report = permissionReport(item.platform, item.scopes);
+        return {
+          ...item,
+          state: derived.state,
+          stateReason: derived.reason,
+          lastCheck: healthOf(metadata),
+          missingPermissions: item.scopes.length > 0 ? report.missingRequired.map((entry) => entry.scope) : [],
+        };
+      }),
+    });
   }),
 );
 
@@ -694,49 +727,90 @@ integrationsRouter.get(
 
     const integration = await prisma.integration.findFirst({
       where: { id: req.params.id, organizationId: orgId(actor) },
-      select: {
-        id: true, platform: true, status: true, accessTokenEnc: true, tokenExpiresAt: true,
-        accounts: { where: { selected: true }, select: { kind: true } },
-      },
+      select: { id: true, platform: true, accounts: { where: { selected: true }, select: { kind: true } } },
     });
     if (!integration) throw notFound('Integration');
 
     const adapter = adapterFor(integration.platform);
-    const readiness = providerReadiness(adapter);
 
-    const base = {
+    /*
+     * The verdict and its classification come from `checkConnection`: an
+     * expired token, a missing permission and a failing API are three different
+     * answers, and only the first one changes the stored status. This route
+     * used to write ERROR for all three — including a provider's 503.
+     */
+    const result = await checkConnection({
+      prisma,
       integrationId: integration.id,
-      platform: integration.platform,
-      status: integration.status,
-      readiness: readiness.state,
+      organizationId: orgId(actor),
+      fetchImpl: fetch as never,
+    });
+    if (!result) throw notFound('Integration');
+
+    res.json({
+      ...result,
+      readiness: providerReadiness(adapter).state,
       implementation: adapter.implementation,
       selectedKinds: integration.accounts.map((account) => account.kind),
-      tokenExpiresAt: integration.tokenExpiresAt,
-    };
+    });
+  }),
+);
 
-    if (!integration.accessTokenEnc) {
-      res.json({ ...base, live: false, detail: 'No credential is stored for this connection.' });
-      return;
-    }
-    if (adapter.implementation.oauth !== 'IMPLEMENTED') {
-      res.json({ ...base, live: false, detail: new ProviderNotImplementedError(adapter, 'oauth').message });
-      return;
-    }
+/**
+ * Renew the authorisation now, then check it live.
+ *
+ * TikTok and Google renew with their refresh token, Instagram with itself.
+ * Meta has nothing to renew with — a long-lived token is renewed only by its
+ * owner logging in again — and the answer says so rather than pretending.
+ */
+integrationsRouter.post(
+  '/:id/refresh-authorization',
+  requireAgency,
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    assertWritable(actor);
 
-    try {
-      const identity = await bindProvider(integration.platform).validate({
-        accessToken: decryptSecret(integration.accessTokenEnc),
-        fetchImpl: fetch as never,
-      });
-      res.json({ ...base, live: true, detail: `${adapter.label} answered as ${identity.name}.` });
-    } catch (error) {
-      const message = (error as Error).message.slice(0, 500);
-      await prisma.integration.update({
-        where: { id: integration.id },
-        data: { status: IntegrationStatus.ERROR, lastError: message },
-      });
-      res.json({ ...base, status: IntegrationStatus.ERROR, live: false, detail: message });
-    }
+    const result = await checkConnection({
+      prisma,
+      integrationId: req.params.id!,
+      organizationId: orgId(actor),
+      fetchImpl: fetch as never,
+      forceRefresh: true,
+    });
+    if (!result) throw notFound('Integration');
+
+    await recordAudit({
+      actor, action: 'integration.refresh', entity: 'Integration', entityId: result.integrationId,
+      meta: { platform: result.platform, state: result.state, refreshed: result.refreshed }, ip: req.ip,
+    });
+
+    res.json(result);
+  }),
+);
+
+/**
+ * What this connection was granted against what the platform needs, with who
+ * grants each permission and what platform approval it waits on. Read from
+ * the stored grant; Test Connection re-reads Meta's live.
+ */
+integrationsRouter.get(
+  '/:id/permissions',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    const integration = await prisma.integration.findFirst({
+      where: { id: req.params.id, organizationId: orgId(actor) },
+      select: { id: true, platform: true, scopes: true },
+    });
+    if (!integration) throw notFound('Integration');
+
+    res.json({
+      integrationId: integration.id,
+      platform: integration.platform,
+      ...permissionReport(integration.platform, integration.scopes),
+      notes: platformNotes(integration.platform),
+    });
   }),
 );
 
@@ -1024,7 +1098,7 @@ usersRouter.get(
         ...paginate(query),
         orderBy: { createdAt: 'desc' },
         select: {
-          id: true, name: true, email: true, role: true, isActive: true, locale: true,
+          id: true, name: true, email: true, role: true, clientRole: true, isActive: true, locale: true,
           lastLoginAt: true, createdAt: true, client: { select: { id: true, name: true } },
         },
       }),
@@ -1045,6 +1119,8 @@ const createUserSchema = z.object({
   }),
   role: z.nativeEnum(Role),
   clientId: z.string().max(40).nullish(),
+  /** What a restaurant-side user does inside the restaurant. See `lib/rbac.ts`. */
+  clientRole: z.nativeEnum(ClientRole).nullish(),
   locale: z.nativeEnum(Language).default(Language.EN),
 });
 
@@ -1084,8 +1160,9 @@ usersRouter.post(
         locale: body.locale,
         organizationId: orgId(actor),
         clientId: needsClient ? body.clientId ?? null : null,
+        clientRole: needsClient ? body.clientRole ?? null : null,
       },
-      select: { id: true, name: true, email: true, role: true, isActive: true, clientId: true, createdAt: true },
+      select: { id: true, name: true, email: true, role: true, isActive: true, clientId: true, clientRole: true, createdAt: true },
     });
 
     await recordAudit({ actor, action: 'user.create', entity: 'User', entityId: user.id, ip: req.ip });
@@ -1103,11 +1180,25 @@ usersRouter.patch(
       role: z.nativeEnum(Role).optional(),
       isActive: z.boolean().optional(),
       clientId: z.string().max(40).nullish(),
+      clientRole: z.nativeEnum(ClientRole).nullish(),
     }),
   ),
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    const body = req.body as { role?: Role; isActive?: boolean; name?: string; clientId?: string | null };
+    const body = req.body as {
+      role?: Role; isActive?: boolean; name?: string; clientId?: string | null; clientRole?: ClientRole | null;
+    };
+
+    // A client id from the body is checked against this organisation, as the
+    // create route already does; pinning a user to a stranger's restaurant was
+    // possible through this route before.
+    if (body.clientId) {
+      const client = await prisma.client.findFirst({
+        where: { id: body.clientId, organizationId: orgId(actor) },
+        select: { id: true },
+      });
+      if (!client) throw notFound('Client');
+    }
 
     const existing = await prisma.user.findFirst({
       where: { id: req.params.id, organizationId: orgId(actor) },
@@ -1125,7 +1216,7 @@ usersRouter.patch(
     const user = await prisma.user.update({
       where: { id: existing.id },
       data: body,
-      select: { id: true, name: true, email: true, role: true, isActive: true, clientId: true },
+      select: { id: true, name: true, email: true, role: true, isActive: true, clientId: true, clientRole: true },
     });
 
     // Deactivating a user ends their sessions immediately.

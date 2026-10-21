@@ -180,3 +180,36 @@ after calling a `fetchMetrics()` that returns an empty array and writes nothing.
 `AnalyticsSnapshot` is written by exactly one thing: `prisma/seed.ts`.
 
 **Anyone reading a dashboard number today is reading seed data or nothing.**
+
+---
+
+## Integrations Center — connection health (2026-10-21)
+
+`/app/integrations` shows one of six states per platform, derived on the server
+(`connection-health.ts → deriveState`) and never inferred in the browser:
+
+| State | Meaning | Persisted status change |
+|---|---|---|
+| CONNECTED | The token was accepted at callback or at the last live check | — |
+| DISCONNECTED | No credential, or authorised but no account attached | — |
+| TOKEN_EXPIRED | 401 / revoked refresh token / past expiry with no way to renew | → `TOKEN_EXPIRED` |
+| MISSING_PERMISSIONS | A required scope is absent from the recorded grant | none |
+| CONFIGURATION_REQUIRED | Adapter not built, env vars missing, or no `TOKEN_ENCRYPTION_KEY` | none |
+| API_ERROR | 5xx, 429, network failure | none — an outage no longer writes `ERROR` |
+
+Endpoints: `GET /:id/health` (live check, renews if due), `POST /:id/refresh-authorization`
+(renew now, then check), `GET /:id/permissions` (grant vs. requirement, who grants it,
+what platform approval it waits on — `permissions.ts`).
+
+**Token renewal.** TikTok (24 h tokens) and Instagram Login (60 days) were never
+renewed; Google renewed only inside two sync paths. `refreshCredential` now renews
+TikTok, Google Business, Google Ads, YouTube and Instagram, writes the token to the
+integration *and* to the accounts that carry a copy, and the publisher calls
+`freshAccountToken` immediately before every post. Meta has no refresh token: an
+expired long-lived token needs the owner to log in again.
+
+**Known gaps (not built):** TikTok Ads (Marketing API) needs a separate TikTok for
+Business app and advertiser authorisation — the Login Kit token cannot call
+`business-api.tiktok.com`, and no advertiser account is ever discovered, so
+`publishToTikTok` cannot run. GA4 and Search Console scopes are not requested and
+nothing reads them.

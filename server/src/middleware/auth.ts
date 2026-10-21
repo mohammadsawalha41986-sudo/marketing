@@ -27,6 +27,7 @@ export const loadActor: RequestHandler = (req, _res, next) => {
           role: user.role,
           organizationId: user.organizationId,
           clientId: user.clientId,
+          clientRole: user.clientRole,
         } satisfies Actor;
         req.sessionToken = token;
       }

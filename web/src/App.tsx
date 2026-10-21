@@ -33,7 +33,7 @@ import { CreativesPage } from './routes/creatives';
 import { CreativePerformancePage } from './routes/creative-performance';
 import { MetaCampaignsPage } from './routes/publishing';
 import {
-  ApprovalsPage, CalendarPage, IntegrationsPage, MediaPage, NotificationsPage, SettingsPage,
+  ApprovalsPage, CalendarPage, ClientIntegrationsPage, IntegrationsPage, MediaPage, NotificationsPage, SettingsPage,
 } from './routes/workspace';
 import { AnalyticsPage, ReportDetailPage, ReportsPage } from './routes/insights';
 import { TeamPage } from './routes/team';
@@ -186,6 +186,7 @@ export default function App() {
                 <Route path="reports" element={<ReportsPage portal />} />
                 <Route path="reports/:id" element={<ReportDetailPage />} />
                 <Route path="brand" element={<BrandPage portal />} />
+                <Route path="integrations" element={<ClientIntegrationsPage />} />
                 <Route path="notifications" element={<NotificationsPage />} />
                 <Route path="*" element={<Navigate to="dashboard" replace />} />
               </Routes>

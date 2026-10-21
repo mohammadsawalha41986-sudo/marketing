@@ -146,6 +146,7 @@ const CLIENT_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
       { to: '/client/dashboard', labelKey: 'nav.home', icon: LayoutDashboard },
       { to: '/client/brand', labelKey: 'nav.brandDna', icon: Palette },
       { to: '/client/approvals', labelKey: 'nav.reviews', icon: ThumbsUp },
+      { to: '/client/integrations', labelKey: 'nav.integrations', icon: Plug },
     ],
   },
   {

@@ -85,6 +85,7 @@ export function qs(params: Record<string, string | number | boolean | undefined 
 // ---------------------------------------------------------------- shared types
 
 export type Role = 'SUPER_ADMIN' | 'AGENCY_ADMIN' | 'AGENCY_STAFF' | 'CLIENT_ADMIN' | 'CLIENT_USER';
+export type ClientRole = 'OWNER' | 'MANAGER' | 'MARKETING_MANAGER' | 'CONTENT_CREATOR' | 'FINANCIAL_ANALYST' | 'VIEWER';
 export type Language = 'AR' | 'EN';
 export type Platform =
   | 'FACEBOOK' | 'INSTAGRAM' | 'TIKTOK' | 'SNAPCHAT'
@@ -126,6 +127,10 @@ export interface CurrentUser {
   avatarUrl: string | null;
   organizationId: string | null;
   clientId: string | null;
+  /** Restaurant-side role; null means the default for `role`. */
+  clientRole?: ClientRole | null;
+  /** What the server will allow; the UI hides what is not listed. */
+  permissions?: string[];
   organization?: { id: string; name: string; slug: string; logoUrl: string | null } | null;
   client?: {
     id: string;

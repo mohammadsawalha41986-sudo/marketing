@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { createHash, randomBytes } from 'node:crypto';
 
 import { prisma } from '../lib/prisma.js';
+import { permissionsOf } from '../lib/rbac.js';
 import { asyncHandler, badRequest, conflict, unauthorized } from '../lib/errors.js';
 import { hashPassword, passwordProblems, verifyPassword } from '../lib/password.js';
 import {
@@ -180,7 +181,7 @@ authRouter.get(
       where: { id: actor.id },
       select: {
         id: true, email: true, name: true, role: true, locale: true, themePref: true,
-        avatarUrl: true, organizationId: true, clientId: true,
+        avatarUrl: true, organizationId: true, clientId: true, clientRole: true,
         organization: { select: { id: true, name: true, slug: true, logoUrl: true } },
         client: {
           select: {
@@ -196,7 +197,9 @@ authRouter.get(
       },
     });
     if (!user) throw unauthorized();
-    res.json({ user });
+    // What the screen may offer. Every route still checks for itself; this only
+    // stops the UI from showing buttons that would be refused.
+    res.json({ user: { ...user, permissions: permissionsOf(user) } });
   }),
 );
 
