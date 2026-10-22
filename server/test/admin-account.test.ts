@@ -118,4 +118,29 @@ describe('environment bootstrap', () => {
     expect(outcome).toMatch(/skipped/);
     expect((await prisma.user.findUniqueOrThrow({ where: { email: tenant.staffEmail } })).role).toBe('AGENCY_STAFF');
   });
+
+  it('RESET mode makes the account work, sets the password once, and is a no-op on restart', async () => {
+    const tenant = await createTenant('ensure');
+    await provisionSuperAdmin({ email: 'root@platform.test', password: 'Existing-Root-Pw1' });
+    const env = { ADMIN_BOOTSTRAP_EMAIL: tenant.staffEmail, ADMIN_BOOTSTRAP_PASSWORD: 'Chosen-Owner-Pw9', ADMIN_BOOTSTRAP_RESET: 'true' };
+
+    const first = await bootstrapSuperAdminFromEnv(env);
+    expect(first).toMatch(/password_reset/);
+    expect((await agent().login(tenant.staffEmail, 'Chosen-Owner-Pw9')).status).toBe(200);
+    expect((await prisma.user.findUniqueOrThrow({ where: { email: tenant.staffEmail } })).role).toBe('SUPER_ADMIN');
+
+    const live = agent();
+    await live.login(tenant.staffEmail, 'Chosen-Owner-Pw9');
+    expect(await bootstrapSuperAdminFromEnv(env)).toBe('Super Admin already in place');
+    expect((await live.get('/api/auth/me')).status).toBe(200);
+    // Other accounts, including the other Super Admin, are untouched.
+    expect((await agent().login('root@platform.test', 'Existing-Root-Pw1')).status).toBe(200);
+  });
+
+  it('RESET mode creates the account when it does not exist, even if another Super Admin does', async () => {
+    await provisionSuperAdmin({ email: 'root@platform.test', password: 'Existing-Root-Pw1' });
+    const outcome = await bootstrapSuperAdminFromEnv({ ADMIN_BOOTSTRAP_EMAIL: 'new@platform.test', ADMIN_BOOTSTRAP_PASSWORD: 'Brand-New-Own3r', ADMIN_BOOTSTRAP_RESET: 'true' });
+    expect(outcome).toMatch(/created/);
+    expect((await agent().login('new@platform.test', 'Brand-New-Own3r')).status).toBe(200);
+  });
 });
