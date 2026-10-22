@@ -11,6 +11,12 @@ import { useI18n } from '../lib/i18n';
 import { Button, Field, Input, useToast } from '../components/ui';
 import { LanguageSwitch, ThemeSwitch } from '../components/layout';
 
+/** Where each role lands after signing in; the platform owner goes to the admin console. */
+function homeFor(role: string): string {
+  if (role === 'SUPER_ADMIN') return '/admin/dashboard';
+  return role === 'CLIENT_ADMIN' || role === 'CLIENT_USER' ? '/client/dashboard' : '/app/dashboard';
+}
+
 function AuthLayout({ title, subtitle, children, footer }: { title: string; subtitle: string; children: ReactNode; footer: ReactNode }) {
   const { t } = useI18n();
 
@@ -101,13 +107,13 @@ export function LoginPage() {
   const navigate = useNavigate();
   const { push } = useToast();
 
-  const [email, setEmail] = useState('admin@northwind.example.com');
-  const [password, setPassword] = useState('Passw0rd!demo');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   if (!loading && user) {
-    return <Navigate to={user.role === 'CLIENT_ADMIN' || user.role === 'CLIENT_USER' ? '/client/dashboard' : '/app/dashboard'} replace />;
+    return <Navigate to={homeFor(user.role)} replace />;
   }
 
   const onSubmit = async (event: FormEvent) => {
@@ -117,7 +123,7 @@ export function LoginPage() {
     try {
       const next = await signIn(email.trim(), password);
       push({ tone: 'success', title: `Welcome back, ${next.name.split(' ')[0]}` });
-      navigate(next.role === 'CLIENT_ADMIN' || next.role === 'CLIENT_USER' ? '/client/dashboard' : '/app/dashboard');
+      navigate(homeFor(next.role));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not sign in');
     } finally {
@@ -138,7 +144,7 @@ export function LoginPage() {
     >
       <form onSubmit={onSubmit} className="space-y-4">
         <Field label={t('auth.email')} required>
-          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" placeholder="you@agency.com" />
+          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" placeholder="you@agency.com" autoFocus />
         </Field>
         <Field label={t('auth.password')} required error={error ?? undefined}>
           <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="current-password" placeholder="••••••••" />
@@ -152,14 +158,6 @@ export function LoginPage() {
           {t('auth.signIn')} <ArrowRight className="h-4 w-4 rtl:rotate-180" />
         </Button>
       </form>
-
-      <div className="mt-5 rounded-xl border border-dashed border-line bg-elevated/60 p-3 text-[12px] leading-relaxed text-muted">
-        <p className="font-medium text-fg">Demo accounts</p>
-        <p className="mt-1">Agency admin · admin@northwind.example.com</p>
-        <p>Client portal · owner@zaytoun.example.com</p>
-        <p>Super admin · root@marketingos.example.com</p>
-        <p className="mt-1">Password for all: <code className="rounded bg-surface px-1">Passw0rd!demo</code></p>
-      </div>
     </AuthLayout>
   );
 }
@@ -291,6 +289,51 @@ export function ForgotPasswordPage() {
             {t('auth.sendReset')}
           </Button>
         </form>
+      )}
+    </AuthLayout>
+  );
+}
+
+export function ResetPasswordPage() {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const { push } = useToast();
+  const token = new URLSearchParams(window.location.search).get('token') ?? '';
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const onSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post('/auth/reset-password', { token, password });
+      push({ tone: 'success', title: 'Password updated. Please sign in.' });
+      navigate('/login', { replace: true });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not reset the password');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AuthLayout
+      title={t('auth.resetTitle')}
+      subtitle={t('auth.resetSub')}
+      footer={<Link to="/login" className="font-medium text-brand hover:underline">{t('auth.backToSignIn')}</Link>}
+    >
+      {token ? (
+        <form onSubmit={onSubmit} className="space-y-4">
+          <Field label={t('auth.password')} required error={error ?? undefined}>
+            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={10} autoComplete="new-password" />
+          </Field>
+          <p className="text-[12px] text-muted">At least 10 characters, with an uppercase letter, a lowercase letter and a digit.</p>
+          <Button type="submit" className="w-full" size="lg" loading={busy}>{t('auth.resetTitle')}</Button>
+        </form>
+      ) : (
+        <p className="rounded-xl border border-danger/25 bg-danger/10 p-3.5 text-[13px] text-danger">This reset link is incomplete. Ask your administrator for a new one.</p>
       )}
     </AuthLayout>
   );

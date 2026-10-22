@@ -176,6 +176,7 @@ const ADMIN_NAV: Array<{ heading: TranslationKey; items: NavItem[] }> = [
       { to: '/admin/plans', labelKey: 'nav.plans', icon: CreditCard },
       { to: '/admin/subscriptions', labelKey: 'nav.subscriptions', icon: FileText },
       { to: '/admin/settings', labelKey: 'nav.settings', icon: Settings },
+      { to: '/admin/security', labelKey: 'nav.security', icon: Shield },
       { to: '/admin/audit', labelKey: 'nav.audit', icon: ScrollText },
     ],
   },

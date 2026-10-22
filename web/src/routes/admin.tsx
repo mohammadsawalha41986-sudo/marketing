@@ -220,11 +220,33 @@ export function AdminUsersPage() {
   const [page, setPage] = useState(1);
   const debounced = useDebounced(search);
 
-  const { data, loading } = useQuery<Paginated<{
+  const { push } = useToast();
+  const [resetLink, setResetLink] = useState<{ email: string; url: string } | null>(null);
+
+  const { data, loading, refetch } = useQuery<Paginated<{
     id: string; name: string; email: string; role: string; isActive: boolean;
     lastLoginAt: string | null; createdAt: string;
     organization: { name: string } | null; client: { name: string } | null;
   }>>(`/admin/users${qs({ page, pageSize: 20, search: debounced, role })}`, [page, debounced, role]);
+
+  const act = async (label: string, run: () => Promise<unknown>) => {
+    try {
+      await run();
+      push({ tone: 'success', title: label });
+      refetch();
+    } catch (err) {
+      push({ tone: 'error', title: err instanceof Error ? err.message : 'Action failed' });
+    }
+  };
+
+  const issueReset = async (user: { id: string; email: string }) => {
+    try {
+      const result = await api.post<{ path: string }>(`/admin/users/${user.id}/password-reset`);
+      setResetLink({ email: user.email, url: `${window.location.origin}${result.path}` });
+    } catch (err) {
+      push({ tone: 'error', title: err instanceof Error ? err.message : 'Could not issue a reset link' });
+    }
+  };
 
   return (
     <>
@@ -246,7 +268,7 @@ export function AdminUsersPage() {
       {loading ? <CardSkeleton rows={8} /> : data ? (
         <Card>
           <TableWrap>
-            <thead><tr><Th>User</Th><Th>Role</Th><Th>Organization</Th><Th>Client</Th><Th>Last login</Th><Th>Status</Th></tr></thead>
+            <thead><tr><Th>User</Th><Th>Role</Th><Th>Organization</Th><Th>Client</Th><Th>Last login</Th><Th>Status</Th><Th>Actions</Th></tr></thead>
             <tbody>
               {data.items.map((user) => (
                 <tr key={user.id}>
@@ -259,11 +281,99 @@ export function AdminUsersPage() {
                   <Td className="text-muted">{user.client?.name ?? '—'}</Td>
                   <Td className="text-muted">{user.lastLoginAt ? date(user.lastLoginAt, lang) : 'Never'}</Td>
                   <Td><Badge tone={user.isActive ? 'ok' : 'neutral'}>{user.isActive ? 'active' : 'disabled'}</Badge></Td>
+                  <Td>
+                    <div className="flex flex-wrap gap-1.5">
+                      <Button size="sm" variant="secondary" onClick={() => void issueReset(user)} disabled={!user.isActive}>Reset link</Button>
+                      <Button size="sm" variant="secondary" onClick={() => void act('Sessions ended', () => api.post(`/admin/users/${user.id}/revoke-sessions`))}>Sign out</Button>
+                      <Button size="sm" variant="secondary" onClick={() => void act(user.isActive ? 'Account disabled' : 'Account enabled', () => api.post(`/admin/users/${user.id}/status`, { isActive: !user.isActive }))}>
+                        {user.isActive ? 'Disable' : 'Enable'}
+                      </Button>
+                    </div>
+                  </Td>
                 </tr>
               ))}
             </tbody>
           </TableWrap>
           <Pagination page={data.pagination.page} pages={data.pagination.pages} onChange={setPage} />
+        </Card>
+      ) : null}
+
+      <Modal open={resetLink !== null} onClose={() => setResetLink(null)} title="One-time reset link">
+        <p className="text-[13px] text-muted">
+          Give this link to {resetLink?.email} through a channel you trust. It works once, expires in one hour and is
+          not shown again.
+        </p>
+        <code className="mt-3 block break-all rounded bg-elevated p-2.5 text-[12px]">{resetLink?.url}</code>
+        <div className="mt-4 flex justify-end">
+          <Button onClick={() => { if (resetLink) void navigator.clipboard?.writeText(resetLink.url); setResetLink(null); }}>Copy and close</Button>
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+export function AdminSecurityPage() {
+  const { lang } = useI18n();
+  const { push } = useToast();
+  const failures = useQuery<{
+    total: number;
+    byAccount: Array<{ name: string; count: number }>;
+    byAddress: Array<{ name: string; count: number }>;
+    recent: Array<{ at: string; ip: string | null; email: string | null; reason: string | null }>;
+  }>('/admin/login-failures');
+  const sessions = useQuery<Paginated<{
+    id: string; ip: string | null; userAgent: string | null; createdAt: string; expiresAt: string;
+    user: { id: string; name: string; email: string; role: string };
+  }>>('/admin/sessions?page=1&pageSize=50');
+
+  const revoke = async (id: string) => {
+    try {
+      await api.delete(`/admin/sessions/${id}`);
+      push({ tone: 'success', title: 'Session ended' });
+      sessions.refetch();
+    } catch (err) {
+      push({ tone: 'error', title: err instanceof Error ? err.message : 'Could not end the session' });
+    }
+  };
+
+  return (
+    <>
+      <PageHeader title="Security" subtitle="Failed sign-ins in the last 24 hours and every active session." />
+
+      {failures.loading ? <CardSkeleton rows={4} /> : failures.data ? (
+        <Card className="mb-6">
+          <CardHeader title={`Failed sign-ins (24h): ${num(failures.data.total, lang)}`} />
+          <div className="grid gap-4 p-4 md:grid-cols-2">
+            {([['Accounts', failures.data.byAccount], ['Addresses', failures.data.byAddress]] as const).map(([label, rows]) => (
+              <div key={label}>
+                <p className="mb-1.5 text-[12px] font-medium uppercase text-muted">{label}</p>
+                {rows.length === 0 ? <p className="text-[13px] text-muted">None</p> : rows.map((row) => (
+                  <div key={row.name} className="flex justify-between py-0.5 text-[13px]"><span className="truncate">{row.name}</span><span className="tabular">{row.count}</span></div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
+      {sessions.loading ? <CardSkeleton rows={6} /> : sessions.data ? (
+        <Card>
+          <CardHeader title={`Active sessions (${num(sessions.data.pagination.total, lang)})`} />
+          <TableWrap>
+            <thead><tr><Th>User</Th><Th>Role</Th><Th>Address</Th><Th>Signed in</Th><Th>Expires</Th><Th>{' '}</Th></tr></thead>
+            <tbody>
+              {sessions.data.items.map((session) => (
+                <tr key={session.id}>
+                  <Td><span className="block font-medium">{session.user.name}</span><span className="block text-[12px] text-muted">{session.user.email}</span></Td>
+                  <Td><Badge tone={session.user.role === 'SUPER_ADMIN' ? 'danger' : 'neutral'}>{humanize(session.user.role)}</Badge></Td>
+                  <Td className="tabular text-muted">{session.ip ?? '—'}</Td>
+                  <Td className="text-muted">{dateTime(session.createdAt, lang)}</Td>
+                  <Td className="text-muted">{dateTime(session.expiresAt, lang)}</Td>
+                  <Td><Button size="sm" variant="secondary" onClick={() => void revoke(session.id)}>End</Button></Td>
+                </tr>
+              ))}
+            </tbody>
+          </TableWrap>
         </Card>
       ) : null}
     </>

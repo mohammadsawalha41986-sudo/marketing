@@ -9,6 +9,7 @@
 import { Router } from 'express';
 import { ClientStatus, Prisma, Role, SubscriptionStatus } from '@prisma/client';
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 
 import { prisma } from '../lib/prisma.js';
 import { asyncHandler, badRequest, notFound } from '../lib/errors.js';
@@ -20,6 +21,7 @@ import { derive, sumSnapshots } from '../services/analytics.js';
 import { recordAudit } from '../services/audit.js';
 import { aiStatus, probeProvider } from '../services/ai/index.js';
 import { storageStatus } from '../services/storage/index.js';
+import { destroyAllSessions, newToken } from '../lib/session.js';
 import { cookieSecure, env, hasOpenAi } from '../env.js';
 
 export const adminRouter: Router = Router();
@@ -185,6 +187,145 @@ adminRouter.get(
     ]);
 
     res.json(pageResult(items, total, query));
+  }),
+);
+
+// ------------------------------------------------------------------ account security
+
+/** Never let the platform lose its last working owner. */
+async function assertNotLastSuperAdmin(userId: string): Promise<void> {
+  const others = await prisma.user.count({ where: { role: Role.SUPER_ADMIN, isActive: true, id: { not: userId } } });
+  if (others === 0) throw badRequest('This is the last active Super Admin');
+}
+
+adminRouter.post(
+  '/users/:id/status',
+  validateParams(idParam),
+  validateBody(z.object({ isActive: z.boolean() })),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    crossTenant(actor);
+    const { id } = req.params as { id: string };
+    const { isActive } = req.body as { isActive: boolean };
+
+    const target = await prisma.user.findUnique({ where: { id }, select: { id: true, role: true, email: true } });
+    if (!target) throw notFound('User');
+    if (!isActive) {
+      if (target.id === actor.id) throw badRequest('You cannot disable your own account');
+      if (target.role === Role.SUPER_ADMIN) await assertNotLastSuperAdmin(target.id);
+    }
+
+    await prisma.user.update({ where: { id }, data: { isActive } });
+    if (!isActive) await destroyAllSessions(id);
+    await recordAudit({ actor, action: isActive ? 'admin.user_enabled' : 'admin.user_disabled', entity: 'User', entityId: id, meta: { email: target.email }, ip: req.ip });
+    res.json({ ok: true, isActive });
+  }),
+);
+
+adminRouter.post(
+  '/users/:id/revoke-sessions',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    crossTenant(actor);
+    const { id } = req.params as { id: string };
+    if (!(await prisma.user.findUnique({ where: { id }, select: { id: true } }))) throw notFound('User');
+    const { count } = await prisma.session.deleteMany({ where: { userId: id } });
+    await recordAudit({ actor, action: 'admin.sessions_revoked', entity: 'User', entityId: id, meta: { count }, ip: req.ip });
+    res.json({ ok: true, revoked: count });
+  }),
+);
+
+/**
+ * Issue a one-time password-reset link for a user and hand it to the Super Admin
+ * who asked. There is no mail transport, so the link is delivered by the admin,
+ * out of band. It is shown once, stored only as a hash, and expires in an hour.
+ */
+adminRouter.post(
+  '/users/:id/password-reset',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    crossTenant(actor);
+    const { id } = req.params as { id: string };
+    const target = await prisma.user.findUnique({ where: { id }, select: { id: true, email: true, isActive: true } });
+    if (!target) throw notFound('User');
+    if (!target.isActive) throw badRequest('Enable the account before issuing a reset link');
+
+    const token = newToken();
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    await prisma.passwordResetToken.create({
+      data: { tokenHash: createHash('sha256').update(token).digest('hex'), userId: target.id, expiresAt },
+    });
+    await recordAudit({ actor, action: 'admin.password_reset_issued', entity: 'User', entityId: target.id, meta: { email: target.email }, ip: req.ip });
+    res.status(201).json({ path: `/reset-password?token=${token}`, expiresAt });
+  }),
+);
+
+adminRouter.get(
+  '/sessions',
+  validateQuery(paginationQuery),
+  asyncHandler(async (req, res) => {
+    crossTenant(actorOf(req));
+    const query = req.query as unknown as z.infer<typeof paginationQuery>;
+    const where: Prisma.SessionWhereInput = { expiresAt: { gt: new Date() } };
+    const [items, total] = await Promise.all([
+      prisma.session.findMany({
+        where,
+        ...paginate(query),
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, ip: true, userAgent: true, createdAt: true, expiresAt: true, user: { select: { id: true, name: true, email: true, role: true } } },
+      }),
+      prisma.session.count({ where }),
+    ]);
+    res.json(pageResult(items, total, query));
+  }),
+);
+
+adminRouter.delete(
+  '/sessions/:id',
+  validateParams(idParam),
+  asyncHandler(async (req, res) => {
+    const actor = actorOf(req);
+    crossTenant(actor);
+    const { id } = req.params as { id: string };
+    const { count } = await prisma.session.deleteMany({ where: { id } });
+    if (count === 0) throw notFound('Session');
+    await recordAudit({ actor, action: 'admin.session_revoked', entity: 'Session', entityId: id, ip: req.ip });
+    res.json({ ok: true });
+  }),
+);
+
+/** Failed sign-ins in the last 24 hours, by account and by address. */
+adminRouter.get(
+  '/login-failures',
+  asyncHandler(async (req, res) => {
+    crossTenant(actorOf(req));
+    const since = new Date(Date.now() - 24 * 3600 * 1000);
+    const rows = await prisma.auditLog.findMany({
+      where: { action: 'auth.login_failed', createdAt: { gte: since } },
+      orderBy: { createdAt: 'desc' },
+      take: 1000,
+      select: { createdAt: true, ip: true, meta: true },
+    });
+    const tally = (key: (row: (typeof rows)[number]) => string | null) => {
+      const counts = new Map<string, number>();
+      for (const row of rows) {
+        const k = key(row);
+        if (k) counts.set(k, (counts.get(k) ?? 0) + 1);
+      }
+      return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, count]) => ({ name, count }));
+    };
+    res.json({
+      total: rows.length,
+      byAccount: tally((row) => String((row.meta as { email?: string }).email ?? '') || null),
+      byAddress: tally((row) => row.ip),
+      recent: rows.slice(0, 25).map((row) => ({
+        at: row.createdAt, ip: row.ip,
+        email: (row.meta as { email?: string }).email ?? null,
+        reason: (row.meta as { reason?: string }).reason ?? null,
+      })),
+    });
   }),
 );
 
