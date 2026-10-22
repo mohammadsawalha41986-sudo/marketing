@@ -33,6 +33,7 @@ import { uploadPostConfigured } from './services/integrations/upload-post.js';
 import { publishingTick } from './services/publishing/scheduler.js';
 import { ingestMetricsTick } from './services/social/metrics-ingest.js';
 import { pruneExpiredSessions } from './lib/session.js';
+import { bootstrapSuperAdminFromEnv } from './services/admin-account.js';
 
 const LINE = '='.repeat(72);
 
@@ -208,6 +209,11 @@ const server = app.listen(env.PORT, '0.0.0.0', () => {
   // A failure here degrades the app and is reported by /api/health; it never
   // prevents startup and never exits the process.
   startDatabaseProbe();
+
+  // Opt-in first-run owner account; a no-op unless ADMIN_BOOTSTRAP_* are set.
+  void bootstrapSuperAdminFromEnv()
+    .then((outcome) => { if (outcome !== 'not configured') process.stdout.write(`[marketing-os] admin bootstrap: ${outcome}\n`); })
+    .catch((error: Error) => process.stderr.write(`[marketing-os] admin bootstrap failed: ${error.message}\n`));
 });
 
 server.on('error', (error: NodeJS.ErrnoException) => {
