@@ -7,7 +7,7 @@ import { useAuth } from './lib/auth';
 import { AppShell } from './components/layout';
 import { Spinner } from './components/ui';
 
-import { ForgotPasswordPage, LoginPage, RegisterPage } from './routes/auth';
+import { ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage } from './routes/auth';
 import { DashboardPage } from './routes/dashboard';
 import { CeoPage } from './routes/ceo';
 import { ClientDetailPage, ClientsPage } from './routes/clients';
@@ -39,7 +39,7 @@ import { AnalyticsPage, ReportDetailPage, ReportsPage } from './routes/insights'
 import { TeamPage } from './routes/team';
 import {
   AdminAuditPage, AdminClientsPage, AdminDashboardPage, AdminPlansPage, AdminSettingsPage,
-  AdminSubscriptionsPage, AdminUsersPage,
+  AdminSecurityPage, AdminSubscriptionsPage, AdminUsersPage,
 } from './routes/admin';
 
 function FullPageSpinner() {
@@ -80,6 +80,7 @@ function RoleHome() {
   const { user, loading, isClientUser } = useAuth();
   if (loading) return <FullPageSpinner />;
   if (!user) return <Navigate to="/login" replace />;
+  if (user.role === 'SUPER_ADMIN') return <Navigate to="/admin/dashboard" replace />;
   return <Navigate to={isClientUser ? '/client/dashboard' : '/app/dashboard'} replace />;
 }
 
@@ -89,6 +90,7 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
 
       <Route path="/" element={<RoleHome />} />
 
@@ -205,6 +207,7 @@ export default function App() {
                 <Route path="dashboard" element={<AdminDashboardPage />} />
                 <Route path="clients" element={<AdminClientsPage />} />
                 <Route path="users" element={<AdminUsersPage />} />
+                <Route path="security" element={<AdminSecurityPage />} />
                 <Route path="plans" element={<AdminPlansPage />} />
                 <Route path="subscriptions" element={<AdminSubscriptionsPage />} />
                 <Route path="reports" element={<ReportsPage />} />

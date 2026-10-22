@@ -34,6 +34,35 @@ const credentialLimiter = rateLimit({
   message: { error: { code: 'RATE_LIMITED', message: 'Too many attempts. Try again in a few minutes.' } },
 });
 
+/**
+ * Login attempts are limited per account, with a looser per-address ceiling on top.
+ *
+ * Keying only on the address is wrong behind a proxy chain: if the app sees the
+ * edge's address instead of the visitor's (an extra CDN hop, a misjudged
+ * TRUST_PROXY), every user shares one bucket and ten failed logins anywhere lock
+ * everybody out. Keyed by email, one person's typos cannot lock out another's
+ * account, and a guesser is still capped per target.
+ */
+const loginAccountLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: isProd ? 10 : 100,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const email = (req.body as { email?: unknown } | undefined)?.email;
+    return `login:${typeof email === 'string' ? email.trim().toLowerCase().slice(0, 255) : 'unknown'}`;
+  },
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many attempts. Try again in a few minutes.' } },
+});
+
+const loginAddressLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: isProd ? 100 : 1000,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many attempts. Try again in a few minutes.' } },
+});
+
 const passwordField = z.string().min(1).superRefine((value, ctx) => {
   for (const problem of passwordProblems(value)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Password ${problem}` });
@@ -125,8 +154,9 @@ authRouter.post(
 
 authRouter.post(
   '/login',
-  credentialLimiter,
+  loginAddressLimiter,
   validateBody(loginSchema),
+  loginAccountLimiter,
   asyncHandler(async (req, res) => {
     const { email, password } = req.body as z.infer<typeof loginSchema>;
     const user = await prisma.user.findUnique({ where: { email } });
@@ -135,6 +165,15 @@ authRouter.post(
     const ok = user ? await verifyPassword(user.passwordHash, password) : await verifyPassword('$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$0000000000000000000000000000000000000000000', password);
 
     if (!user || !ok || !user.isActive) {
+      // The reason stays server-side; the response is identical for all three.
+      await recordAudit({
+        actor: user ? { id: user.id, email: user.email, name: user.name, role: user.role, organizationId: user.organizationId, clientId: user.clientId } : null,
+        action: 'auth.login_failed',
+        entity: 'User',
+        entityId: user?.id ?? null,
+        meta: { email, reason: !user ? 'unknown_user' : !user.isActive ? 'inactive' : 'bad_password' },
+        ip: req.ip,
+      });
       throw unauthorized('Email or password is incorrect');
     }
 

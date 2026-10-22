@@ -83,6 +83,7 @@ const en = {
   'nav.plans': 'Plans',
   'nav.subscriptions': 'Subscriptions',
   'nav.audit': 'Audit log',
+  'nav.security': 'Security',
   'nav.workspace': 'Workspace',
   'nav.clientPortal': 'Client portal',
 
@@ -962,6 +963,7 @@ const ar: Record<keyof typeof en, string> = {
   'nav.plans': 'الباقات',
   'nav.subscriptions': 'الاشتراكات',
   'nav.audit': 'سجل النشاط',
+  'nav.security': 'الأمان والجلسات',
   'nav.workspace': 'مساحة العمل',
   'nav.clientPortal': 'بوابة العميل',
 
