@@ -13,7 +13,7 @@
 import { Language, Role } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
-import { hashPassword, passwordProblems } from '../lib/password.js';
+import { hashPassword, passwordProblems, verifyPassword } from '../lib/password.js';
 
 export type AdminAccountResult =
   | { action: 'created' | 'repaired' | 'password_reset'; email: string; userId: string; changes: string[] }
@@ -108,19 +108,41 @@ export async function provisionSuperAdmin(input: {
 }
 
 /**
- * Optional first-run bootstrap from the environment. Creates the owner account
- * only when the platform has no Super Admin at all and the email is unused; it
- * never overwrites or promotes anything, so leaving the variables set is safe.
+ * Optional account provisioning from the environment, for hosts with no shell.
+ *
+ * Default (ADMIN_BOOTSTRAP_RESET unset): creates the owner only when the platform
+ * has no Super Admin at all and the email is unused. It never overwrites or
+ * promotes anything, so leaving the variables set is safe.
+ *
+ * ADMIN_BOOTSTRAP_RESET=true: "make this exact account a working Super Admin with
+ * this password". It creates the account, or repairs its role/active/workspace
+ * link, and sets the password only if the stored one does not already match, so
+ * a restart with the variables still set changes nothing and ends no session.
+ * Remove the variables once signed in.
  */
 export async function bootstrapSuperAdminFromEnv(
-  source: { ADMIN_BOOTSTRAP_EMAIL?: string; ADMIN_BOOTSTRAP_PASSWORD?: string; ADMIN_BOOTSTRAP_NAME?: string } = process.env,
+  source: {
+    ADMIN_BOOTSTRAP_EMAIL?: string;
+    ADMIN_BOOTSTRAP_PASSWORD?: string;
+    ADMIN_BOOTSTRAP_NAME?: string;
+    ADMIN_BOOTSTRAP_RESET?: string;
+  } = process.env,
 ): Promise<string> {
   const email = source.ADMIN_BOOTSTRAP_EMAIL?.trim();
   const password = source.ADMIN_BOOTSTRAP_PASSWORD;
   if (!email || !password) return 'not configured';
+  const normalized = checkCredentials(email, password);
+
+  if (source.ADMIN_BOOTSTRAP_RESET === 'true') {
+    const existing = await prisma.user.findUnique({ where: { email: normalized }, select: { passwordHash: true } });
+    const matches = existing ? await verifyPassword(existing.passwordHash, password) : false;
+    const result = await provisionSuperAdmin({
+      email: normalized, password, name: source.ADMIN_BOOTSTRAP_NAME, resetPassword: Boolean(existing) && !matches,
+    });
+    return result.action === 'unchanged' ? 'Super Admin already in place' : `Super Admin ${result.action}: ${result.changes.join('; ')}`;
+  }
 
   if (await prisma.user.count({ where: { role: Role.SUPER_ADMIN } }) > 0) return 'skipped: a Super Admin already exists';
-  const normalized = checkCredentials(email, password);
   if (await prisma.user.findUnique({ where: { email: normalized }, select: { id: true } })) {
     return 'skipped: that email already belongs to a non-admin account (use the admin-account script to promote it)';
   }
